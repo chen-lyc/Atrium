@@ -654,6 +654,8 @@ class Task {
                         string password = req.body.substr(password_start, password_end - password_start);
                         password = escapeSqlString(password);
 
+                        logger.log(AsyncLogger::DEBUG, "username = " + username + ", password = " + password);
+
                         if (req.target == "/register") {
                             string salt = generateSalt();
 
