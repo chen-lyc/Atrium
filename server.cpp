@@ -553,13 +553,13 @@ class ThreadPool {
         }
     }
 
-    bool enqueue(T *request) {
+    bool enqueue(unique_ptr<T> request) {
         {
             lock_guard<mutex> lock(m_mutex);
             if (m_workqueue.size() >= m_max_requests) {
                 return false;
             }
-            m_workqueue.emplace(request);
+            m_workqueue.emplace(move(request));
         }
         m_cond.notify_one();
         return true;
@@ -568,7 +568,7 @@ class ThreadPool {
   private:
     void worker() {
         while (1) {
-            T *request = nullptr;
+            unique_ptr<T> request;
             {
                 unique_lock<mutex> lock(m_mutex);
                 m_cond.wait(lock, [this] {
@@ -579,7 +579,7 @@ class ThreadPool {
                     return;
                 }
 
-                request = m_workqueue.front();
+                request = move(m_workqueue.front());
                 m_workqueue.pop();
             }
             if (request) {
@@ -593,7 +593,7 @@ class ThreadPool {
     vector<thread> threads;
     mutex m_mutex;
     condition_variable m_cond;
-    queue<T *> m_workqueue;
+    queue<unique_ptr<T>> m_workqueue;
     bool m_stop;
 };
 
@@ -919,7 +919,8 @@ int main(int argc, char *argv[]) {
                             if (!conns[fd].processing && conns[fd].keepAlive) {
                                 logger.log(AsyncLogger::DEBUG, "enqueue task for fd = " + to_string(fd));
                                 conns[fd].processing = true;
-                                pool.enqueue(new Task(fd));
+                                unique_ptr<Task> ptr_task(new Task(fd));
+                                pool.enqueue(move(ptr_task));
                             }
                             break;
                         } else {

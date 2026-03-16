@@ -83160,3 +83160,35 @@ Accept: */*
 2026-03-15 18:24:46.679 DEBUG tick: now=1773570286000 expire=1773570286000
 2026-03-15 18:24:46.679 INFO close inactive connection, fd = 166
 2026-03-15 18:24:46.680 WARN no timer
+2026-03-16 13:18:36.736 INFO 
+server starting
+2026-03-16 13:18:36.736 INFO server listening on 127.0.0.1:8080
+2026-03-16 13:18:36.736 WARN no timer
+2026-03-16 13:19:32.929 DEBUG happened events number = 1
+2026-03-16 13:19:32.929 DEBUG event fd = 11
+2026-03-16 13:19:32.929 INFO new connection, fd = 12 ip = :53252
+2026-03-16 13:19:32.929 DEBUG timeout = 6000
+2026-03-16 13:19:32.929 DEBUG happened events number = 1
+2026-03-16 13:19:32.929 DEBUG event fd = 12
+2026-03-16 13:19:32.929 DEBUG HTTP received complete
+2026-03-16 13:19:32.929 DEBUG enqueue task for fd = 12
+2026-03-16 13:19:32.929 DEBUG timeout = 6000
+2026-03-16 13:19:32.930 INFO Task processing fd = 12 by thread 134646723503680
+2026-03-16 13:19:32.930 INFO fd = 12 send data : POST /login HTTP/1.1
+Host: localhost:8080
+User-Agent: curl/7.81.0
+Accept: */*
+Content-Length: 30
+Content-Type: application/x-www-form-urlencoded
+
+username=xiaoxiao&password=123
+2026-03-16 13:19:32.930 DEBUG username = xiaoxiao, password = 123
+2026-03-16 13:19:32.931 DEBUG happened events number = 1
+2026-03-16 13:19:32.931 DEBUG event fd = 10
+2026-03-16 13:19:32.931 DEBUG start processing queue, queue len = 1
+2026-03-16 13:19:32.931 INFO fd = 12, send complete
+2026-03-16 13:19:32.931 DEBUG timeout = 6000
+2026-03-16 13:19:32.931 DEBUG happened events number = 1
+2026-03-16 13:19:32.931 DEBUG event fd = 12
+2026-03-16 13:19:32.931 INFO client closed writing, fd = 12
+2026-03-16 13:19:32.931 DEBUG timeout = 6000
