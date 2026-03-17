@@ -1,3 +1,4 @@
+#include "message.pb.h"
 #include <arpa/inet.h>
 #include <condition_variable>
 #include <cstring>
@@ -32,6 +33,11 @@ int notifyfd;
 
 hash<string> hasher;
 
+enum ProtocolType {
+    PROTO_HTTP,
+    PROTO_BINARY
+};
+
 struct Connection {
     int fd;
     string inbuf;
@@ -40,6 +46,7 @@ struct Connection {
     bool sendComplete = false;
     bool processing = false;
     bool keepAlive = true;
+    ProtocolType protocol;
 };
 unordered_map<int, Connection> conns;
 
@@ -282,6 +289,61 @@ class TimerHeap {
 
 TimerHeap heap;
 
+// 解析protobuf请求状态机
+
+enum MessageType {
+    MSG_LOGIN_REQ,
+    MSG_LOGIN_RESP,
+    MSG_REGISTER_REQ,
+    MSG_REGISTER_RESP,
+    MSG_ERROR
+};
+
+struct ProtobufRequest {
+    MessageType msg_type;
+    uint32_t msg_length;
+    string username;
+    string password;
+
+    size_t end_pos = 0;
+};
+
+MessageType parse_protobuf_from_string(string &raw, ProtobufRequest &req) {
+    if (raw.size() < 8) {
+        return MSG_ERROR;
+    }
+
+    uint32_t msg_type;
+    memcpy(&msg_type, raw.c_str(), 4);
+    req.msg_type = static_cast<MessageType>(msg_type);
+
+    memcpy(&req.msg_length, raw.c_str() + 4, 4);
+
+    if (raw.size() < 8 + req.msg_length) {
+        return MSG_ERROR;
+    }
+
+    req.end_pos = 8 + req.msg_length;
+
+    string packet = raw.substr(8, size_t(req.msg_length));
+
+    if (req.msg_type == MSG_LOGIN_REQ) {
+        LoginRequest message_request;
+        message_request.ParseFromString(packet);
+
+        req.username = message_request.username();
+        req.password = message_request.password();
+    } else if (req.msg_type == MSG_REGISTER_REQ) {
+        RegisterRequest message_request;
+        message_request.ParseFromString(packet);
+
+        req.username = message_request.username();
+        req.password = message_request.password();
+    }
+
+    return req.msg_type;
+}
+
 // 解析http请求状态机
 
 enum ParseState {
@@ -306,7 +368,7 @@ struct HttpRequest {
 
     string body;
 
-    size_t end_pos;
+    size_t end_pos = 0;
 };
 
 ParseState parse_http_from_string(const string &raw, HttpRequest &req) {
@@ -599,6 +661,55 @@ class ThreadPool {
 
 // 任务类
 
+bool is_request_complete(int fd) {
+    if (conns[fd].protocol == PROTO_HTTP) {
+        size_t head_end_pos = conns[fd].inbuf.find("\r\n\r\n");
+        if (head_end_pos == string::npos) {
+            logger.log(AsyncLogger::WARN, " HTTP header incomplete : missing CRLFCRLF");
+            return false;
+        }
+
+        const string key = "Content-Length:";
+        size_t value_pos = conns[fd].inbuf.find(key);
+        if (value_pos != string::npos) {
+            value_pos += key.size();
+            value_pos = conns[fd].inbuf.find_first_not_of(' ', value_pos);
+
+            if (value_pos == string::npos) {
+                logger.log(AsyncLogger::WARN, "HTTP incomplete or error");
+                return false;
+            }
+
+            size_t value_end = conns[fd].inbuf.find("\r\n", value_pos);
+            int value = stoi(conns[fd].inbuf.substr(value_pos, value_end - value_pos));
+
+            size_t body_start_pos = head_end_pos + 4;
+            size_t body_size = conns[fd].inbuf.size() - body_start_pos;
+            if (body_size < value) {
+                logger.log(AsyncLogger::WARN, "HTTP body incomplete, received body size = " + to_string(body_size) + " ,expected = " + to_string(value));
+                return false;
+            } else {
+                logger.log(AsyncLogger::DEBUG, "HTTP received complete");
+            }
+        }
+    } else if (conns[fd].protocol == PROTO_BINARY) {
+        if (conns[fd].inbuf.size() < 8) {
+            logger.log(AsyncLogger::WARN, "protobuf incomplete");
+            return false;
+        }
+
+        uint32_t msg_length;
+        memcpy(&msg_length, conns[fd].inbuf.c_str() + 4, 4);
+
+        if (conns[fd].inbuf.size() < 8 + msg_length) {
+            logger.log(AsyncLogger::WARN, "protobuf message incomplete");
+            return false;
+        }
+    }
+
+    return true;
+}
+
 string generateSalt(int len = 16) {
     static const char charset[] = "abcdefghijklmnopqrstuvwxyz0123456789";
     string salt;
@@ -619,102 +730,185 @@ class Task {
         // 模拟耗时操作
         // this_thread::sleep_for(chrono::milliseconds(500));
 
-        string response = default_response;
-        {
-            lock_guard<mutex> lock(readyMutex);
+        while (is_request_complete(m_fd)) {
+            string response;
+
             if (conns.find(m_fd) != conns.end()) {
                 logger.log(AsyncLogger::INFO, "fd = " + to_string(m_fd) + " send data : " + conns[m_fd].inbuf);
 
-                HttpRequest req;
-                ParseState ret = parse_http_from_string(conns[m_fd].inbuf, req);
+                size_t end_pos;
 
-                if (ret == PARSE_ERROR) {
-                    logger.log(AsyncLogger::INFO, "HTTP parse failed, fd = " + to_string(m_fd));
-                    response = error_response;
-                } else if (req.target == "/echo") {
-                    response = "HTTP/1.1 200 OK\r\nContent-Length: " + to_string(req.body.size()) + "\r\n\r\n" + req.body;
-                } else if (req.target == "/register" || req.target == "/login") {
-                    string username_key = "username=";
-                    size_t username_value_pos = req.body.find(username_key);
+                auto do_register = [](string username, string password) {
+                    string salt = generateSalt();
+                    string password_hash = to_string(hasher(password + salt));
+                    int ret = mysql_pool.executeQuery("INSERT INTO users (username, password_hash, salt) VALUES ('" + username + "', '" + password_hash + "', '" + salt + "')");
+                    return ret;
+                };
 
-                    string password_key = "password=";
-                    size_t password_value_pos = req.body.find(password_key);
+                auto do_login = [](string username, string password) {
+                    string result_text;
+                    mysql_pool.executeQuery("SELECT password_hash, salt FROM users WHERE username = '" + username + "'", result_text);
 
-                    if (username_value_pos == string::npos || password_value_pos == string::npos) {
-                        logger.log(AsyncLogger::WARN, "register request not have username or password");
-                        response = "HTTP / 1.1 400 Unauthorized\r\nContent - Type : text / plain\r\nContent - Length : 26\r\n\r\nmissing username or password";
-                    } else {
-                        size_t username_start = username_value_pos + username_key.size();
-                        size_t username_end = req.body.find("&", username_start);
-                        string username = req.body.substr(username_start, username_end - username_start);
-                        username = escapeSqlString(username);
+                    if (result_text.empty()) {
+                        logger.log(AsyncLogger::WARN, "login: user not found");
+                        return false;
+                    }
 
-                        size_t password_start = password_value_pos + password_key.size();
-                        size_t password_end = req.body.find("&", password_start);
-                        string password = req.body.substr(password_start, password_end - password_start);
-                        password = escapeSqlString(password);
+                    string password_hash = result_text.substr(0, result_text.find(" "));
 
-                        logger.log(AsyncLogger::DEBUG, "username = " + username + ", password = " + password);
+                    result_text.erase(result_text.begin(), result_text.begin() + password_hash.size() + 1);
 
-                        if (req.target == "/register") {
-                            string salt = generateSalt();
+                    string salt = result_text;
 
-                            string password_hash = to_string(hasher(password + salt));
+                    return to_string(hasher(password + salt)) == password_hash;
+                };
 
-                            int ret = mysql_pool.executeQuery("INSERT INTO users (username, password_hash, salt) VALUES ('" + username + "', '" + password_hash + "', '" + salt + "')");
+                if (conns[m_fd].protocol == PROTO_HTTP) {
+                    response = default_response;
 
-                            if (ret) {
-                                response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 16\r\n\r\nregister success";
-                            } else {
-                                response = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 15\r\n\r\nregister failed";
-                            }
+                    HttpRequest req;
+                    ParseState ret = parse_http_from_string(conns[m_fd].inbuf, req);
+                    end_pos = req.end_pos;
+
+                    if (ret == PARSE_ERROR) {
+                        logger.log(AsyncLogger::INFO, "HTTP parse failed, fd = " + to_string(m_fd));
+                        response = error_response;
+                    } else if (req.target == "/echo") {
+                        response = "HTTP/1.1 200 OK\r\nContent-Length: " + to_string(req.body.size()) + "\r\n\r\n" + req.body;
+                    } else if (req.target == "/register" || req.target == "/login") {
+                        string username_key = "username=";
+                        size_t username_value_pos = req.body.find(username_key);
+
+                        string password_key = "password=";
+                        size_t password_value_pos = req.body.find(password_key);
+
+                        if (username_value_pos == string::npos || password_value_pos == string::npos) {
+                            logger.log(AsyncLogger::WARN, "register request not have username or password");
+                            response = "HTTP / 1.1 400 Unauthorized\r\nContent - Type : text / plain\r\nContent - Length : 26\r\n\r\nmissing username or password";
                         } else {
-                            string result_text;
-                            mysql_pool.executeQuery("SELECT password_hash, salt FROM users WHERE username = '" + username + "'", result_text);
+                            size_t username_start = username_value_pos + username_key.size();
+                            size_t username_end = req.body.find("&", username_start);
+                            string username = req.body.substr(username_start, username_end - username_start);
+                            username = escapeSqlString(username);
 
-                            if (result_text.empty()) {
-                                logger.log(AsyncLogger::WARN, "login: user not found");
-                                response = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 12\r\n\r\nlogin failed";
+                            size_t password_start = password_value_pos + password_key.size();
+                            size_t password_end = req.body.find("&", password_start);
+                            string password = req.body.substr(password_start, password_end - password_start);
+                            password = escapeSqlString(password);
+
+                            logger.log(AsyncLogger::DEBUG, "username = " + username + ", password = " + password);
+
+                            if (req.target == "/register") {
+                                int ret = do_register(username, password);
+
+                                if (ret) {
+                                    response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 16\r\n\r\nregister success";
+                                } else {
+                                    response = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 15\r\n\r\nregister failed";
+                                }
                             } else {
-                                string password_hash = result_text.substr(0, result_text.find(" "));
+                                int ret = do_login(username, password);
 
-                                result_text.erase(result_text.begin(), result_text.begin() + password_hash.size() + 1);
-
-                                string salt = result_text;
-
-                                if (to_string(hasher(password + salt)) == password_hash) {
+                                if (ret) {
                                     response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nlogin success";
                                 } else {
                                     response = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 12\r\n\r\nlogin failed";
                                 }
                             }
                         }
-                    }
-                } else if (req.method == "GET") {
-                    string file_path = "static" + req.target;
-                    if (req.target == "/") file_path = "static/index.html";
-                    logger.log(AsyncLogger::INFO, "file path is " + file_path);
-                    int filefd = open(file_path.c_str(), O_RDONLY);
-                    if (filefd == -1) {
-                        response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-                    } else {
-                        struct stat st;
-                        fstat(filefd, &st);
+                    } else if (req.method == "GET") {
+                        string file_path = "static" + req.target;
+                        if (req.target == "/") file_path = "static/index.html";
+                        logger.log(AsyncLogger::INFO, "file path is " + file_path);
+                        int filefd = open(file_path.c_str(), O_RDONLY);
+                        if (filefd == -1) {
+                            response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                        } else {
+                            struct stat st;
+                            fstat(filefd, &st);
 
-                        long file_size = st.st_size;
-                        string body(file_size, '\0');
-                        read(filefd, body.data(), file_size);
-                        close(filefd);
-                        response = "HTTP/1.1 200 OK\r\nContent-Length: " + to_string(file_size) + "\r\n\r\n" + body;
+                            long file_size = st.st_size;
+                            string body(file_size, '\0');
+                            read(filefd, body.data(), file_size);
+                            close(filefd);
+                            response = "HTTP/1.1 200 OK\r\nContent-Length: " + to_string(file_size) + "\r\n\r\n" + body;
+                        }
+                    }
+
+                    if (req.version == "HTTP/1.0" || req.connection == "close") {
+                        conns[m_fd].keepAlive = false;
+                    }
+                } else {
+                    ProtobufRequest req;
+                    MessageType ret = parse_protobuf_from_string(conns[m_fd].inbuf, req);
+                    end_pos = req.end_pos;
+
+                    logger.log(AsyncLogger::INFO, "parsed data: " + to_string(req.msg_type) + " " + to_string(req.msg_length) + " usernamne=" + req.username + " password=" + req.password);
+
+                    enum ResponseKind {
+                        REGISTER,
+                        LOGIN,
+                        ERROR
+                    };
+
+                    auto buildResponse = [&response](const string &msg, ResponseKind kind) {
+                        string data;
+                        MessageType type;
+
+                        if (kind == REGISTER) {
+                            RegisterResponse resp;
+                            resp.set_msg(msg);
+                            resp.SerializeToString(&data);
+                            type = MSG_REGISTER_RESP;
+                        } else if (kind == LOGIN) {
+                            LoginResponse resp;
+                            resp.set_msg(msg);
+                            resp.SerializeToString(&data);
+                            type = MSG_LOGIN_RESP;
+                        } else {
+                            ErrorResponse resp;
+                            resp.set_msg(msg);
+                            resp.SerializeToString(&data);
+                            type = MSG_ERROR;
+                        }
+
+                        uint32_t msg_type = static_cast<uint32_t>(type);
+                        uint32_t msg_length = static_cast<uint32_t>(data.size());
+
+                        response.append(reinterpret_cast<char *>(&msg_type), 4);
+                        response.append(reinterpret_cast<char *>(&msg_length), 4);
+                        response.append(data);
+                    };
+
+                    if (ret == MSG_ERROR) {
+                        logger.log(AsyncLogger::INFO, "protobuf parse failed, fd = " + to_string(m_fd));
+
+                        buildResponse("parse error", ERROR);
+                    } else if (ret == MSG_REGISTER_REQ) {
+                        int ret = do_register(req.username, req.password);
+
+                        if (ret) {
+                            buildResponse("register success", REGISTER);
+                        } else {
+                            buildResponse("register failed", ERROR);
+                        }
+                    } else if (ret == MSG_LOGIN_REQ) {
+                        int ret = do_login(req.username, req.password);
+
+                        if (ret) {
+                            buildResponse("login success", LOGIN);
+                        } else {
+                            buildResponse("login failed", ERROR);
+                        }
                     }
                 }
 
-                readyQueue.emplace(m_fd, response);
-                conns[m_fd].inbuf.erase(conns[m_fd].inbuf.begin(), conns[m_fd].inbuf.begin() + req.end_pos);
-
-                if (req.version == "HTTP/1.0" || req.connection == "close") {
-                    conns[m_fd].keepAlive = false;
+                {
+                    lock_guard<mutex> lock(readyMutex);
+                    readyQueue.emplace(m_fd, response);
+                    logger.log(AsyncLogger::DEBUG, "enqueue readyQueue");
                 }
+                conns[m_fd].inbuf.erase(conns[m_fd].inbuf.begin(), conns[m_fd].inbuf.begin() + end_pos);
             }
         }
 
@@ -784,7 +978,7 @@ void trySend(Connection &conn) {
 int main(int argc, char *argv[]) {
     logger.log(AsyncLogger::INFO, "\nserver starting");
 
-    if (argc <= 2) {
+    if (argc <= 3) {
         logger.log(AsyncLogger::WARN, "usage: ./threadpool_epoll_demo.out ip port");
         return -1;
     }
@@ -793,20 +987,27 @@ int main(int argc, char *argv[]) {
     addfd(notifyfd);
 
     string ip(argv[1]);
-    int port = stoi(argv[2]);
+    int http_port = stoi(argv[2]);
+    int protobuf_port = stoi(argv[3]);
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
+    auto socket_bind_listen = [](string ip, int port) {
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
 
-    int listenfd = socket(PF_INET, SOCK_STREAM, 0);
-    int opt = 1;
-    setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    bind(listenfd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
-    listen(listenfd, 1024);
-    addfd(listenfd);
-    logger.log(AsyncLogger::INFO, "server listening on " + ip + ":" + to_string(port));
+        int listenfd = socket(PF_INET, SOCK_STREAM, 0);
+        int opt = 1;
+        setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        bind(listenfd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
+        listen(listenfd, 1024);
+        addfd(listenfd);
+        logger.log(AsyncLogger::INFO, "server listening on " + ip + ":" + to_string(port));
+        return listenfd;
+    };
+
+    int http_listenfd = socket_bind_listen(ip, http_port);
+    int protobuf_listenfd = socket_bind_listen(ip, protobuf_port);
 
     epoll_event events[MAXSIZE];
 
@@ -829,7 +1030,11 @@ int main(int argc, char *argv[]) {
         for (int i = 0; i < numbers; i++) {
             int fd = events[i].data.fd;
             logger.log(AsyncLogger::DEBUG, "event fd = " + to_string(fd));
-            if (fd == listenfd) {
+            if (fd == http_listenfd || fd == protobuf_listenfd) {
+                ProtocolType protocol_type;
+                if (fd == http_listenfd) protocol_type = PROTO_HTTP;
+                else protocol_type = PROTO_BINARY;
+
                 while (1) {
                     sockaddr_in client_addr{};
                     socklen_t client_len = sizeof(client_addr);
@@ -843,7 +1048,7 @@ int main(int argc, char *argv[]) {
                     }
 
                     addfd(connfd);
-                    conns[connfd] = {connfd, "", "", false, false, false, true};
+                    conns[connfd] = {connfd, "", "", false, false, false, true, protocol_type};
                     heap.add(Timer{connfd, (time(nullptr) * 1000ll + 6000)});
                     string client_ip;
                     int client_port = ntohs(client_addr.sin_port);
@@ -881,6 +1086,14 @@ int main(int argc, char *argv[]) {
                     } else if (n == 0) {
                         logger.log(AsyncLogger::INFO, "client closed writing, fd = " + to_string(fd));
                         conns[fd].readClosed = true;
+
+                        if (is_request_complete(fd) && !conns[fd].processing && conns[fd].keepAlive) {
+                            logger.log(AsyncLogger::DEBUG, "enqueue task for fd = " + to_string(fd));
+                            conns[fd].processing = true;
+                            unique_ptr<Task> ptr_task(new Task(fd));
+                            pool.enqueue(move(ptr_task));
+                        }
+
                         if (conns[fd].sendComplete) {
                             logger.log(AsyncLogger::INFO, "and send has completed, close fd = " + to_string(fd));
                             heap.remove(fd);
@@ -889,34 +1102,7 @@ int main(int argc, char *argv[]) {
                         break;
                     } else {
                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                            size_t head_end_pos = conns[fd].inbuf.find("\r\n\r\n");
-                            if (head_end_pos != string::npos) {
-                                const string key = "Content-Length:";
-                                size_t value_pos = conns[fd].inbuf.find(key);
-                                if (value_pos != string::npos) {
-                                    value_pos += key.size();
-                                    value_pos = conns[fd].inbuf.find_first_not_of(' ', value_pos);
-
-                                    if (value_pos != string::npos) {
-                                        size_t value_end = conns[fd].inbuf.find("\r\n", value_pos);
-                                        int value = stoi(conns[fd].inbuf.substr(value_pos, value_end - value_pos));
-
-                                        size_t body_start_pos = head_end_pos + 4;
-                                        size_t body_size = conns[fd].inbuf.size() - body_start_pos;
-                                        if (body_size < value) {
-                                            logger.log(AsyncLogger::WARN, "HTTP body incomplete, received body size = " + to_string(body_size) + " ,expected = " + to_string(value));
-                                            break;
-                                        } else {
-                                            logger.log(AsyncLogger::DEBUG, "HTTP received complete");
-                                        }
-                                    } else {
-                                        logger.log(AsyncLogger::WARN, "HTTP incomplete or error");
-                                        break;
-                                    }
-                                }
-                            }
-
-                            if (!conns[fd].processing && conns[fd].keepAlive) {
+                            if (is_request_complete(fd) && !conns[fd].processing && conns[fd].keepAlive) {
                                 logger.log(AsyncLogger::DEBUG, "enqueue task for fd = " + to_string(fd));
                                 conns[fd].processing = true;
                                 unique_ptr<Task> ptr_task(new Task(fd));
@@ -941,7 +1127,8 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    close(listenfd);
+    close(http_listenfd);
+    close(protobuf_listenfd);
     close(epollfd);
     close(notifyfd);
 

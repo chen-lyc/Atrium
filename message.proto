@@ -5,7 +5,19 @@ message LoginRequest {
     string password = 2;
 }
 
+message RegisterRequest {
+    string username = 1;
+    string password = 2;
+}
+
 message LoginResponse {
-    bool success = 1;
-    string msg = 2;
+    string msg = 1;
+}
+
+message RegisterResponse {
+    string msg = 1;
+}
+
+message ErrorResponse {
+    string msg = 1;
 }
