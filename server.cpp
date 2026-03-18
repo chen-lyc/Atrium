@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <functional>
+#include <hiredis/hiredis.h>
 #include <iostream>
 #include <mutex>
 #include <mysql/mysql.h>
@@ -60,6 +61,9 @@ struct TaskResult {
 queue<TaskResult> readyQueue;
 mutex readyMutex;
 mutex logMutex;
+
+redisContext *redis_conn = redisConnect("127.0.0.1", 6379);
+mutex redis_mutex;
 
 // 日志
 
@@ -468,7 +472,123 @@ ParseState parse_http_from_string(const string &raw, HttpRequest &req) {
     return req.state;
 }
 
-// 连接池
+// Redis连接池
+
+class RedisPool;
+
+class RedisConnGuard {
+  public:
+    RedisConnGuard(RedisPool *pool);
+    redisContext *get() {
+        return m_redis_conn;
+    }
+    ~RedisConnGuard();
+
+  private:
+    RedisPool *m_pool;
+    redisContext *m_redis_conn;
+};
+
+class RedisPool {
+    friend class RedisConnGuard;
+
+  public:
+    RedisPool(int max_connections) {
+        for (int i = 0; i < max_connections; i++) {
+            redisContext *connfd = redisConnect("127.0.0.1", 6379);
+            if (connfd == nullptr || connfd->err) {
+                logger.log(AsyncLogger::ERROR, "Redis connect failed");
+                continue;
+            }
+
+            m_ready_queue.emplace(connfd);
+        }
+    }
+
+    bool executeCommand(const string &command) {
+        redisReply *reply = nullptr;
+
+        {
+            RedisConnGuard guard(this);
+            redisContext *redis_conn = guard.get();
+
+            reply = (redisReply *)redisCommand(redis_conn, command.c_str());
+        }
+
+        if (reply->type == REDIS_REPLY_NIL) {
+            logger.log(AsyncLogger::ERROR, "redis SET user cache failed");
+            freeReplyObject(reply);
+            return false;
+        }
+
+        freeReplyObject(reply);
+        return true;
+    }
+
+    bool executeCommand(const string &command, string &result_value) {
+        redisReply *reply = nullptr;
+
+        {
+            RedisConnGuard guard(this);
+            redisContext *redis_conn = guard.get();
+
+            reply = (redisReply *)redisCommand(redis_conn, command.c_str());
+        }
+
+        if (reply->type == REDIS_REPLY_NIL) {
+            logger.log(AsyncLogger::ERROR, "redis GET user cache failed");
+            freeReplyObject(reply);
+            return false;
+        }
+
+        result_value = reply->str;
+        freeReplyObject(reply);
+        return true;
+    }
+
+    ~RedisPool() {
+        {
+            lock_guard<mutex> lock(m_mutex);
+            m_stop = true;
+        }
+        m_cond.notify_all();
+    }
+
+  private:
+    queue<redisContext *> m_ready_queue;
+    mutex m_mutex;
+    condition_variable m_cond;
+    bool m_stop = false;
+};
+
+RedisConnGuard::RedisConnGuard(RedisPool *pool) : m_pool(pool) {
+    {
+        unique_lock<mutex> lock(pool->m_mutex);
+        pool->m_cond.wait(lock, [pool] {
+            return !pool->m_ready_queue.empty() || pool->m_stop;
+        });
+
+        if (pool->m_stop) {
+            redis_conn = nullptr;
+            return;
+        }
+
+        m_redis_conn = pool->m_ready_queue.front();
+        pool->m_ready_queue.pop();
+    }
+}
+
+RedisConnGuard::~RedisConnGuard() {
+    {
+        lock_guard<mutex> lock(m_pool->m_mutex);
+        m_pool->m_ready_queue.emplace(m_redis_conn);
+    }
+    m_pool->m_cond.notify_one();
+}
+
+RedisPool redis_pool(5);
+
+// Mysql连接池
 
 class MysqlPool;
 
@@ -565,18 +685,32 @@ class MysqlPool {
         return true;
     }
 
+    ~MysqlPool() {
+        {
+            lock_guard<mutex> lock(m_mutex);
+            m_stop = true;
+        }
+        m_cond.notify_all();
+    }
+
   private:
     queue<MYSQL *> m_ready_queue;
     mutex m_mutex;
     condition_variable m_cond;
+    bool m_stop = false;
 };
 
 ConnGuard::ConnGuard(MysqlPool *pool) : m_pool(pool) {
     {
         unique_lock<mutex> lock(pool->m_mutex);
         pool->m_cond.wait(lock, [pool] {
-            return !pool->m_ready_queue.empty();
+            return !pool->m_ready_queue.empty() || pool->m_stop;
         });
+
+        if (pool->m_stop) {
+            m_fd = nullptr;
+            return;
+        }
 
         m_fd = pool->m_ready_queue.front();
         pool->m_ready_queue.pop();
@@ -778,10 +912,29 @@ class Task {
                     string salt = generateSalt();
                     string password_hash = to_string(hasher(password + salt));
                     int ret = mysql_pool.executeQuery("INSERT INTO users (username, password_hash, salt) VALUES ('" + username + "', '" + password_hash + "', '" + salt + "')");
+
+                    if (ret) {
+                        string command = "SET user:" + username + " " + password_hash + ":" + salt;
+                        redis_pool.executeCommand(command);
+                    }
+
                     return ret;
                 };
 
                 auto do_login = [](string username, string password) {
+                    string command = "GET user:" + username;
+                    string result_value;
+                    int ret = redis_pool.executeCommand(command, result_value);
+                    if (ret) {
+                        logger.log(AsyncLogger::INFO, "login cache hit in Redis");
+
+                        size_t separator_pos = result_value.find(":");
+                        string password_hash = result_value.substr(0, separator_pos);
+                        string salt = result_value.substr(separator_pos + 1, result_value.size() - separator_pos);
+
+                        return to_string(hasher(password + salt)) == password_hash;
+                    }
+
                     string result_text;
                     mysql_pool.executeQuery("SELECT password_hash, salt FROM users WHERE username = '" + username + "'", result_text);
 
@@ -791,10 +944,12 @@ class Task {
                     }
 
                     string password_hash = result_text.substr(0, result_text.find(" "));
-
                     result_text.erase(result_text.begin(), result_text.begin() + password_hash.size() + 1);
 
                     string salt = result_text;
+
+                    command = "SET user:" + username + " " + password_hash + ":" + salt;
+                    redis_pool.executeCommand(command);
 
                     return to_string(hasher(password + salt)) == password_hash;
                 };
@@ -820,7 +975,7 @@ class Task {
 
                         if (username_value_pos == string::npos || password_value_pos == string::npos) {
                             logger.log(AsyncLogger::WARN, "register request not have username or password");
-                            response = "HTTP / 1.1 400 Unauthorized\r\nContent - Type : text / plain\r\nContent - Length : 26\r\n\r\nmissing username or password";
+                            response = "HTTP/1.1 400 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 28\r\n\r\nmissing username or password";
                         } else {
                             size_t username_start = username_value_pos + username_key.size();
                             size_t username_end = req.body.find("&", username_start);
