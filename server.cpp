@@ -47,6 +47,7 @@ struct Connection {
     bool processing = false;
     bool keepAlive = true;
     ProtocolType protocol;
+    mutex inbuf_mutex;
 };
 unordered_map<int, Connection> conns;
 
@@ -210,6 +211,7 @@ class TimerHeap {
         tick([](int fd) {
             logger.log(AsyncLogger::INFO, "close inactive connection, fd = " + to_string(fd));
             close(fd);
+            conns.erase(fd);
         });
 
         if (m_size == 0) {
@@ -217,13 +219,14 @@ class TimerHeap {
             return -1;
         }
         int timeout = m_timers[0].expire_time - time(nullptr) * 1000;
-        logger.log(AsyncLogger::DEBUG, "timeout = " + to_string(timeout));
+        logger.log(AsyncLogger::DEBUG, "fd = " + to_string(m_timers[0].fd) + " ,timeout = " + to_string(timeout));
         return timeout;
     }
 
     void update(int fd, long long update_time) {
         int index = m_timers_index[fd];
         m_timers[index].expire_time = update_time;
+        logger.log(AsyncLogger::DEBUG, "fd = " + to_string(fd) + " , expire time updata to " + to_string(update_time - time(nullptr) * 1000ll));
         siftDown(index);
     }
 
@@ -259,10 +262,10 @@ class TimerHeap {
             }
 
             swap(m_timers[index], m_timers[smallest]);
-            m_timers_index[m_timers[smallest].fd] = index;
+            m_timers_index[m_timers[index].fd] = index;
+            m_timers_index[m_timers[smallest].fd] = smallest;
             index = smallest;
         }
-        m_timers_index[m_timers[index].fd] = index;
         return index;
     }
 
@@ -271,13 +274,13 @@ class TimerHeap {
             int father = (index - 1) / 2;
             if (m_timers[father].expire_time > m_timers[index].expire_time) {
                 swap(m_timers[father], m_timers[index]);
-                m_timers_index[m_timers[father].fd] = index;
+                m_timers_index[m_timers[index].fd] = index;
+                m_timers_index[m_timers[father].fd] = father;
                 index = father;
             } else {
                 break;
             }
         }
-        m_timers_index[m_timers[index].fd] = index;
         return index;
     }
 
@@ -296,6 +299,8 @@ enum MessageType {
     MSG_LOGIN_RESP,
     MSG_REGISTER_REQ,
     MSG_REGISTER_RESP,
+    MSG_CHAT_MSG,
+    MSG_HEARTBAET_MSG,
     MSG_ERROR
 };
 
@@ -304,6 +309,9 @@ struct ProtobufRequest {
     uint32_t msg_length;
     string username;
     string password;
+
+    string sender_name;
+    string msg;
 
     size_t end_pos = 0;
 };
@@ -321,6 +329,8 @@ MessageType parse_protobuf_from_string(string &raw, ProtobufRequest &req) {
 
     if (raw.size() < 8 + req.msg_length) {
         return MSG_ERROR;
+    } else if (req.msg_length == 0) {
+        return MSG_HEARTBAET_MSG;
     }
 
     req.end_pos = 8 + req.msg_length;
@@ -339,6 +349,12 @@ MessageType parse_protobuf_from_string(string &raw, ProtobufRequest &req) {
 
         req.username = message_request.username();
         req.password = message_request.password();
+    } else if (req.msg_type == MSG_CHAT_MSG) {
+        ChatMessage chat_msg;
+        chat_msg.ParseFromString(packet);
+
+        req.sender_name = chat_msg.sender_name();
+        req.msg = chat_msg.msg();
     }
 
     return req.msg_type;
@@ -694,17 +710,36 @@ bool is_request_complete(int fd) {
         }
     } else if (conns[fd].protocol == PROTO_BINARY) {
         if (conns[fd].inbuf.size() < 8) {
-            logger.log(AsyncLogger::WARN, "protobuf incomplete");
+            logger.log(AsyncLogger::WARN, "fd = " + to_string(fd) + " ,protobuf incomplete");
             return false;
         }
 
+        uint32_t msg_type_debug;
+        memcpy(&msg_type_debug, conns[fd].inbuf.data(), 4);
         uint32_t msg_length;
-        memcpy(&msg_length, conns[fd].inbuf.c_str() + 4, 4);
+        memcpy(&msg_length, conns[fd].inbuf.data() + 4, 4);
+        logger.log(AsyncLogger::DEBUG, "fd = " + to_string(fd) + " ,is_request_complete: type=" + to_string(msg_type_debug) + " length=" + to_string(msg_length) + " inbuf_size=" + to_string(conns[fd].inbuf.size()));
 
-        if (conns[fd].inbuf.size() < 8 + msg_length) {
-            logger.log(AsyncLogger::WARN, "protobuf message incomplete");
-            return false;
+        while (conns[fd].inbuf.size() >= 8) {
+            uint32_t msg_length;
+            memcpy(&msg_length, conns[fd].inbuf.c_str() + 4, 4);
+
+            if (msg_length == 0) {
+                {
+                    lock_guard<mutex> lock(conns[fd].inbuf_mutex);
+                    conns[fd].inbuf.erase(0, 8);
+                }
+                continue;
+            }
+
+            if (conns[fd].inbuf.size() < 8 + msg_length) {
+                logger.log(AsyncLogger::WARN, "fd = " + to_string(fd) + " ,protobuf message incomplete");
+                return false;
+            }
+
+            return true;
         }
+        return false;
     }
 
     return true;
@@ -732,6 +767,7 @@ class Task {
 
         while (is_request_complete(m_fd)) {
             string response;
+            bool should_enqueue_response = true;
 
             if (conns.find(m_fd) != conns.end()) {
                 logger.log(AsyncLogger::INFO, "fd = " + to_string(m_fd) + " send data : " + conns[m_fd].inbuf);
@@ -848,10 +884,11 @@ class Task {
                     enum ResponseKind {
                         REGISTER,
                         LOGIN,
+                        CHAT,
                         ERROR
                     };
 
-                    auto buildResponse = [&response](const string &msg, ResponseKind kind) {
+                    auto buildResponse = [&response](ResponseKind kind, const string &msg, const string &sender_name = "") {
                         string data;
                         MessageType type;
 
@@ -865,6 +902,12 @@ class Task {
                             resp.set_msg(msg);
                             resp.SerializeToString(&data);
                             type = MSG_LOGIN_RESP;
+                        } else if (kind == CHAT) {
+                            ChatMessage chat_msg;
+                            chat_msg.set_sender_name(sender_name);
+                            chat_msg.set_msg(msg);
+                            chat_msg.SerializeToString(&data);
+                            type = MSG_CHAT_MSG;
                         } else {
                             ErrorResponse resp;
                             resp.set_msg(msg);
@@ -883,32 +926,49 @@ class Task {
                     if (ret == MSG_ERROR) {
                         logger.log(AsyncLogger::INFO, "protobuf parse failed, fd = " + to_string(m_fd));
 
-                        buildResponse("parse error", ERROR);
+                        buildResponse(ERROR, "parse error");
                     } else if (ret == MSG_REGISTER_REQ) {
                         int ret = do_register(req.username, req.password);
 
                         if (ret) {
-                            buildResponse("register success", REGISTER);
+                            buildResponse(REGISTER, "register success");
                         } else {
-                            buildResponse("register failed", ERROR);
+                            buildResponse(ERROR, "register failed");
                         }
                     } else if (ret == MSG_LOGIN_REQ) {
                         int ret = do_login(req.username, req.password);
 
                         if (ret) {
-                            buildResponse("login success", LOGIN);
+                            buildResponse(LOGIN, "login success");
                         } else {
-                            buildResponse("login failed", ERROR);
+                            buildResponse(ERROR, "login failed");
                         }
+                    } else if (ret == MSG_CHAT_MSG) {
+                        buildResponse(CHAT, req.msg, req.sender_name);
+
+                        {
+                            lock_guard<mutex> lock(readyMutex);
+
+                            for (auto it = conns.begin(); it != conns.end(); it++) {
+                                if (it->second.protocol == PROTO_BINARY && it->second.fd != m_fd) {
+                                    readyQueue.emplace(it->second.fd, response);
+                                }
+                            }
+                        }
+                        should_enqueue_response = false;
                     }
                 }
 
-                {
+                if (should_enqueue_response) {
                     lock_guard<mutex> lock(readyMutex);
                     readyQueue.emplace(m_fd, response);
                     logger.log(AsyncLogger::DEBUG, "enqueue readyQueue");
                 }
-                conns[m_fd].inbuf.erase(conns[m_fd].inbuf.begin(), conns[m_fd].inbuf.begin() + end_pos);
+
+                {
+                    lock_guard<mutex> lock(conns[m_fd].inbuf_mutex);
+                    conns[m_fd].inbuf.erase(conns[m_fd].inbuf.begin(), conns[m_fd].inbuf.begin() + end_pos);
+                }
             }
         }
 
@@ -965,10 +1025,12 @@ void trySend(Connection &conn) {
         logger.log(AsyncLogger::INFO, "send complete, close fd = " + to_string(conn.fd));
         heap.remove(conn.fd);
         close(conn.fd);
+        conns.erase(conn.fd);
     } else if (!conn.keepAlive) {
         logger.log(AsyncLogger::INFO, "client not keep alive, send complete, close fd = " + to_string(conn.fd));
         heap.remove(conn.fd);
         close(conn.fd);
+        conns.erase(conn.fd);
     } else {
         logger.log(AsyncLogger::INFO, "fd = " + to_string(conn.fd) + ", send complete");
         conn.sendComplete = false;
@@ -1024,6 +1086,7 @@ int main(int argc, char *argv[]) {
             heap.tick([](int fd) {
                 logger.log(AsyncLogger::INFO, "close inactive connection, fd = " + to_string(fd));
                 close(fd);
+                conns.erase(fd);
             });
             continue;
         }
@@ -1048,7 +1111,8 @@ int main(int argc, char *argv[]) {
                     }
 
                     addfd(connfd);
-                    conns[connfd] = {connfd, "", "", false, false, false, true, protocol_type};
+                    conns[connfd].fd = connfd;
+                    conns[connfd].protocol = protocol_type;
                     heap.add(Timer{connfd, (time(nullptr) * 1000ll + 6000)});
                     string client_ip;
                     int client_port = ntohs(client_addr.sin_port);
@@ -1082,12 +1146,15 @@ int main(int argc, char *argv[]) {
                 while (1) {
                     int n = recv(fd, buf, BUFSIZE, 0);
                     if (n > 0) {
-                        conns[fd].inbuf.append(buf, n);
+                        {
+                            lock_guard<mutex> lock(conns[fd].inbuf_mutex);
+                            conns[fd].inbuf.append(buf, n);
+                        }
                     } else if (n == 0) {
                         logger.log(AsyncLogger::INFO, "client closed writing, fd = " + to_string(fd));
                         conns[fd].readClosed = true;
 
-                        if (is_request_complete(fd) && !conns[fd].processing && conns[fd].keepAlive) {
+                        if (!conns[fd].processing && conns[fd].keepAlive && is_request_complete(fd)) {
                             logger.log(AsyncLogger::DEBUG, "enqueue task for fd = " + to_string(fd));
                             conns[fd].processing = true;
                             unique_ptr<Task> ptr_task(new Task(fd));
@@ -1098,6 +1165,7 @@ int main(int argc, char *argv[]) {
                             logger.log(AsyncLogger::INFO, "and send has completed, close fd = " + to_string(fd));
                             heap.remove(fd);
                             close(fd);
+                            conns.erase(fd);
                         }
                         break;
                     } else {
@@ -1113,6 +1181,7 @@ int main(int argc, char *argv[]) {
                             logger.log(AsyncLogger::ERROR, "read failed");
                             heap.remove(fd);
                             close(fd);
+                            conns.erase(fd);
                             break;
                         }
                     }

@@ -18,6 +18,15 @@ message RegisterResponse {
     string msg = 1;
 }
 
+message ChatMessage {
+    string sender_name = 1;
+    string msg = 2;
+}
+
+message HeartbeatMessage {
+    
+}
+
 message ErrorResponse {
     string msg = 1;
 }
