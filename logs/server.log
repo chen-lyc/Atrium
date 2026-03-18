@@ -245501,3 +245501,558 @@ password=123&username=xiaoxiao
 2026-03-18 17:58:39.651 DEBUG tick: now=1773827919000 expire=1773827919000
 2026-03-18 17:58:39.651 INFO close inactive connection, fd = 19
 2026-03-18 17:58:39.651 WARN no timer
+2026-03-18 18:11:58.423 INFO 
+server starting
+2026-03-18 18:11:58.423 INFO server listening on 127.0.0.1:8080
+2026-03-18 18:11:58.423 INFO server listening on 127.0.0.1:9090
+2026-03-18 18:11:58.423 WARN no timer
+2026-03-18 18:12:03.12 DEBUG happened events number = 1
+2026-03-18 18:12:03.12 DEBUG event fd = 18
+2026-03-18 18:12:03.12 INFO new connection, fd = 19 ip = :38814
+2026-03-18 18:12:03.12 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:12:03.12 DEBUG happened events number = 1
+2026-03-18 18:12:03.12 DEBUG event fd = 19
+2026-03-18 18:12:03.12 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:03.12 DEBUG fd = 19 ,is_request_complete: type=4 length=26 inbuf_size=34
+2026-03-18 18:12:03.12 DEBUG enqueue task for fd = 19
+2026-03-18 18:12:03.12 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:12:03.12 DEBUG happened events number = 1
+2026-03-18 18:12:03.12 DEBUG event fd = 19
+2026-03-18 18:12:03.12 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:03.12 DEBUG fd = 19 ,is_request_complete: type=4 length=26 inbuf_size=42
+2026-03-18 18:12:03.12 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:12:03.12 INFO Task processing fd = 19 by thread 136105189959232
+2026-03-18 18:12:03.12 DEBUG fd = 19 ,is_request_complete: type=4 length=26 inbuf_size=42
+2026-03-18 18:12:03.12 INFO fd = 19 send data :       
+xiaoxiaohello client b       
+2026-03-18 18:12:03.12 INFO parsed data: 4 26 usernamne= password=
+2026-03-18 18:12:03.12 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:03.12 DEBUG happened events number = 1
+2026-03-18 18:12:03.12 DEBUG event fd = 16
+2026-03-18 18:12:03.12 DEBUG start processing queue, queue len = 0
+2026-03-18 18:12:03.12 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:12:04.12 DEBUG happened events number = 1
+2026-03-18 18:12:04.12 DEBUG event fd = 19
+2026-03-18 18:12:04.12 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:04.13 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:04.13 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:12:04.78 DEBUG happened events number = 1
+2026-03-18 18:12:04.78 DEBUG event fd = 18
+2026-03-18 18:12:04.78 INFO new connection, fd = 20 ip = :38822
+2026-03-18 18:12:04.78 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:12:04.78 DEBUG happened events number = 1
+2026-03-18 18:12:04.78 DEBUG event fd = 20
+2026-03-18 18:12:04.78 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:04.78 DEBUG fd = 20 ,is_request_complete: type=0 length=15 inbuf_size=23
+2026-03-18 18:12:04.78 DEBUG enqueue task for fd = 20
+2026-03-18 18:12:04.78 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:12:04.78 INFO Task processing fd = 20 by thread 136105173173824
+2026-03-18 18:12:04.78 DEBUG fd = 20 ,is_request_complete: type=0 length=15 inbuf_size=23
+2026-03-18 18:12:04.78 INFO fd = 20 send data :        
+xiaoxiao123
+2026-03-18 18:12:04.78 INFO parsed data: 0 15 usernamne=xiaoxiao password=123
+2026-03-18 18:12:04.78 INFO login cache hit in Redis
+2026-03-18 18:12:04.78 DEBUG enqueue readyQueue
+2026-03-18 18:12:04.78 WARN fd = 20 ,protobuf incomplete
+2026-03-18 18:12:04.78 DEBUG happened events number = 1
+2026-03-18 18:12:04.78 DEBUG event fd = 16
+2026-03-18 18:12:04.78 DEBUG start processing queue, queue len = 1
+2026-03-18 18:12:04.78 INFO fd = 20, send complete
+2026-03-18 18:12:04.78 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:12:04.79 DEBUG happened events number = 1
+2026-03-18 18:12:04.79 DEBUG event fd = 20
+2026-03-18 18:12:04.79 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:04.79 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:04.79 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:12:05.13 DEBUG happened events number = 1
+2026-03-18 18:12:05.13 DEBUG event fd = 19
+2026-03-18 18:12:05.13 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:05.13 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:05.13 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:05.79 DEBUG happened events number = 1
+2026-03-18 18:12:05.79 DEBUG event fd = 20
+2026-03-18 18:12:05.79 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:05.79 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:05.79 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:06.13 DEBUG happened events number = 1
+2026-03-18 18:12:06.13 DEBUG event fd = 19
+2026-03-18 18:12:06.13 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:06.14 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:06.14 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:06.80 DEBUG happened events number = 1
+2026-03-18 18:12:06.80 DEBUG event fd = 20
+2026-03-18 18:12:06.80 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:06.80 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:06.80 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:07.14 DEBUG happened events number = 1
+2026-03-18 18:12:07.14 DEBUG event fd = 19
+2026-03-18 18:12:07.14 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:07.14 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:07.14 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:07.80 DEBUG happened events number = 1
+2026-03-18 18:12:07.80 DEBUG event fd = 20
+2026-03-18 18:12:07.80 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:07.80 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:07.80 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:08.14 DEBUG happened events number = 1
+2026-03-18 18:12:08.15 DEBUG event fd = 19
+2026-03-18 18:12:08.15 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:08.15 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:08.15 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:08.80 DEBUG happened events number = 1
+2026-03-18 18:12:08.81 DEBUG event fd = 20
+2026-03-18 18:12:08.81 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:08.81 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:08.81 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:09.14 DEBUG happened events number = 1
+2026-03-18 18:12:09.14 DEBUG event fd = 19
+2026-03-18 18:12:09.14 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:09.14 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:09.15 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:09.81 DEBUG happened events number = 1
+2026-03-18 18:12:09.81 DEBUG event fd = 20
+2026-03-18 18:12:09.81 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:09.81 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:09.81 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:10.15 DEBUG happened events number = 1
+2026-03-18 18:12:10.15 DEBUG event fd = 19
+2026-03-18 18:12:10.15 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:10.15 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:10.15 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:10.81 DEBUG happened events number = 1
+2026-03-18 18:12:10.81 DEBUG event fd = 20
+2026-03-18 18:12:10.81 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:10.81 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:10.81 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:11.16 DEBUG happened events number = 1
+2026-03-18 18:12:11.16 DEBUG event fd = 19
+2026-03-18 18:12:11.16 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:11.16 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:11.16 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:11.81 DEBUG happened events number = 1
+2026-03-18 18:12:11.81 DEBUG event fd = 20
+2026-03-18 18:12:11.81 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:11.81 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:11.81 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:12.16 DEBUG happened events number = 1
+2026-03-18 18:12:12.16 DEBUG event fd = 19
+2026-03-18 18:12:12.16 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:12.16 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:12.16 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:12.82 DEBUG happened events number = 1
+2026-03-18 18:12:12.82 DEBUG event fd = 20
+2026-03-18 18:12:12.82 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:12.82 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:12.82 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:13.17 DEBUG happened events number = 1
+2026-03-18 18:12:13.17 DEBUG event fd = 19
+2026-03-18 18:12:13.17 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:13.17 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:13.17 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:13.82 DEBUG happened events number = 1
+2026-03-18 18:12:13.82 DEBUG event fd = 20
+2026-03-18 18:12:13.82 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:13.82 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:13.82 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:14.17 DEBUG happened events number = 1
+2026-03-18 18:12:14.17 DEBUG event fd = 19
+2026-03-18 18:12:14.17 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:14.17 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:14.17 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:14.82 DEBUG happened events number = 1
+2026-03-18 18:12:14.82 DEBUG event fd = 20
+2026-03-18 18:12:14.82 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:14.82 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:14.82 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:15.17 DEBUG happened events number = 1
+2026-03-18 18:12:15.17 DEBUG event fd = 19
+2026-03-18 18:12:15.18 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:15.18 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:15.18 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:15.82 DEBUG happened events number = 1
+2026-03-18 18:12:15.83 DEBUG event fd = 20
+2026-03-18 18:12:15.83 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:15.83 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:15.83 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:16.18 DEBUG happened events number = 1
+2026-03-18 18:12:16.18 DEBUG event fd = 19
+2026-03-18 18:12:16.18 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:16.19 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:16.19 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:16.83 DEBUG happened events number = 1
+2026-03-18 18:12:16.83 DEBUG event fd = 20
+2026-03-18 18:12:16.83 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:16.84 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:16.84 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:17.19 DEBUG happened events number = 1
+2026-03-18 18:12:17.19 DEBUG event fd = 19
+2026-03-18 18:12:17.19 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:17.20 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:17.20 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:17.84 DEBUG happened events number = 1
+2026-03-18 18:12:17.84 DEBUG event fd = 20
+2026-03-18 18:12:17.84 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:17.84 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:17.84 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:18.19 DEBUG happened events number = 1
+2026-03-18 18:12:18.19 DEBUG event fd = 19
+2026-03-18 18:12:18.19 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:18.19 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:18.19 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:18.84 DEBUG happened events number = 1
+2026-03-18 18:12:18.84 DEBUG event fd = 20
+2026-03-18 18:12:18.84 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:18.85 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:18.85 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:19.20 DEBUG happened events number = 1
+2026-03-18 18:12:19.20 DEBUG event fd = 19
+2026-03-18 18:12:19.20 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:19.20 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:19.20 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:19.85 DEBUG happened events number = 1
+2026-03-18 18:12:19.85 DEBUG event fd = 20
+2026-03-18 18:12:19.85 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:19.85 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:19.85 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:20.20 DEBUG happened events number = 1
+2026-03-18 18:12:20.20 DEBUG event fd = 19
+2026-03-18 18:12:20.20 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:20.20 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:20.20 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:20.86 DEBUG happened events number = 1
+2026-03-18 18:12:20.86 DEBUG event fd = 20
+2026-03-18 18:12:20.86 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:20.86 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:20.86 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:21.21 DEBUG happened events number = 1
+2026-03-18 18:12:21.21 DEBUG event fd = 19
+2026-03-18 18:12:21.21 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:21.21 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:21.21 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:21.86 DEBUG happened events number = 1
+2026-03-18 18:12:21.86 DEBUG event fd = 20
+2026-03-18 18:12:21.86 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:21.86 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:21.86 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:22.21 DEBUG happened events number = 1
+2026-03-18 18:12:22.21 DEBUG event fd = 19
+2026-03-18 18:12:22.21 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:22.21 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:22.21 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:22.87 DEBUG happened events number = 1
+2026-03-18 18:12:22.87 DEBUG event fd = 20
+2026-03-18 18:12:22.87 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:22.87 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:22.87 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:23.22 DEBUG happened events number = 1
+2026-03-18 18:12:23.22 DEBUG event fd = 19
+2026-03-18 18:12:23.22 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:23.22 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:23.22 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:23.87 DEBUG happened events number = 1
+2026-03-18 18:12:23.87 DEBUG event fd = 20
+2026-03-18 18:12:23.87 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:23.87 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:23.87 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:24.22 DEBUG happened events number = 1
+2026-03-18 18:12:24.22 DEBUG event fd = 19
+2026-03-18 18:12:24.22 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:24.22 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:24.22 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:24.87 DEBUG happened events number = 1
+2026-03-18 18:12:24.87 DEBUG event fd = 20
+2026-03-18 18:12:24.88 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:24.88 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:24.88 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:25.23 DEBUG happened events number = 1
+2026-03-18 18:12:25.23 DEBUG event fd = 19
+2026-03-18 18:12:25.23 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:25.23 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:25.23 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:12:25.88 DEBUG happened events number = 1
+2026-03-18 18:12:25.88 DEBUG event fd = 20
+2026-03-18 18:12:25.88 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:25.88 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:25.88 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:25.334 DEBUG happened events number = 1
+2026-03-18 18:12:25.334 DEBUG event fd = 19
+2026-03-18 18:12:25.334 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:12:25.334 INFO client closed writing, fd = 19
+2026-03-18 18:12:25.334 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:12:26.89 DEBUG happened events number = 1
+2026-03-18 18:12:26.89 DEBUG event fd = 20
+2026-03-18 18:12:26.89 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:26.89 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:26.89 DEBUG fd = 19 ,timeout = 5000
+2026-03-18 18:12:26.225 DEBUG happened events number = 1
+2026-03-18 18:12:26.226 DEBUG event fd = 18
+2026-03-18 18:12:26.226 INFO new connection, fd = 21 ip = :46606
+2026-03-18 18:12:26.226 DEBUG fd = 19 ,timeout = 5000
+2026-03-18 18:12:26.226 DEBUG happened events number = 1
+2026-03-18 18:12:26.226 DEBUG event fd = 21
+2026-03-18 18:12:26.226 DEBUG fd = 21 , expire time updata to 6000
+2026-03-18 18:12:26.226 DEBUG fd = 21 ,is_request_complete: type=4 length=26 inbuf_size=42
+2026-03-18 18:12:26.226 DEBUG enqueue task for fd = 21
+2026-03-18 18:12:26.226 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:12:26.226 INFO Task processing fd = 21 by thread 136105181566528
+2026-03-18 18:12:26.226 DEBUG fd = 21 ,is_request_complete: type=4 length=26 inbuf_size=42
+2026-03-18 18:12:26.226 INFO fd = 21 send data :       
+xiaoxiaohello client b       
+2026-03-18 18:12:26.226 INFO parsed data: 4 26 usernamne= password=
+2026-03-18 18:12:26.226 DEBUG fd = 21 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:26.226 DEBUG happened events number = 1
+2026-03-18 18:12:26.226 DEBUG event fd = 16
+2026-03-18 18:12:26.226 DEBUG start processing queue, queue len = 2
+2026-03-18 18:12:26.226 INFO fd = 20, send complete
+2026-03-18 18:12:26.226 INFO send complete, close fd = 19
+2026-03-18 18:12:26.226 DEBUG fd = 21 ,timeout = 6000
+2026-03-18 18:12:27.89 DEBUG happened events number = 1
+2026-03-18 18:12:27.89 DEBUG event fd = 20
+2026-03-18 18:12:27.89 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:27.89 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:27.89 DEBUG fd = 21 ,timeout = 5000
+2026-03-18 18:12:27.226 DEBUG happened events number = 1
+2026-03-18 18:12:27.226 DEBUG event fd = 21
+2026-03-18 18:12:27.226 DEBUG fd = 21 , expire time updata to 6000
+2026-03-18 18:12:27.226 DEBUG fd = 21 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:27.226 DEBUG fd = 21 ,timeout = 6000
+2026-03-18 18:12:28.89 DEBUG happened events number = 1
+2026-03-18 18:12:28.89 DEBUG event fd = 20
+2026-03-18 18:12:28.90 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:28.90 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:28.90 DEBUG fd = 21 ,timeout = 5000
+2026-03-18 18:12:28.226 DEBUG happened events number = 1
+2026-03-18 18:12:28.226 DEBUG event fd = 21
+2026-03-18 18:12:28.226 DEBUG fd = 21 , expire time updata to 6000
+2026-03-18 18:12:28.226 DEBUG fd = 21 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:28.226 DEBUG fd = 21 ,timeout = 6000
+2026-03-18 18:12:29.90 DEBUG happened events number = 1
+2026-03-18 18:12:29.90 DEBUG event fd = 20
+2026-03-18 18:12:29.90 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:12:29.90 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:29.90 DEBUG fd = 21 ,timeout = 5000
+2026-03-18 18:12:29.226 DEBUG happened events number = 1
+2026-03-18 18:12:29.226 DEBUG event fd = 21
+2026-03-18 18:12:29.226 DEBUG fd = 21 , expire time updata to 6000
+2026-03-18 18:12:29.226 DEBUG fd = 21 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:12:29.226 DEBUG fd = 21 ,timeout = 6000
+2026-03-18 18:18:14.274 INFO 
+server starting
+2026-03-18 18:18:14.274 INFO server listening on 127.0.0.1:8080
+2026-03-18 18:18:14.274 INFO server listening on 127.0.0.1:9090
+2026-03-18 18:18:14.274 WARN no timer
+2026-03-18 18:18:20.285 DEBUG happened events number = 1
+2026-03-18 18:18:20.285 DEBUG event fd = 18
+2026-03-18 18:18:20.285 INFO new connection, fd = 19 ip = :54390
+2026-03-18 18:18:20.285 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:20.285 DEBUG happened events number = 1
+2026-03-18 18:18:20.285 DEBUG event fd = 19
+2026-03-18 18:18:20.286 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:20.286 DEBUG fd = 19 ,is_request_complete: type=4 length=26 inbuf_size=42
+2026-03-18 18:18:20.286 DEBUG enqueue task for fd = 19
+2026-03-18 18:18:20.286 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:20.286 INFO Task processing fd = 19 by thread 138640107759168
+2026-03-18 18:18:20.286 DEBUG fd = 19 ,is_request_complete: type=4 length=26 inbuf_size=42
+2026-03-18 18:18:20.286 INFO fd = 19 send data :       
+xiaoxiaohello client b       
+2026-03-18 18:18:20.286 INFO parsed data: 4 26 usernamne= password=
+2026-03-18 18:18:20.286 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:20.286 DEBUG happened events number = 1
+2026-03-18 18:18:20.286 DEBUG event fd = 16
+2026-03-18 18:18:20.286 DEBUG start processing queue, queue len = 0
+2026-03-18 18:18:20.286 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:21.286 DEBUG happened events number = 1
+2026-03-18 18:18:21.286 DEBUG event fd = 19
+2026-03-18 18:18:21.286 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:21.286 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:21.286 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:22.286 DEBUG happened events number = 1
+2026-03-18 18:18:22.287 DEBUG event fd = 19
+2026-03-18 18:18:22.287 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:22.287 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:22.287 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:23.287 DEBUG happened events number = 1
+2026-03-18 18:18:23.287 DEBUG event fd = 19
+2026-03-18 18:18:23.288 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:23.288 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:23.288 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:24.287 DEBUG happened events number = 1
+2026-03-18 18:18:24.288 DEBUG event fd = 19
+2026-03-18 18:18:24.288 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:24.288 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:24.288 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:25.288 DEBUG happened events number = 1
+2026-03-18 18:18:25.288 DEBUG event fd = 19
+2026-03-18 18:18:25.288 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:25.288 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:25.288 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:26.288 DEBUG happened events number = 1
+2026-03-18 18:18:26.288 DEBUG event fd = 19
+2026-03-18 18:18:26.288 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:26.288 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:26.288 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:27.288 DEBUG happened events number = 1
+2026-03-18 18:18:27.288 DEBUG event fd = 19
+2026-03-18 18:18:27.288 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:27.288 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:27.288 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:28.288 DEBUG happened events number = 1
+2026-03-18 18:18:28.288 DEBUG event fd = 19
+2026-03-18 18:18:28.288 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:28.288 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:28.288 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:29.289 DEBUG happened events number = 1
+2026-03-18 18:18:29.289 DEBUG event fd = 19
+2026-03-18 18:18:29.289 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:29.289 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:29.289 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:30.289 DEBUG happened events number = 1
+2026-03-18 18:18:30.289 DEBUG event fd = 19
+2026-03-18 18:18:30.289 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:30.289 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:30.289 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:31.290 DEBUG happened events number = 1
+2026-03-18 18:18:31.290 DEBUG event fd = 19
+2026-03-18 18:18:31.290 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:31.290 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:31.290 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:32.290 DEBUG happened events number = 1
+2026-03-18 18:18:32.290 DEBUG event fd = 19
+2026-03-18 18:18:32.290 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:32.290 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:32.290 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:33.290 DEBUG happened events number = 1
+2026-03-18 18:18:33.290 DEBUG event fd = 19
+2026-03-18 18:18:33.290 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:33.290 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:33.290 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:34.290 DEBUG happened events number = 1
+2026-03-18 18:18:34.290 DEBUG event fd = 19
+2026-03-18 18:18:34.290 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:34.290 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:34.291 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:35.291 DEBUG happened events number = 1
+2026-03-18 18:18:35.291 DEBUG event fd = 19
+2026-03-18 18:18:35.291 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:35.291 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:35.291 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:35.878 DEBUG happened events number = 1
+2026-03-18 18:18:35.878 DEBUG event fd = 18
+2026-03-18 18:18:35.878 INFO new connection, fd = 20 ip = :60592
+2026-03-18 18:18:35.878 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:35.878 DEBUG happened events number = 1
+2026-03-18 18:18:35.878 DEBUG event fd = 20
+2026-03-18 18:18:35.878 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:18:35.878 DEBUG fd = 20 ,is_request_complete: type=0 length=15 inbuf_size=23
+2026-03-18 18:18:35.878 DEBUG enqueue task for fd = 20
+2026-03-18 18:18:35.878 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:35.878 INFO Task processing fd = 20 by thread 138640090973760
+2026-03-18 18:18:35.878 DEBUG fd = 20 ,is_request_complete: type=0 length=15 inbuf_size=23
+2026-03-18 18:18:35.878 INFO fd = 20 send data :        
+xiaoxiao123
+2026-03-18 18:18:35.878 INFO parsed data: 0 15 usernamne=xiaoxiao password=123
+2026-03-18 18:18:35.878 INFO login cache hit in Redis
+2026-03-18 18:18:35.878 DEBUG enqueue readyQueue
+2026-03-18 18:18:35.878 WARN fd = 20 ,protobuf incomplete
+2026-03-18 18:18:35.879 DEBUG happened events number = 1
+2026-03-18 18:18:35.879 DEBUG event fd = 16
+2026-03-18 18:18:35.879 DEBUG start processing queue, queue len = 1
+2026-03-18 18:18:35.879 INFO fd = 20, send complete
+2026-03-18 18:18:35.879 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:35.879 DEBUG happened events number = 1
+2026-03-18 18:18:35.879 DEBUG event fd = 20
+2026-03-18 18:18:35.879 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:18:35.879 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:35.879 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:36.291 DEBUG happened events number = 1
+2026-03-18 18:18:36.291 DEBUG event fd = 19
+2026-03-18 18:18:36.291 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:36.291 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:36.291 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:18:36.879 DEBUG happened events number = 1
+2026-03-18 18:18:36.879 DEBUG event fd = 20
+2026-03-18 18:18:36.879 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:18:36.879 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:36.879 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:18:37.291 DEBUG happened events number = 1
+2026-03-18 18:18:37.291 DEBUG event fd = 19
+2026-03-18 18:18:37.291 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:37.291 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:37.291 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:18:37.880 DEBUG happened events number = 1
+2026-03-18 18:18:37.880 DEBUG event fd = 20
+2026-03-18 18:18:37.880 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:18:37.880 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:37.880 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:18:38.292 DEBUG happened events number = 1
+2026-03-18 18:18:38.292 DEBUG event fd = 19
+2026-03-18 18:18:38.292 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:38.292 DEBUG fd = 19 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:38.292 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:18:38.841 DEBUG happened events number = 1
+2026-03-18 18:18:38.841 DEBUG event fd = 19
+2026-03-18 18:18:38.841 DEBUG fd = 19 , expire time updata to 6000
+2026-03-18 18:18:38.841 INFO client closed writing, fd = 19
+2026-03-18 18:18:38.841 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:18:38.880 DEBUG happened events number = 1
+2026-03-18 18:18:38.880 DEBUG event fd = 20
+2026-03-18 18:18:38.880 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:18:38.880 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:38.880 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:18:39.553 DEBUG happened events number = 1
+2026-03-18 18:18:39.553 DEBUG event fd = 18
+2026-03-18 18:18:39.553 INFO new connection, fd = 21 ip = :60608
+2026-03-18 18:18:39.553 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:18:39.553 DEBUG happened events number = 1
+2026-03-18 18:18:39.553 DEBUG event fd = 21
+2026-03-18 18:18:39.553 DEBUG fd = 21 , expire time updata to 6000
+2026-03-18 18:18:39.553 DEBUG fd = 21 ,is_request_complete: type=4 length=26 inbuf_size=34
+2026-03-18 18:18:39.553 DEBUG enqueue task for fd = 21
+2026-03-18 18:18:39.553 DEBUG fd = 19 ,timeout = 5000
+2026-03-18 18:18:39.553 DEBUG happened events number = 1
+2026-03-18 18:18:39.553 DEBUG event fd = 21
+2026-03-18 18:18:39.553 DEBUG fd = 21 , expire time updata to 6000
+2026-03-18 18:18:39.553 DEBUG fd = 21 ,is_request_complete: type=4 length=26 inbuf_size=42
+2026-03-18 18:18:39.553 DEBUG fd = 19 ,timeout = 6000
+2026-03-18 18:18:39.553 INFO Task processing fd = 21 by thread 138640082581056
+2026-03-18 18:18:39.553 DEBUG fd = 21 ,is_request_complete: type=4 length=26 inbuf_size=42
+2026-03-18 18:18:39.553 INFO fd = 21 send data :       
+xiaoxiaohello client b       
+2026-03-18 18:18:39.553 INFO parsed data: 4 26 usernamne= password=
+2026-03-18 18:18:39.553 DEBUG fd = 21 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:39.553 DEBUG happened events number = 1
+2026-03-18 18:18:39.553 DEBUG event fd = 16
+2026-03-18 18:18:39.553 DEBUG start processing queue, queue len = 2
+2026-03-18 18:18:39.553 INFO fd = 20, send complete
+2026-03-18 18:18:39.553 INFO send complete, close fd = 19
+2026-03-18 18:18:39.553 DEBUG fd = 21 ,timeout = 6000
+2026-03-18 18:18:39.880 DEBUG happened events number = 1
+2026-03-18 18:18:39.880 DEBUG event fd = 20
+2026-03-18 18:18:39.880 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:18:39.880 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:39.880 DEBUG fd = 21 ,timeout = 6000
+2026-03-18 18:18:40.553 DEBUG happened events number = 1
+2026-03-18 18:18:40.553 DEBUG event fd = 21
+2026-03-18 18:18:40.553 DEBUG fd = 21 , expire time updata to 6000
+2026-03-18 18:18:40.553 DEBUG fd = 21 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:40.553 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:18:40.880 DEBUG happened events number = 1
+2026-03-18 18:18:40.880 DEBUG event fd = 20
+2026-03-18 18:18:40.881 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:18:40.881 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:40.881 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:18:41.553 DEBUG happened events number = 1
+2026-03-18 18:18:41.553 DEBUG event fd = 21
+2026-03-18 18:18:41.553 DEBUG fd = 21 , expire time updata to 6000
+2026-03-18 18:18:41.554 DEBUG fd = 21 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:41.554 DEBUG fd = 20 ,timeout = 5000
+2026-03-18 18:18:41.880 DEBUG happened events number = 1
+2026-03-18 18:18:41.880 DEBUG event fd = 20
+2026-03-18 18:18:41.880 DEBUG fd = 20 , expire time updata to 6000
+2026-03-18 18:18:41.880 DEBUG fd = 20 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:41.880 DEBUG fd = 20 ,timeout = 6000
+2026-03-18 18:18:42.554 DEBUG happened events number = 1
+2026-03-18 18:18:42.554 DEBUG event fd = 21
+2026-03-18 18:18:42.554 DEBUG fd = 21 , expire time updata to 6000
+2026-03-18 18:18:42.554 DEBUG fd = 21 ,is_request_complete: type=5 length=0 inbuf_size=8
+2026-03-18 18:18:42.554 DEBUG fd = 20 ,timeout = 5000
