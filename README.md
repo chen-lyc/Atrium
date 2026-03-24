@@ -42,6 +42,20 @@ C++ Linux 高性能服务器，支持 HTTP 协议和自定义二进制协议（p
           └─────────────────────────────────────┘
 ```
 
+## 目录结构
+```
+WebServer/
+├── src/          # 源文件（.cpp/.cc）
+├── include/      # 头文件（.h/.tpp）
+├── build/        # 编译输出
+├── demos/        # protobuf客户端demo
+├── static/       # 静态文件
+├── logs/         # 运行日志
+├── Makefile
+├── message.proto
+└── README.md
+```
+
 ## 设计说明
 epoll ET 模式：减少了 epoll_wait 对同一个 fd 的重复返回，降低事件处理的冗余。
 
@@ -68,11 +82,15 @@ Redis 连接池 + ConnGuard：登录时先查 Redis 缓存，未命中再查 MyS
 ## 压测数据
 | 测试场景 | QPS | 平均响应时间 | 失败数 |
 |---------|-----|------------|-------|
-| GET /index.html (ab -n 1000 -c 200) | 14250 | 14ms | 0 |
-| POST /login 无连接池 (ab -n 1000 -c 200) | 259 | 771ms | 0 |
-| POST /login MySQL连接池 + 大锁 (ab -n 1000 -c 200) | 4018 | 49.8ms | 0 |
-| POST /login MySQL连接池 + 锁优化 (ab -n 1000 -c 200) | 14932 | 13.4ms | 0 |
-| POST /login + Redis缓存 (ab -n 1000 -c 200) | 13099 | 15.3ms | 0 |
+| **v1.2版本对比测试** | | | |
+| POST /login 无连接池 | 259 | 771ms | 0 |
+| POST /login MySQL连接池 + 大锁 | 4018 | 49.8ms | 0 |
+| POST /login MySQL连接池 + 锁优化 | 14932 | 13.4ms | 0 |
+| **v1.3版本（代码重构 + 防御性加强）** | | | |
+| GET /index.html 无Redis | 9148 | 11ms | 0 |
+| GET /index.html + Redis缓存 | 10921 | 9ms | 0 |
+| POST /login 无Redis | 7257 | 14ms | 0 |
+| POST /login + Redis缓存 | 10049 | 10ms | 0 |
 
 ## 数据库初始化
 ```bash
@@ -93,15 +111,18 @@ CREATE TABLE users (
 ## 编译与运行
 ```bash
 # 编译服务器
-g++ server.cpp message.pb.cc -o server.out -lmysqlclient -lprotobuf -lhiredis
+make
+
+# 清理重新编译
+make clean && make
 
 # 启动服务器（HTTP端口 8080，二进制协议端口 9090）
-./server.out 127.0.0.1 8080 9090
+./build/server.out 127.0.0.1 8080 9090
 
 # 编译 protobuf 客户端
 protoc --cpp_out=. message.proto
-g++ ./demos/protobuf_client_a.cpp message.pb.cc -o protobuf_client_a.out -lprotobuf
-g++ ./demos/protobuf_client_b.cpp message.pb.cc -o protobuf_client_b.out -lprotobuf
+g++ ./demos/protobuf_client_a.cpp src/message.pb.cc -o demos/protobuf_client_a.out -lprotobuf
+g++ ./demos/protobuf_client_b.cpp src/message.pb.cc -o demos/protobuf_client_b.out -lprotobuf
 ```
 
 ## 测试

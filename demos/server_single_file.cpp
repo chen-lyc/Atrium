@@ -60,10 +60,6 @@ struct TaskResult {
 };
 queue<TaskResult> readyQueue;
 mutex readyMutex;
-mutex logMutex;
-
-redisContext *redis_conn = redisConnect("127.0.0.1", 6379);
-mutex redis_mutex;
 
 // 日志
 
@@ -569,7 +565,7 @@ RedisConnGuard::RedisConnGuard(RedisPool *pool) : m_pool(pool) {
         });
 
         if (pool->m_stop) {
-            redis_conn = nullptr;
+            m_redis_conn = nullptr;
             return;
         }
 
@@ -628,7 +624,7 @@ class MysqlPool {
         }
     }
 
-    unsigned int executeQuery(const string &sql, string &result_text) {
+    int executeQuery(const string &sql, string &result_text) {
         MYSQL *fd;
         int num_fields;
 
