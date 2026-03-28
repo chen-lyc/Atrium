@@ -13,6 +13,8 @@ enum ProtocolType {
 
 struct Connection {
     int fd;
+    int file_fd;
+    size_t file_size;
     std::string inbuf;
     std::string outbuf;
     bool readClosed = false;
@@ -26,10 +28,13 @@ extern std::unordered_map<int, std::unique_ptr<Connection>> conns;
 
 struct TaskResult {
     int fd;
+    int file_fd = 0;
+    size_t file_size;
     std::string response;
-    bool shoule_broadcast = false;
+    bool should_broadcast = false;
 
-    TaskResult(int f, const std::string &r, bool b) : fd(f), response(r), shoule_broadcast(b) {}
+    TaskResult(int f, std::string r, bool b = false) : fd(f), response(std::move(r)), should_broadcast(b) {}
+    TaskResult(int f, int ff, size_t fz, std::string r) : fd(f), file_fd(ff), file_size(fz), response(std::move(r)) {}
 };
 extern std::queue<TaskResult> ready_queue;
 extern std::mutex ready_mutex;

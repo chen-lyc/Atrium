@@ -10,14 +10,14 @@ class MysqlPool;
 
 class ConnGuard {
   public:
-    ConnGuard(MysqlPool *pool);
+    ConnGuard(MysqlPool &pool);
     ~ConnGuard();
-    MYSQL *get() {
+    MYSQL *get() const {
         return m_mysql_conn;
     }
 
   private:
-    MysqlPool *m_pool;
+    MysqlPool &m_pool;
     MYSQL *m_mysql_conn;
 };
 
@@ -30,6 +30,7 @@ class MysqlPool {
     int executeQuery(const std::string &sql, std::string &result_text);
     bool executeQuery(const std::string &sql);
 
+  private:
   private:
     std::queue<MYSQL *> m_ready_queue;
     std::mutex m_mutex;

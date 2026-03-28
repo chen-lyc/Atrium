@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <unistd.h>
 using namespace std;
@@ -39,31 +40,52 @@ void trySend(Connection &conn) {
     if (conn.outbuf.empty()) {
         return;
     }
-    while (!conn.outbuf.empty()) {
-        int n = send(conn.fd, conn.outbuf.c_str(), conn.outbuf.size(), 0);
+
+    ssize_t sent = 0;
+    while (sent < conn.outbuf.size()) {
+        ssize_t n = send(conn.fd, conn.outbuf.data() + sent, conn.outbuf.size() - sent, 0);
         if (n > 0) {
-            conn.outbuf.erase(0, n);
+            sent += n;
         } else if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            logger.log(AsyncLogger::DEBUG, "write would block, enable EPOLLOUT and send later");
+            LOG_DEBUG("write would block, enable EPOLLOUT and send later");
             modfd(conn.fd, EPOLLET | EPOLLIN | EPOLLOUT);
+            conn.outbuf.erase(0, sent);
             return;
         } else {
-            logger.log(AsyncLogger::ERROR, "write failed");
+            LOG_ERROR("write failed");
+            conn.outbuf.erase(0, sent);
             return;
         }
     }
+    conn.outbuf.erase(0, sent);
+
+    // if (conn.file_fd) {
+    //     off_t offset = 0;
+    //     sendfile(conn.fd, conn.file_fd, &offset, conn.file_size);
+    //     conn.file_fd = 0;
+    //     conn.file_size = 0;
+    //     close(conn.file_fd);
+    // }
+
     if (conn.readClosed) {
-        logger.log(AsyncLogger::INFO, "send complete, close fd = " + to_string(conn.fd));
+        LOG_INFO("send complete, close fd = " + to_string(conn.fd));
         timer_heap.remove(conn.fd);
         close(conn.fd);
         conns.erase(conn.fd);
         return;
     } else if (!conn.keepAlive) {
-        logger.log(AsyncLogger::INFO, "client not keep alive, send complete, close fd = " + to_string(conn.fd));
+        LOG_INFO("client not keep alive, send complete, close fd = " + to_string(conn.fd));
         closeNow(conn.fd);
         return;
     } else {
-        logger.log(AsyncLogger::INFO, "fd = " + to_string(conn.fd) + ", send complete");
+        {
+            string msg;
+            msg.reserve(32);
+            msg += "fd = ";
+            msg += to_string(conn.fd);
+            msg += ", send complete";
+            LOG_INFO(msg);
+        }
 
         if (conn.pendingClose) {
             closeNow(conn.fd);
@@ -74,9 +96,9 @@ void trySend(Connection &conn) {
 
 void tryEnqueueTask(Connection &conn) {
     if (isRequestComplete(conn.fd) && !conn.processing && conn.keepAlive) {
-        logger.log(AsyncLogger::DEBUG, "enqueue task for fd = " + to_string(conn.fd));
+        LOG_DEBUG("enqueue task for fd = " + to_string(conn.fd));
         conn.processing = true;
-        unique_ptr<Task> ptr_task(new Task(conn));
+        unique_ptr<Task> ptr_task = make_unique<Task>(conn);
         pool.enqueue(move(ptr_task));
     }
 }
@@ -88,7 +110,7 @@ void closeNow(int fd) {
 }
 
 void closeOrDefer(int fd) {
-    if (conns.find(fd) == conns.end()) return;
+    if (!conns.contains(fd)) return;
 
     if (conns[fd]->processing) {
         conns[fd]->pendingClose = true;

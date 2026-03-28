@@ -2,7 +2,7 @@
 using namespace std;
 
 template <typename T>
-ThreadPool<T>::ThreadPool(int threadnum, int max_requests) : m_max_requests(max_requests), m_stop(false) {
+ThreadPool<T>::ThreadPool(size_t threadnum, size_t max_requests) : m_max_requests(max_requests) {
     for (int i = 0; i < threadnum; i++) {
         threads.emplace_back([this] { worker(); });
     }
@@ -36,7 +36,7 @@ bool ThreadPool<T>::enqueue(unique_ptr<T> request) {
 
 template <typename T>
 void ThreadPool<T>::worker() {
-    while (1) {
+    while (true) {
         unique_ptr<T> request;
         {
             unique_lock<mutex> lock(m_mutex);

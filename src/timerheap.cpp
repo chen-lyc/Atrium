@@ -10,7 +10,7 @@ static long long getMilliseconds() {
         .count();
 }
 
-TimerHeap::TimerHeap(vector<Timer> &timers) : m_timers(timers) {
+TimerHeap::TimerHeap(const vector<Timer> &timers) : m_timers(timers) {
     for (int i = 0; i < timers.size(); i++) {
         m_timers_index[timers[i].fd] = i;
     }
@@ -29,7 +29,7 @@ void TimerHeap::add(int fd, long long timeout) {
 
 void TimerHeap::tick() {
     while (!m_timers.empty() && getMilliseconds() >= m_timers[0].expire_time) {
-        logger.log(AsyncLogger::DEBUG, "tick: fd = " + to_string(m_timers[0].fd) + ", tick: now=" + to_string(getMilliseconds()) + " expire=" + to_string(m_timers[0].expire_time) + ", expired");
+        LOG_DEBUG("tick: fd = " + to_string(m_timers[0].fd) + ", tick: now=" + to_string(getMilliseconds()) + " expire=" + to_string(m_timers[0].expire_time) + ", expired");
 
         m_expired.push_back(m_timers[0].fd);
         swap(m_timers[0], m_timers[m_timers.size() - 1]);
@@ -48,27 +48,27 @@ int TimerHeap::getNextTimeout() {
     while (!m_timers.empty()) {
         int timeout = m_timers[0].expire_time - getMilliseconds();
         if (timeout > 0) {
-            logger.log(AsyncLogger::DEBUG, "fd = " + to_string(m_timers[0].fd) + " ,timeout = " + to_string(timeout));
+            LOG_DEBUG("fd = " + to_string(m_timers[0].fd) + " ,timeout = " + to_string(timeout));
             return timeout;
         }
 
         tick();
     }
 
-    logger.log(AsyncLogger::WARN, "no timer");
+    LOG_WARN("no timer");
     return -1;
 }
 
 void TimerHeap::update(int fd, long long timeout) {
-    if (m_timers_index.find(fd) == m_timers_index.end()) {
-        logger.log(AsyncLogger::WARN, "timer heap update: fd not found");
+    if (!m_timers_index.contains(fd)) {
+        LOG_WARN("timer heap update: fd not found");
         return;
     }
 
     int index = m_timers_index[fd];
     int old_timeout = m_timers[index].expire_time;
     m_timers[index].expire_time = getMilliseconds() + timeout;
-    logger.log(AsyncLogger::DEBUG, "fd = " + to_string(fd) + " , expire time updata to " + to_string(timeout));
+    LOG_DEBUG("fd = " + to_string(fd) + " , expire time updata to " + to_string(timeout));
     if (m_timers[index].expire_time > old_timeout) {
         siftDown(index);
     } else {
@@ -77,8 +77,8 @@ void TimerHeap::update(int fd, long long timeout) {
 }
 
 void TimerHeap::remove(int fd) {
-    if (m_timers_index.find(fd) == m_timers_index.end()) {
-        logger.log(AsyncLogger::WARN, "timer heap remove: fd not found");
+    if (!m_timers_index.contains(fd)) {
+        LOG_WARN("timer heap remove: fd not found");
         return;
     }
 

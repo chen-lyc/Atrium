@@ -6,7 +6,7 @@ RedisPool::RedisPool(int max_connections) {
     for (int i = 0; i < max_connections; i++) {
         redisContext *connfd = redisConnect("127.0.0.1", 6379);
         if (connfd == nullptr || connfd->err) {
-            logger.log(AsyncLogger::ERROR, "Redis connect failed");
+            LOG_ERROR("Redis connect failed");
             continue;
         }
 
@@ -28,22 +28,8 @@ RedisPool::~RedisPool() {
 }
 
 bool RedisPool::executeCommand(const string &command) {
-    RedisConnGuard guard(this);
-    redisContext *redis_conn = guard.get();
-    if (redis_conn == nullptr) {
-        return false;
-    }
-
-    redisReply *reply = (redisReply *)redisCommand(redis_conn, command.c_str());
-
+    redisReply *reply = executeRaw(command);
     if (reply == nullptr) {
-        logger.log(AsyncLogger::WARN, "redisCommand return null");
-        return false;
-    }
-
-    if (reply->type == REDIS_REPLY_NIL) {
-        logger.log(AsyncLogger::ERROR, "redis SET user cache failed");
-        freeReplyObject(reply);
         return false;
     }
 
@@ -52,44 +38,53 @@ bool RedisPool::executeCommand(const string &command) {
 }
 
 bool RedisPool::executeCommand(const string &command, string &result_value) {
-    RedisConnGuard guard(this);
+    redisReply *reply = executeRaw(command);
+    if (reply == nullptr) {
+        return false;
+    }
+
+    result_value.assign(reply->str, reply->len);
+    freeReplyObject(reply);
+    return true;
+}
+
+redisReply *RedisPool::executeRaw(const string &command) {
+    RedisConnGuard guard(*this);
     redisContext *redis_conn = guard.get();
     if (redis_conn == nullptr) {
-        return false;
+        return nullptr;
     }
 
     redisReply *reply = (redisReply *)redisCommand(redis_conn, command.c_str());
 
     if (reply == nullptr) {
-        logger.log(AsyncLogger::WARN, "redisCommand return null");
-        return false;
+        LOG_WARN("redisCommand return null");
+        return nullptr;
     }
 
     if (reply->type == REDIS_REPLY_NIL) {
-        logger.log(AsyncLogger::ERROR, "redis GET user cache failed");
+        LOG_ERROR("redis cache failed");
         freeReplyObject(reply);
-        return false;
+        return nullptr;
     }
 
-    result_value = reply->str;
-    freeReplyObject(reply);
-    return true;
+    return reply;
 }
 
-RedisConnGuard::RedisConnGuard(RedisPool *pool) : m_pool(pool) {
+RedisConnGuard::RedisConnGuard(RedisPool &pool) : m_pool(pool) {
     {
-        unique_lock<mutex> lock(pool->m_mutex);
-        pool->m_cond.wait(lock, [pool] {
-            return !pool->m_ready_queue.empty() || pool->m_stop;
+        unique_lock<mutex> lock(pool.m_mutex);
+        pool.m_cond.wait(lock, [&pool] {
+            return !pool.m_ready_queue.empty() || pool.m_stop;
         });
 
-        if (pool->m_stop) {
+        if (pool.m_stop) {
             m_redis_conn = nullptr;
             return;
         }
 
-        m_redis_conn = pool->m_ready_queue.front();
-        pool->m_ready_queue.pop();
+        m_redis_conn = pool.m_ready_queue.front();
+        pool.m_ready_queue.pop();
     }
 }
 
@@ -98,10 +93,10 @@ RedisConnGuard::~RedisConnGuard() {
         return;
     }
     {
-        lock_guard<mutex> lock(m_pool->m_mutex);
-        m_pool->m_ready_queue.emplace(m_redis_conn);
+        lock_guard<mutex> lock(m_pool.m_mutex);
+        m_pool.m_ready_queue.emplace(m_redis_conn);
     }
-    m_pool->m_cond.notify_one();
+    m_pool.m_cond.notify_one();
 }
 
 RedisPool redis_pool(5);

@@ -7,7 +7,6 @@ struct Connection;
 class Task {
   public:
     Task(Connection &conn) : m_conn(conn) {}
-
     void process();
 
   private:

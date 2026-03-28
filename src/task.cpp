@@ -16,7 +16,15 @@
 using namespace std;
 
 void Task::process() {
-    logger.log(AsyncLogger::INFO, "Task processing fd = " + to_string(m_conn.fd) + " by thread " + to_string(pthread_self()));
+    {
+        string msg;
+        msg.reserve(128);
+        msg += "Task processing fd = ";
+        msg += to_string(m_conn.fd);
+        msg += " by thread ";
+        msg += to_string(pthread_self());
+        LOG_INFO(msg);
+    }
 
     // 模拟耗时操作
     // this_thread::sleep_for(chrono::milliseconds(500));
@@ -25,33 +33,64 @@ void Task::process() {
 
     while (!request.empty()) {
         string response;
-        bool should_broadcast = false;
 
-        logger.log(AsyncLogger::INFO, "fd = " + to_string(m_conn.fd) + " send data : " + request);
+        int file_fd;
+        size_t file_size;
+        bool should_broadcast;
+
+        {
+            string msg;
+            msg.reserve(32 + request.size());
+            msg += "fd = ";
+            msg += to_string(m_conn.fd);
+            msg += " send data : ";
+            msg += request;
+            LOG_INFO(msg);
+        }
 
         size_t end_pos;
 
-        auto do_register = [](string username, string password) {
+        auto do_register = [](const string &username, const string &password) {
             string salt = generateSalt();
             string password_hash = to_string(hasher(password + salt));
-            int ret = mysql_pool.executeQuery("INSERT INTO users (username, password_hash, salt) VALUES ('" + username + "', '" + password_hash + "', '" + salt + "')");
+
+            string query;
+            query.reserve(128);
+            query += "INSERT INTO users (username, password_hash, salt) VALUES ('";
+            query += username;
+            query += "', '";
+            query += password_hash;
+            query += "', '";
+            query += salt;
+            query += "')";
+            int ret = mysql_pool.executeQuery(query);
 
             if (ret) {
-                string command = "SET user:" + username + " " + password_hash + ":" + salt;
+                string command;
+                command.reserve(56);
+                command += "SET user:";
+                command += username;
+                command += ' ';
+                command += password_hash;
+                command += ':';
+                command += salt;
                 redis_pool.executeCommand(command);
             }
 
             return ret;
         };
 
-        auto do_login = [](string username, string password) {
-            string command = "GET user:" + username;
+        auto do_login = [](const string &username, const string &password) {
+            string command;
+            command.reserve(56);
+            command += "GET user:";
+            command += username;
             string result_value;
             int ret = redis_pool.executeCommand(command, result_value);
             if (ret) {
-                logger.log(AsyncLogger::INFO, "login cache hit in Redis");
+                LOG_INFO("login cache hit in Redis");
 
-                size_t separator_pos = result_value.find(":");
+                size_t separator_pos = result_value.find(':');
                 string password_hash = result_value.substr(0, separator_pos);
                 string salt = result_value.substr(separator_pos + 1, result_value.size() - separator_pos);
 
@@ -59,45 +98,65 @@ void Task::process() {
             }
 
             string result_text;
-            mysql_pool.executeQuery("SELECT password_hash, salt FROM users WHERE username = '" + username + "'", result_text);
+            {
+                string query;
+                query.reserve(56);
+                query += "SELECT password_hash, salt FROM users WHERE username = '";
+                query += username;
+                query += '\'';
+                query += result_text;
+                mysql_pool.executeQuery(query);
+            }
 
             if (result_text.empty()) {
-                logger.log(AsyncLogger::WARN, "login: user not found");
+                LOG_WARN("login: user not found");
                 return false;
             }
 
-            string password_hash = result_text.substr(0, result_text.find(" "));
+            string password_hash = result_text.substr(0, result_text.find(' '));
             result_text.erase(result_text.begin(), result_text.begin() + password_hash.size() + 1);
 
             string salt = result_text;
 
-            command = "SET user:" + username + " " + password_hash + ":" + salt;
+            command.clear();
+            command += "SET user:";
+            command += username;
+            command += ' ';
+            command += password_hash;
+            command += ':';
+            command += salt;
             redis_pool.executeCommand(command);
 
             return to_string(hasher(password + salt)) == password_hash;
         };
 
         if (m_conn.protocol == PROTO_HTTP) {
-            response = default_response;
-
             HttpRequest req;
             ParseState ret = parseHttpRequest(request, req);
             end_pos = req.end_pos;
+            response.reserve(256 + req.body.size());
+
+            LOG_DEBUG("request is HTTP and method is " + req.method + ", target is " + req.target + ", version is " + req.version);
 
             if (ret == PARSE_ERROR) {
-                logger.log(AsyncLogger::INFO, "HTTP parse failed, fd = " + to_string(m_conn.fd));
+                LOG_INFO("HTTP parse failed, fd = " + to_string(m_conn.fd));
                 response = error_response;
             } else if (req.target == "/echo") {
-                response = "HTTP/1.1 200 OK\r\nContent-Length: " + to_string(req.body.size()) + "\r\n\r\n" + req.body;
+                response += "HTTP/1.1 200 OK\r\nContent-Length: ";
+                response += to_string(req.body.size());
+                response += "\r\n\r\n";
+                response += req.body;
             } else if (req.target == "/register" || req.target == "/login") {
-                string username_key = "username=";
+                LOG_DEBUG("HTTP request register or login");
+
+                static constexpr string_view username_key = "username=";
                 size_t username_value_pos = req.body.find(username_key);
 
-                string password_key = "password=";
+                static constexpr string_view password_key = "password=";
                 size_t password_value_pos = req.body.find(password_key);
 
                 if (username_value_pos == string::npos || password_value_pos == string::npos) {
-                    logger.log(AsyncLogger::WARN, "register request not have username or password");
+                    LOG_WARN("register request not have username or password");
                     response = "HTTP/1.1 400 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 28\r\n\r\nmissing username or password";
                 } else {
                     size_t username_start = username_value_pos + username_key.size();
@@ -110,7 +169,7 @@ void Task::process() {
                     string password = req.body.substr(password_start, password_end - password_start);
                     password = escapeSqlString(password);
 
-                    logger.log(AsyncLogger::DEBUG, "username = " + username + ", password = " + password);
+                    LOG_DEBUG("username = " + username + ", password = " + password);
 
                     if (req.target == "/register") {
                         int ret = do_register(username, password);
@@ -133,20 +192,26 @@ void Task::process() {
             } else if (req.method == "GET") {
                 string file_path = "static" + req.target;
                 if (req.target == "/") file_path = "static/index.html";
-                logger.log(AsyncLogger::INFO, "file path is " + file_path);
-                int filefd = open(file_path.c_str(), O_RDONLY);
-                if (filefd == -1) {
+                LOG_INFO("file path is " + file_path);
+                file_fd = open(file_path.c_str(), O_RDONLY);
+                if (file_fd == -1) {
                     response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
                 } else {
                     struct stat st;
-                    fstat(filefd, &st);
+                    fstat(file_fd, &st);
+                    file_size = st.st_size;
 
-                    long file_size = st.st_size;
                     string body(file_size, '\0');
-                    read(filefd, body.data(), file_size);
-                    close(filefd);
-                    response = "HTTP/1.1 200 OK\r\nContent-Length: " + to_string(file_size) + "\r\n\r\n" + body;
+                    read(file_fd, body.data(), file_size);
+
+                    response += "HTTP/1.1 200 OK\r\nContent-Length: ";
+                    response += to_string(file_size);
+                    response += "\r\n\r\n";
+                    response += body;
+                    close(file_fd);
                 }
+            } else {
+                response = default_response;
             }
 
             if (req.version == "HTTP/1.0" || req.connection == "close") {
@@ -156,8 +221,21 @@ void Task::process() {
             ProtobufRequest req;
             MessageType ret = parseProtobufMessage(request, req);
             end_pos = req.end_pos;
+            response.reserve(256);
 
-            logger.log(AsyncLogger::INFO, "parsed data: " + to_string(req.msg_type) + " " + to_string(req.msg_length) + " usernamne=" + req.username + " password=" + req.password);
+            {
+                string msg;
+                msg.reserve(256);
+                msg += "parsed data: ";
+                msg += to_string(req.msg_type);
+                msg += ' ';
+                msg += to_string(req.msg_length);
+                msg += " usernamne=";
+                msg += req.username;
+                msg += " password=";
+                msg += req.password;
+                LOG_INFO(msg);
+            }
 
             enum ResponseKind {
                 REGISTER,
@@ -202,7 +280,7 @@ void Task::process() {
             };
 
             if (ret == MSG_ERROR) {
-                logger.log(AsyncLogger::INFO, "protobuf parse failed, fd = " + to_string(m_conn.fd));
+                LOG_INFO("protobuf parse failed, fd = " + to_string(m_conn.fd));
 
                 buildResponse(ERROR, "parse error");
             } else if (ret == MSG_REGISTER_REQ) {
@@ -229,8 +307,14 @@ void Task::process() {
 
         {
             lock_guard<mutex> lock(ready_mutex);
-            ready_queue.emplace(m_conn.fd, response, should_broadcast);
-            logger.log(AsyncLogger::DEBUG, "enqueue readyQueue");
+            if (should_broadcast) {
+                ready_queue.emplace(m_conn.fd, move(response), should_broadcast);
+            } else if (file_fd) {
+                ready_queue.emplace(m_conn.fd, file_fd, file_size, move(response));
+            } else {
+                ready_queue.emplace(m_conn.fd, move(response));
+            }
+            LOG_DEBUG("enqueue readyQueue");
         }
 
         {

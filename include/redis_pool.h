@@ -10,14 +10,14 @@ class RedisPool;
 
 class RedisConnGuard {
   public:
-    RedisConnGuard(RedisPool *pool);
+    RedisConnGuard(RedisPool &pool);
     ~RedisConnGuard();
-    redisContext *get() {
+    redisContext *get() const {
         return m_redis_conn;
     }
 
   private:
-    RedisPool *m_pool;
+    RedisPool &m_pool;
     redisContext *m_redis_conn;
 };
 
@@ -29,6 +29,9 @@ class RedisPool {
     ~RedisPool();
     bool executeCommand(const std::string &command);
     bool executeCommand(const std::string &command, std::string &result_value);
+
+  private:
+    redisReply *executeRaw(const std::string &command);
 
   private:
     std::queue<redisContext *> m_ready_queue;

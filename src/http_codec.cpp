@@ -1,7 +1,7 @@
 #include "http_codec.h"
 #include "logger.h"
 #include <algorithm>
-#include <sstream>
+#include <string_view>
 using namespace std;
 
 ParseState parseHttpRequest(const string &raw, HttpRequest &req) {
@@ -15,15 +15,20 @@ ParseState parseHttpRequest(const string &raw, HttpRequest &req) {
         }
         switch (req.state) {
         case PARSE_REQUEST_LINE: {
-            istringstream iss(line);
-            iss >> req.method >> req.target >> req.version;
+            size_t start = 0;
+            size_t end = line.find(' ');
+            req.method = line.substr(start, end - start);
+            start = end + 1;
+            end = line.find(' ', start);
+            req.target = line.substr(start, end - start);
+            req.version = line.substr(end + 1);
             if (req.method.empty() || req.target.empty() || req.version.empty()) {
-                logger.log(AsyncLogger::DEBUG, "request_line parse error");
+                LOG_DEBUG("request_line parse error");
                 req.state = PARSE_ERROR;
                 break;
             }
             if (req.method != "GET" && req.method != "POST" && req.method != "HEAD") {
-                logger.log(AsyncLogger::DEBUG, "request method error, method is " + req.method);
+                LOG_DEBUG("request method error, method is " + req.method);
                 req.state = PARSE_ERROR;
                 break;
             }
@@ -44,7 +49,7 @@ ParseState parseHttpRequest(const string &raw, HttpRequest &req) {
 
             size_t colon_pos = line.find(':');
             if (colon_pos == string::npos) {
-                logger.log(AsyncLogger::DEBUG, "headers parse error");
+                LOG_DEBUG("headers parse error");
                 req.state = PARSE_ERROR;
                 break;
             }
@@ -59,20 +64,20 @@ ParseState parseHttpRequest(const string &raw, HttpRequest &req) {
             transform(key.begin(), key.end(), key.begin(), ::tolower);
 
             if (key.empty() || value.empty()) {
-                logger.log(AsyncLogger::DEBUG, "headers parse error");
+                LOG_DEBUG("headers parse error");
                 req.state = PARSE_ERROR;
             } else if (key == "host") {
-                req.host = value;
+                req.host = move(value);
             } else if (key == "connection") {
                 transform(value.begin(), value.end(), value.begin(), ::tolower);
-                req.connection = value;
+                req.connection = move(value);
             } else if (key == "content-type") {
-                req.content_type = value;
+                req.content_type = move(value);
             } else if (key == "content-length") {
                 try {
                     req.content_length = stoi(value);
                 } catch (...) {
-                    logger.log(AsyncLogger::WARN, "invail content-length: " + value);
+                    LOG_WARN("invail content-length: " + value);
                     req.state = PARSE_ERROR;
                 }
             }

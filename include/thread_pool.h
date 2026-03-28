@@ -10,7 +10,7 @@
 template <typename T>
 class ThreadPool {
   public:
-    ThreadPool(int threadnum = 8, int max_requests = 10000);
+    ThreadPool(size_t threadnum = 8, size_t max_requests = 10000);
     ~ThreadPool();
     bool enqueue(std::unique_ptr<T> request);
 
@@ -23,7 +23,7 @@ class ThreadPool {
     std::mutex m_mutex;
     std::condition_variable m_cond;
     std::queue<std::unique_ptr<T>> m_workqueue;
-    bool m_stop;
+    bool m_stop = false;
 };
 
 #include "thread_pool.tpp"

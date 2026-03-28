@@ -25,4 +25,4 @@ struct ProtobufRequest {
     size_t end_pos = 0;
 };
 
-MessageType parseProtobufMessage(std::string &raw, ProtobufRequest &req);
+MessageType parseProtobufMessage(std::string_view raw, ProtobufRequest &req);

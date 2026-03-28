@@ -13,7 +13,7 @@ struct Timer {
 
 class TimerHeap {
   public:
-    TimerHeap(std::vector<Timer> &timers);
+    TimerHeap(const std::vector<Timer> &timers);
     TimerHeap();
     void add(int fd, long long timeout);
     void tick();

@@ -16,22 +16,25 @@
 #include <cstring>
 #include <fcntl.h>
 #include <functional>
-#include <hiredis/hiredis.h>
-#include <mysql/mysql.h>
 #include <netinet/in.h>
 #include <sstream>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
-#include <sys/stat.h>
+#include <sys/sendfile.h>
 using namespace std;
 
 int main(int argc, char *argv[]) {
-    logger.log(AsyncLogger::INFO, "\nserver starting");
+    LOG_INFO("\nserver starting");
 
     if (argc <= 3) {
-        logger.log(AsyncLogger::WARN, "usage: ./threadpool_epoll_demo.out ip port");
+        LOG_WARN("usage: ./threadpool_epoll_demo.out ip port");
         return -1;
     }
+
+    if (argc > 4) {
+        logger.setLevel(argv[4]);
+    }
+
     epollfd = epoll_create(1);
     notifyfd = eventfd(0, EFD_NONBLOCK);
     addfd(notifyfd);
@@ -40,11 +43,11 @@ int main(int argc, char *argv[]) {
     int http_port = stoi(argv[2]);
     int protobuf_port = stoi(argv[3]);
 
-    auto socket_bind_listen = [](string ip, int port) {
+    auto socket_bind_listen = [](const string &ip, int port) {
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(port);
-        inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
+        inet_pton(AF_INET, ip.data(), &addr.sin_addr);
 
         int listenfd = socket(PF_INET, SOCK_STREAM, 0);
         int opt = 1;
@@ -52,7 +55,15 @@ int main(int argc, char *argv[]) {
         bind(listenfd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
         listen(listenfd, 1024);
         addfd(listenfd);
-        logger.log(AsyncLogger::INFO, "server listening on " + ip + ":" + to_string(port));
+        {
+            string msg;
+            msg.reserve(32);
+            msg += "server listening on ";
+            msg += ip;
+            msg += ':';
+            msg += to_string(port);
+            LOG_INFO(msg);
+        }
         return listenfd;
     };
 
@@ -61,17 +72,17 @@ int main(int argc, char *argv[]) {
 
     epoll_event events[MAXSIZE];
 
-    while (1) {
+    while (true) {
         int numbers = epoll_wait(epollfd, events, MAXSIZE, timer_heap.getNextTimeout());
-        logger.log(AsyncLogger::DEBUG, "happened events number = " + to_string(numbers));
+        LOG_DEBUG("happened events number = " + to_string(numbers));
         if (numbers < 0) {
-            logger.log(AsyncLogger::ERROR, "epoll_wait failed");
+            LOG_ERROR("epoll_wait failed");
             break;
         } else if (numbers == 0) {
-            logger.log(AsyncLogger::INFO, "epoll_wait running timeout, run timer tick");
+            LOG_INFO("epoll_wait running timeout, run timer tick");
             timer_heap.tick();
             for (int fd : timer_heap.getExpired()) {
-                logger.log(AsyncLogger::INFO, "close inactive connection, fd = " + to_string(fd));
+                LOG_INFO("close inactive connection, fd = " + to_string(fd));
                 if (conns[fd]->processing) {
                     conns[fd]->pendingClose = true;
                 } else {
@@ -84,13 +95,13 @@ int main(int argc, char *argv[]) {
 
         for (int i = 0; i < numbers; i++) {
             int fd = events[i].data.fd;
-            logger.log(AsyncLogger::DEBUG, "event fd = " + to_string(fd));
+            LOG_DEBUG("event fd = " + to_string(fd));
             if (fd == http_listenfd || fd == protobuf_listenfd) {
                 ProtocolType protocol_type;
                 if (fd == http_listenfd) protocol_type = PROTO_HTTP;
                 else protocol_type = PROTO_BINARY;
 
-                while (1) {
+                while (true) {
                     sockaddr_in client_addr{};
                     socklen_t client_len = sizeof(client_addr);
                     int connfd = accept(fd, reinterpret_cast<sockaddr *>(&client_addr), &client_len);
@@ -98,7 +109,7 @@ int main(int argc, char *argv[]) {
                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
                             break;
                         }
-                        logger.log(AsyncLogger::ERROR, "accept failed");
+                        LOG_ERROR("accept failed");
                         break;
                     }
 
@@ -112,7 +123,17 @@ int main(int argc, char *argv[]) {
                     char client_ip[INET_ADDRSTRLEN];
                     int client_port = ntohs(client_addr.sin_port);
                     inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
-                    logger.log(AsyncLogger::INFO, "new connection, fd = " + to_string(connfd) + " ip = " + client_ip + ":" + to_string(client_port));
+                    {
+                        string msg;
+                        msg.reserve(32);
+                        msg += "new connection, fd = ";
+                        msg += to_string(connfd);
+                        msg += " ip = ";
+                        msg += client_ip;
+                        msg += ':';
+                        msg += to_string(client_port);
+                        LOG_INFO(msg);
+                    }
                 }
             } else if (fd == notifyfd) {
                 uint64_t val;
@@ -124,19 +145,23 @@ int main(int argc, char *argv[]) {
                     localQueue.swap(ready_queue);
                 }
 
-                logger.log(AsyncLogger::DEBUG, "start processing queue, queue len = " + to_string(localQueue.size()));
+                LOG_DEBUG("start processing queue, queue len = " + to_string(localQueue.size()));
                 while (!localQueue.empty()) {
                     auto &result = localQueue.front();
-                    if (conns.find(result.fd) != conns.end()) {
+                    if (conns.contains(result.fd)) {
                         conns[result.fd]->outbuf = result.response;
                         conns[result.fd]->processing = false;
 
-                        if (!result.shoule_broadcast) {
-                            trySend(*conns[result.fd]);
-                        } else {
+                        if (result.should_broadcast) {
                             for (auto it = conns.begin(); it != conns.end(); it++) {
                                 trySend(*it->second);
                             }
+                        } else if (result.file_fd) {
+                            // conns[result.fd]->file_fd = result.file_fd;
+                            // conns[result.fd]->file_size = result.file_size;
+                            trySend(*conns[result.fd]);
+                        } else {
+                            trySend(*conns[result.fd]);
                         }
                     }
                     localQueue.pop();
@@ -145,7 +170,7 @@ int main(int argc, char *argv[]) {
                 timer_heap.update(fd, 6000);
 
                 char buf[BUFSIZE];
-                while (1) {
+                while (true) {
                     int n = recv(fd, buf, BUFSIZE, 0);
                     if (n > 0) {
                         {
@@ -153,7 +178,7 @@ int main(int argc, char *argv[]) {
                             conns[fd]->inbuf.append(buf, n);
                         }
                     } else if (n == 0) {
-                        logger.log(AsyncLogger::INFO, "client closed writing, fd = " + to_string(fd));
+                        LOG_INFO("client closed writing, fd = " + to_string(fd));
                         conns[fd]->readClosed = true;
                         tryEnqueueTask(*conns[fd]);
                         break;
@@ -162,18 +187,18 @@ int main(int argc, char *argv[]) {
                             tryEnqueueTask(*conns[fd]);
                             break;
                         } else {
-                            logger.log(AsyncLogger::ERROR, "read failed");
+                            LOG_ERROR("read failed");
                             closeOrDefer(fd);
                             break;
                         }
                     }
                 }
             } else if (events[i].events & EPOLLOUT) {
-                if (conns.find(fd) != conns.end()) {
+                if (conns.contains(fd)) {
                     trySend(*conns[fd]);
                 }
             } else {
-                logger.log(AsyncLogger::WARN, "something else happened");
+                LOG_WARN("something else happened");
             }
         }
     }

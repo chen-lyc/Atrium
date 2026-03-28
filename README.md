@@ -91,6 +91,9 @@ Redis 连接池 + ConnGuard：登录时先查 Redis 缓存，未命中再查 MyS
 | GET /index.html + Redis缓存 | 10921 | 9ms | 0 |
 | POST /login 无Redis | 7257 | 14ms | 0 |
 | POST /login + Redis缓存 | 10049 | 10ms | 0 |
+| **v1.4版本（性能优化）** | | | |
+| GET /index.html | 21600 | 9.3ms | 0 |
+| POST /login + Redis缓存 | 18900 | 10.6ms | 0 |
 
 ## 数据库初始化
 ```bash
