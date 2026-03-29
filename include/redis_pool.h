@@ -25,12 +25,16 @@ class RedisPool {
     friend class RedisConnGuard;
 
   public:
-    RedisPool(int max_connections);
+    static RedisPool &getInstance() {
+        static RedisPool instance(5);
+        return instance;
+    }
     ~RedisPool();
     bool executeCommand(const std::string &command);
     bool executeCommand(const std::string &command, std::string &result_value);
 
   private:
+    RedisPool(int max_connections);
     redisReply *executeRaw(const std::string &command);
 
   private:
@@ -39,5 +43,3 @@ class RedisPool {
     std::condition_variable m_cond;
     bool m_stop = false;
 };
-
-extern RedisPool redis_pool;

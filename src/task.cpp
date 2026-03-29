@@ -63,7 +63,7 @@ void Task::process() {
             query += "', '";
             query += salt;
             query += "')";
-            int ret = mysql_pool.executeQuery(query);
+            int ret = MysqlPool::getInstance().executeQuery(query);
 
             if (ret) {
                 string command;
@@ -74,7 +74,7 @@ void Task::process() {
                 command += password_hash;
                 command += ':';
                 command += salt;
-                redis_pool.executeCommand(command);
+                RedisPool::getInstance().executeCommand(command);
             }
 
             return ret;
@@ -86,7 +86,7 @@ void Task::process() {
             command += "GET user:";
             command += username;
             string result_value;
-            int ret = redis_pool.executeCommand(command, result_value);
+            int ret = RedisPool::getInstance().executeCommand(command, result_value);
             if (ret) {
                 LOG_INFO("login cache hit in Redis");
 
@@ -105,7 +105,7 @@ void Task::process() {
                 query += username;
                 query += '\'';
                 query += result_text;
-                mysql_pool.executeQuery(query);
+                MysqlPool::getInstance().executeQuery(query);
             }
 
             if (result_text.empty()) {
@@ -125,7 +125,7 @@ void Task::process() {
             command += password_hash;
             command += ':';
             command += salt;
-            redis_pool.executeCommand(command);
+            RedisPool::getInstance().executeCommand(command);
 
             return to_string(hasher(password + salt)) == password_hash;
         };
@@ -329,4 +329,4 @@ void Task::process() {
     write(notifyfd, &val, sizeof(val));
 }
 
-ThreadPool<Task> pool(4);
+ThreadPool<Task> thread_pool(4);

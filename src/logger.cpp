@@ -109,5 +109,3 @@ void AsyncLogger::backend() {
         }
     }
 }
-
-AsyncLogger logger(5);

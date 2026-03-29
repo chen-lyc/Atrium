@@ -13,4 +13,4 @@ class Task {
     Connection &m_conn;
 };
 
-extern ThreadPool<Task> pool;
+extern ThreadPool<Task> thread_pool;

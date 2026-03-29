@@ -10,17 +10,6 @@ static long long getMilliseconds() {
         .count();
 }
 
-TimerHeap::TimerHeap(const vector<Timer> &timers) : m_timers(timers) {
-    for (int i = 0; i < timers.size(); i++) {
-        m_timers_index[timers[i].fd] = i;
-    }
-    for (int i = (timers.size() - 2) / 2; i >= 0; i--) {
-        siftDown(i);
-    }
-}
-
-TimerHeap::TimerHeap() {}
-
 void TimerHeap::add(int fd, long long timeout) {
     m_timers.emplace_back(fd, getMilliseconds() + timeout);
     m_timers_index[fd] = m_timers.size() - 1;
@@ -133,5 +122,3 @@ int TimerHeap::siftUp(int index) {
     }
     return index;
 }
-
-TimerHeap timer_heap;

@@ -17,7 +17,7 @@
 #include <fcntl.h>
 #include <functional>
 #include <netinet/in.h>
-#include <sstream>
+#include <signal.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/sendfile.h>
@@ -32,8 +32,11 @@ int main(int argc, char *argv[]) {
     }
 
     if (argc > 4) {
-        logger.setLevel(argv[4]);
+        AsyncLogger::getInstance().setLevel(argv[4]);
     }
+
+    signal(SIGINT, handleSignal);
+    signal(SIGTERM, handleSignal);
 
     epollfd = epoll_create(1);
     notifyfd = eventfd(0, EFD_NONBLOCK);
@@ -72,16 +75,20 @@ int main(int argc, char *argv[]) {
 
     epoll_event events[MAXSIZE];
 
-    while (true) {
-        int numbers = epoll_wait(epollfd, events, MAXSIZE, timer_heap.getNextTimeout());
-        LOG_DEBUG("happened events number = " + to_string(numbers));
-        if (numbers < 0) {
-            LOG_ERROR("epoll_wait failed");
-            break;
-        } else if (numbers == 0) {
+    while (running) {
+        int number = epoll_wait(epollfd, events, MAXSIZE, TimerHeap::getInstance().getNextTimeout());
+        LOG_DEBUG("happened events number = " + to_string(number));
+        if (number < 0) {
+            if (errno == EINTR && running == false) {
+                LOG_INFO("server stopped by signal SIGINT or SIGTERM");
+            } else {
+                LOG_ERROR("epoll_wait failed");
+            }
+            continue;
+        } else if (number == 0) {
             LOG_INFO("epoll_wait running timeout, run timer tick");
-            timer_heap.tick();
-            for (int fd : timer_heap.getExpired()) {
+            TimerHeap::getInstance().tick();
+            for (int fd : TimerHeap::getInstance().getExpired()) {
                 LOG_INFO("close inactive connection, fd = " + to_string(fd));
                 if (conns[fd]->processing) {
                     conns[fd]->pendingClose = true;
@@ -93,7 +100,7 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        for (int i = 0; i < numbers; i++) {
+        for (int i = 0; i < number; i++) {
             int fd = events[i].data.fd;
             LOG_DEBUG("event fd = " + to_string(fd));
             if (fd == http_listenfd || fd == protobuf_listenfd) {
@@ -118,7 +125,7 @@ int main(int argc, char *argv[]) {
                     conn_ptr->fd = connfd;
                     conn_ptr->protocol = protocol_type;
                     conns.emplace(connfd, move(conn_ptr));
-                    timer_heap.add(connfd, 6000);
+                    TimerHeap::getInstance().add(connfd, 6000);
 
                     char client_ip[INET_ADDRSTRLEN];
                     int client_port = ntohs(client_addr.sin_port);
@@ -167,7 +174,7 @@ int main(int argc, char *argv[]) {
                     localQueue.pop();
                 }
             } else if (events[i].events & EPOLLIN) {
-                timer_heap.update(fd, 6000);
+                TimerHeap::getInstance().update(fd, 6000);
 
                 char buf[BUFSIZE];
                 while (true) {
@@ -201,6 +208,12 @@ int main(int argc, char *argv[]) {
                 LOG_WARN("something else happened");
             }
         }
+    }
+
+    thread_pool.shutDown();
+
+    for (auto &[fd, conn] : conns) {
+        close(fd);
     }
 
     close(http_listenfd);

@@ -5,6 +5,7 @@
 #include "task.h"
 #include "timerheap.h"
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/sendfile.h>
@@ -14,6 +15,8 @@ using namespace std;
 
 int epollfd;
 int notifyfd;
+
+volatile bool running = true;
 
 void setnonblocking(int fd) {
     int old_option = fcntl(fd, F_GETFL);
@@ -69,7 +72,7 @@ void trySend(Connection &conn) {
 
     if (conn.readClosed) {
         LOG_INFO("send complete, close fd = " + to_string(conn.fd));
-        timer_heap.remove(conn.fd);
+        TimerHeap::getInstance().remove(conn.fd);
         close(conn.fd);
         conns.erase(conn.fd);
         return;
@@ -99,12 +102,12 @@ void tryEnqueueTask(Connection &conn) {
         LOG_DEBUG("enqueue task for fd = " + to_string(conn.fd));
         conn.processing = true;
         unique_ptr<Task> ptr_task = make_unique<Task>(conn);
-        pool.enqueue(move(ptr_task));
+        thread_pool.enqueue(move(ptr_task));
     }
 }
 
 void closeNow(int fd) {
-    timer_heap.remove(fd);
+    TimerHeap::getInstance().remove(fd);
     close(fd);
     conns.erase(fd);
 }
@@ -116,5 +119,11 @@ void closeOrDefer(int fd) {
         conns[fd]->pendingClose = true;
     } else {
         closeNow(fd);
+    }
+}
+
+void handleSignal(int sig) {
+    if (sig == SIGINT || sig == SIGTERM) {
+        running = false;
     }
 }

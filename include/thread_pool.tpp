@@ -10,6 +10,13 @@ ThreadPool<T>::ThreadPool(size_t threadnum, size_t max_requests) : m_max_request
 
 template <typename T>
 ThreadPool<T>::~ThreadPool() {
+    if (!m_stop) {
+        shutDown();
+    }
+}
+
+template <typename T>
+void ThreadPool<T>::shutDown() {
     {
         lock_guard<mutex> lock(m_mutex);
         m_stop = true;
@@ -21,6 +28,7 @@ ThreadPool<T>::~ThreadPool() {
         }
     }
 }
+
 template <typename T>
 bool ThreadPool<T>::enqueue(unique_ptr<T> request) {
     {

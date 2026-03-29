@@ -98,5 +98,3 @@ RedisConnGuard::~RedisConnGuard() {
     }
     m_pool.m_cond.notify_one();
 }
-
-RedisPool redis_pool(5);

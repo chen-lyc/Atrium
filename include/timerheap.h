@@ -13,8 +13,10 @@ struct Timer {
 
 class TimerHeap {
   public:
-    TimerHeap(const std::vector<Timer> &timers);
-    TimerHeap();
+    static TimerHeap &getInstance() {
+        static TimerHeap instance;
+        return instance;
+    }
     void add(int fd, long long timeout);
     void tick();
     int getNextTimeout();
@@ -25,6 +27,7 @@ class TimerHeap {
     void remove(int fd);
 
   private:
+    TimerHeap() {}
     int siftDown(int index);
     int siftUp(int index);
 
@@ -33,5 +36,3 @@ class TimerHeap {
     std::unordered_map<int, int> m_timers_index;
     std::vector<int> m_expired;
 };
-
-extern TimerHeap timer_heap;

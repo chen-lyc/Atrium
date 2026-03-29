@@ -25,12 +25,17 @@ class MysqlPool {
     friend class ConnGuard;
 
   public:
-    MysqlPool(int max_connections);
+    static MysqlPool &getInstance() {
+        static MysqlPool instance(5);
+        return instance;
+    }
     ~MysqlPool();
     int executeQuery(const std::string &sql, std::string &result_text);
     bool executeQuery(const std::string &sql);
 
   private:
+    MysqlPool(int max_connections);
+
   private:
     std::queue<MYSQL *> m_ready_queue;
     std::mutex m_mutex;

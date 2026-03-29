@@ -8,30 +8,30 @@
 #include <string_view>
 #include <thread>
 
-#define LOG_DEBUG(msg)                                  \
-    do {                                                \
-        if (logger.getMinLevel() <= AsyncLogger::DEBUG) \
-            logger.log(AsyncLogger::DEBUG, msg);        \
+#define LOG_DEBUG(msg)                                                      \
+    do {                                                                    \
+        if (AsyncLogger::getInstance().getMinLevel() <= AsyncLogger::DEBUG) \
+            AsyncLogger::getInstance().log(AsyncLogger::DEBUG, msg);        \
     } while (0)
-#define LOG_INFO(msg)                                  \
-    do {                                               \
-        if (logger.getMinLevel() <= AsyncLogger::INFO) \
-            logger.log(AsyncLogger::INFO, msg);        \
+#define LOG_INFO(msg)                                                      \
+    do {                                                                   \
+        if (AsyncLogger::getInstance().getMinLevel() <= AsyncLogger::INFO) \
+            AsyncLogger::getInstance().log(AsyncLogger::INFO, msg);        \
     } while (0)
-#define LOG_WARN(msg)                                  \
-    do {                                               \
-        if (logger.getMinLevel() <= AsyncLogger::WARN) \
-            logger.log(AsyncLogger::WARN, msg);        \
+#define LOG_WARN(msg)                                                      \
+    do {                                                                   \
+        if (AsyncLogger::getInstance().getMinLevel() <= AsyncLogger::WARN) \
+            AsyncLogger::getInstance().log(AsyncLogger::WARN, msg);        \
     } while (0)
-#define LOG_ERROR(msg)                                  \
-    do {                                                \
-        if (logger.getMinLevel() <= AsyncLogger::ERROR) \
-            logger.log(AsyncLogger::ERROR, msg);        \
+#define LOG_ERROR(msg)                                                      \
+    do {                                                                    \
+        if (AsyncLogger::getInstance().getMinLevel() <= AsyncLogger::ERROR) \
+            AsyncLogger::getInstance().log(AsyncLogger::ERROR, msg);        \
     } while (0)
-#define LOG_FATAL(msg)                                  \
-    do {                                                \
-        if (logger.getMinLevel() <= AsyncLogger::FATAL) \
-            logger.log(AsyncLogger::FATAL, msg);        \
+#define LOG_FATAL(msg)                                                      \
+    do {                                                                    \
+        if (AsyncLogger::getInstance().getMinLevel() <= AsyncLogger::FATAL) \
+            AsyncLogger::getInstance().log(AsyncLogger::FATAL, msg);        \
     } while (0)
 
 class AsyncLogger {
@@ -44,7 +44,10 @@ class AsyncLogger {
         FATAL
     };
 
-    AsyncLogger(size_t flush_threshold);
+    static AsyncLogger &getInstance() {
+        static AsyncLogger instance(5);
+        return instance;
+    }
     ~AsyncLogger();
     void log(LOGLEVEL level, std::string_view message);
     void setLevel(LOGLEVEL min_level) {
@@ -56,6 +59,7 @@ class AsyncLogger {
     }
 
   private:
+    AsyncLogger(size_t flush_threshold);
     std::string_view levelToString(LOGLEVEL level) const;
     void backend();
 
@@ -70,5 +74,3 @@ class AsyncLogger {
     LOGLEVEL m_min_level;
     bool m_stop = false;
 };
-
-extern AsyncLogger logger;

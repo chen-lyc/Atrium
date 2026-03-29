@@ -121,5 +121,3 @@ ConnGuard::~ConnGuard() {
     }
     m_pool.m_cond.notify_one();
 }
-
-MysqlPool mysql_pool(5);
