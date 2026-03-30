@@ -1,4 +1,4 @@
-#include "../message.pb.h"
+#include "message.pb.h"
 #include <arpa/inet.h>
 #include <iostream>
 #include <netinet/in.h>

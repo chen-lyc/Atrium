@@ -67,7 +67,7 @@ void TimerHeap::update(int fd, long long timeout) {
 
 void TimerHeap::remove(int fd) {
     if (!m_timers_index.contains(fd)) {
-        LOG_WARN("timer heap remove: fd not found");
+        LOG_DEBUG("timer heap remove: fd not found");
         return;
     }
 

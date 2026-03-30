@@ -1,4 +1,4 @@
-#include "../message.pb.h"
+#include "message.pb.h"
 #include <arpa/inet.h>
 #include <iostream>
 #include <netinet/in.h>
@@ -102,11 +102,7 @@ int main() {
 
     thread t(f, fd);
 
-    sleep(7);
-
-    cout << "sleep over" << endl;
-
-    sleep(3);
+    cout << "start to read boardcast" << endl;
 
     inbuf.resize(BUFSIZE, '\0');
     ret = recv(fd, inbuf.data(), BUFSIZE, 0);

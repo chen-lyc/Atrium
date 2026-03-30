@@ -1,6 +1,6 @@
-#include "epoll_utils.h"
 #include "logger.h"
 #include "reactor.h"
+#include "server_utils.h"
 #include <arpa/inet.h>
 #include <cstring>
 #include <fcntl.h>
@@ -24,7 +24,7 @@ int main(int argc, char *argv[]) {
         AsyncLogger::getInstance().setLevel(argv[4]);
     }
 
-    int num_reactors = 5;
+    int num_reactors = 1;
     int next_reactor_idx = 0;
     vector<unique_ptr<Reactor>> sub_reactors;
     for (int i = 0; i < num_reactors; i++) {
@@ -34,13 +34,13 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, handleSignal);
     signal(SIGTERM, handleSignal);
 
-    epollfd = epoll_create(1);
+    int epollfd = epoll_create(1);
 
     string ip(argv[1]);
     int http_port = stoi(argv[2]);
     int protobuf_port = stoi(argv[3]);
 
-    auto socket_bind_listen = [](const string &ip, int port) {
+    auto socket_bind_listen = [epollfd](const string &ip, int port) {
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(port);

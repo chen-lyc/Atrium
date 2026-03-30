@@ -5,7 +5,6 @@
 #include "message.pb.h"
 #include "mysql_pool.h"
 #include "protobuf_codec.h"
-#include "protocol.h"
 #include "redis_pool.h"
 #include "utils.h"
 #include <fcntl.h>
@@ -13,8 +12,9 @@
 #include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-
 using namespace std;
+
+static bool isRequestComplete(Connection &conn);
 
 Reactor::Reactor(int index) : m_index(index) {
     m_epollfd = epoll_create1(0);
@@ -66,8 +66,7 @@ void Reactor::loop() {
             m_timer_heap.tick();
             for (auto fd : m_timer_heap.getExpired()) {
                 LOG_INFO("close inactive connection, fd = " + to_string(fd));
-                close(fd);
-                m_conns.erase(fd);
+                closeNow(fd);
             }
             continue;
         }
@@ -110,6 +109,7 @@ void Reactor::loop() {
                     m_timer_heap.add(conn_fd, 6000);
                 }
             } else if (events[i].events & EPOLLIN) {
+                if (!m_conns.contains(fd)) continue;
                 m_timer_heap.update(fd, 6000);
 
                 const int buf_size = 4096;
@@ -251,7 +251,7 @@ void Reactor::process(Connection &conn) {
 
             if (ret == PARSE_ERROR) {
                 LOG_INFO("HTTP parse failed, fd = " + to_string(conn.fd));
-                conn.outbuf = error_response;
+                conn.outbuf = resp_bad_request;
             } else if (req.target == "/echo") {
                 conn.outbuf += "HTTP/1.1 200 OK\r\nContent-Length: ";
                 conn.outbuf += to_string(req.body.size());
@@ -268,7 +268,7 @@ void Reactor::process(Connection &conn) {
 
                 if (username_value_pos == string::npos || password_value_pos == string::npos) {
                     LOG_WARN("register request not have username or password");
-                    conn.outbuf = "HTTP/1.1 400 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 28\r\n\r\nmissing username or password";
+                    conn.outbuf = resp_missing_params;
                 } else {
                     size_t username_start = username_value_pos + username_key.size();
                     size_t username_end = req.body.find("&", username_start);
@@ -286,17 +286,17 @@ void Reactor::process(Connection &conn) {
                         int ret = do_register(username, password);
 
                         if (ret) {
-                            conn.outbuf = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 16\r\n\r\nregister success";
+                            conn.outbuf = resp_register_sussess;
                         } else {
-                            conn.outbuf = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 15\r\n\r\nregister failed";
+                            conn.outbuf = resp_register_failed;
                         }
                     } else {
                         int ret = do_login(username, password);
 
                         if (ret) {
-                            conn.outbuf = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nlogin success";
+                            conn.outbuf = resp_login_success;
                         } else {
-                            conn.outbuf = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 12\r\n\r\nlogin failed";
+                            conn.outbuf = resp_login_failed;
                         }
                     }
                 }
@@ -306,7 +306,7 @@ void Reactor::process(Connection &conn) {
                 LOG_INFO("file path is " + file_path);
                 int file_fd = open(file_path.c_str(), O_RDONLY);
                 if (file_fd == -1) {
-                    conn.outbuf = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                    conn.outbuf = resp_not_found;
                 } else {
                     struct stat st;
                     fstat(file_fd, &st);
@@ -331,7 +331,7 @@ void Reactor::process(Connection &conn) {
             if (req.version == "HTTP/1.0" || req.connection == "close") {
                 conn.keepAlive = false;
             }
-        } else {
+        } else if (conn.protocol == PROTO_BINARY) {
             ProtobufRequest req;
             MessageType ret = parseProtobufMessage(conn.inbuf, req);
             end_pos = req.end_pos;
@@ -421,11 +421,17 @@ void Reactor::process(Connection &conn) {
         conn.inbuf.erase(conn.inbuf.begin(), conn.inbuf.begin() + end_pos);
 
         if (should_broadcast) {
-            for (auto it = m_conns.begin(); it != m_conns.end(); it++) {
+            for (auto it = m_conns.begin(); it != m_conns.end();) {
                 if (it->second->fd != conn.fd) {
-                    trySend(*it->second);
+                    LOG_DEBUG("send broadcast to fd = " + to_string(it->second->fd));
+                    it->second->outbuf += conn.outbuf;
+                    auto current = it++;
+                    trySend(*current->second);
+                } else {
+                    it++;
                 }
             }
+            conn.outbuf.clear();
         } else {
             trySend(conn);
         }
@@ -483,9 +489,7 @@ void Reactor::trySend(Connection &conn) {
 
     if (conn.readClosed) {
         LOG_INFO("send complete, close fd = " + to_string(conn.fd));
-        m_timer_heap.remove(conn.fd);
-        close(conn.fd);
-        m_conns.erase(conn.fd);
+        closeNow(conn.fd);
         return;
     } else if (!conn.keepAlive) {
         LOG_INFO("client not keep alive, send complete, close fd = " + to_string(conn.fd));
@@ -504,7 +508,88 @@ void Reactor::trySend(Connection &conn) {
 }
 
 void Reactor::closeNow(int fd) {
+    epoll_ctl(m_epollfd, EPOLL_CTL_DEL, fd, nullptr);
     m_timer_heap.remove(fd);
     close(fd);
     m_conns.erase(fd);
+}
+
+static bool isRequestComplete(Connection &conn) {
+    if (conn.protocol == PROTO_HTTP) {
+        size_t head_end_pos = conn.inbuf.find("\r\n\r\n");
+        if (head_end_pos == string::npos) {
+            LOG_DEBUG("HTTP header incomplete : missing CRLFCRLF");
+            return false;
+        }
+
+        string header_lower(head_end_pos, '\0');
+        transform(conn.inbuf.begin(), conn.inbuf.begin() + head_end_pos, header_lower.begin(), ::tolower);
+
+        static constexpr string_view key = "content-length:";
+        size_t value_pos = header_lower.find(key);
+        if (value_pos == string::npos) {
+            LOG_DEBUG("HTTP no body");
+            return true;
+        }
+        value_pos += key.size();
+        value_pos = conn.inbuf.find_first_not_of(' ', value_pos);
+
+        if (value_pos == string::npos) {
+            LOG_DEBUG("HTTP incomplete or error");
+            return false;
+        }
+
+        size_t value_end = conn.inbuf.find("\r\n", value_pos);
+        size_t value = stoi(conn.inbuf.substr(value_pos, value_end - value_pos));
+
+        size_t body_start_pos = head_end_pos + 4;
+        size_t body_size = conn.inbuf.size() - body_start_pos;
+        if (body_size < value) {
+            LOG_DEBUG("HTTP body incomplete, received body size = " + to_string(body_size) + " ,expected = " + to_string(value));
+            return false;
+        } else {
+            LOG_DEBUG("HTTP received complete");
+        }
+
+        return true;
+    } else if (conn.protocol == PROTO_BINARY) {
+        if (conn.inbuf.size() < 8) {
+            LOG_DEBUG("fd = " + to_string(conn.fd) + " ,protobuf incomplete");
+            return false;
+        }
+
+        uint32_t msg_type_debug;
+        memcpy(&msg_type_debug, conn.inbuf.data(), 4);
+        if (msg_type_debug > MSG_ERROR) {
+            LOG_WARN("protobuf type error");
+            return false;
+        }
+
+        uint32_t msg_length;
+        memcpy(&msg_length, conn.inbuf.data() + 4, 4);
+        LOG_DEBUG("fd = " + to_string(conn.fd) + " ,is_request_complete: type=" + to_string(msg_type_debug) + " length=" + to_string(msg_length) + " inbuf_size=" + to_string(conn.inbuf.size()));
+
+        size_t prefix_consumed = 0;
+        while (conn.inbuf.size() >= prefix_consumed + 8) {
+            uint32_t msg_length;
+            memcpy(&msg_length, conn.inbuf.data() + prefix_consumed + 4, 4);
+
+            if (msg_length == 0) {
+                prefix_consumed += 8;
+                continue;
+            }
+
+            if (conn.inbuf.size() < prefix_consumed + 8 + msg_length) {
+                LOG_DEBUG("fd = " + to_string(conn.fd) + ", protobuf message incomplete");
+                return false;
+            }
+
+            conn.inbuf.erase(0, prefix_consumed);
+            return true;
+        }
+        conn.inbuf.erase(0, prefix_consumed);
+        return false;
+    }
+
+    return false;
 }
