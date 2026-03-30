@@ -13,18 +13,14 @@ enum ProtocolType {
 
 struct Connection {
     int fd;
-    int file_fd;
+    int file_fd = 0;
     size_t file_size;
     std::string inbuf;
     std::string outbuf;
     bool readClosed = false;
-    bool processing = false;
-    bool pendingClose = false;
     bool keepAlive = true;
     ProtocolType protocol;
-    std::mutex inbuf_mutex;
 };
-extern std::unordered_map<int, std::unique_ptr<Connection>> conns;
 
 struct TaskResult {
     int fd;

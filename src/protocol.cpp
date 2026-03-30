@@ -96,30 +96,7 @@ CheckResult checkRequest(const string &inbuf, ProtocolType protocol, int fd) {
     return result;
 }
 
-bool isRequestComplete(int fd) {
-    string inbuf;
-    {
-        lock_guard<mutex> lock(conns[fd]->inbuf_mutex);
-        inbuf = conns[fd]->inbuf;
-    }
-
-    CheckResult result = checkRequest(inbuf, conns[fd]->protocol, fd);
+bool isRequestComplete(Connection &conn) {
+    CheckResult result = checkRequest(conn.inbuf, conn.protocol, conn.fd);
     return result.complete;
-}
-
-string getCompleteRequestSnapshot(Connection &conn) {
-    string inbuf;
-    {
-        lock_guard<mutex> lock(conn.inbuf_mutex);
-        inbuf = conn.inbuf;
-    }
-
-    CheckResult result = checkRequest(inbuf, conn.protocol, conn.fd);
-
-    if (result.prefix_consumed) {
-        lock_guard<mutex> lock(conn.inbuf_mutex);
-        conn.inbuf.erase(0, result.prefix_consumed);
-    }
-
-    return inbuf.substr(0, result.length);
 }

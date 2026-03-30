@@ -13,10 +13,7 @@ struct Timer {
 
 class TimerHeap {
   public:
-    static TimerHeap &getInstance() {
-        static TimerHeap instance;
-        return instance;
-    }
+    TimerHeap() {}
     void add(int fd, long long timeout);
     void tick();
     int getNextTimeout();
@@ -27,7 +24,6 @@ class TimerHeap {
     void remove(int fd);
 
   private:
-    TimerHeap() {}
     int siftDown(int index);
     int siftUp(int index);
 

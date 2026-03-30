@@ -1,17 +1,6 @@
-#include "connection.h"
 #include "epoll_utils.h"
-#include "http.h"
-#include "http_codec.h"
 #include "logger.h"
-#include "message.pb.h"
-#include "mysql_pool.h"
-#include "protobuf_codec.h"
-#include "protocol.h"
-#include "redis_pool.h"
-#include "task.h"
-#include "thread_pool.h"
-#include "timerheap.h"
-#include "utils.h"
+#include "reactor.h"
 #include <arpa/inet.h>
 #include <cstring>
 #include <fcntl.h>
@@ -35,12 +24,17 @@ int main(int argc, char *argv[]) {
         AsyncLogger::getInstance().setLevel(argv[4]);
     }
 
+    int num_reactors = 5;
+    int next_reactor_idx = 0;
+    vector<unique_ptr<Reactor>> sub_reactors;
+    for (int i = 0; i < num_reactors; i++) {
+        sub_reactors.emplace_back(make_unique<Reactor>(i));
+    }
+
     signal(SIGINT, handleSignal);
     signal(SIGTERM, handleSignal);
 
     epollfd = epoll_create(1);
-    notifyfd = eventfd(0, EFD_NONBLOCK);
-    addfd(notifyfd);
 
     string ip(argv[1]);
     int http_port = stoi(argv[2]);
@@ -57,7 +51,7 @@ int main(int argc, char *argv[]) {
         setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
         bind(listenfd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
         listen(listenfd, 1024);
-        addfd(listenfd);
+        addfd(epollfd, listenfd);
         {
             string msg;
             msg.reserve(32);
@@ -76,26 +70,13 @@ int main(int argc, char *argv[]) {
     epoll_event events[MAXSIZE];
 
     while (running) {
-        int number = epoll_wait(epollfd, events, MAXSIZE, TimerHeap::getInstance().getNextTimeout());
+        int number = epoll_wait(epollfd, events, MAXSIZE, -1);
         LOG_DEBUG("happened events number = " + to_string(number));
-        if (number < 0) {
+        if (number <= 0) {
             if (errno == EINTR && running == false) {
                 LOG_INFO("server stopped by signal SIGINT or SIGTERM");
             } else {
                 LOG_ERROR("epoll_wait failed");
-            }
-            continue;
-        } else if (number == 0) {
-            LOG_INFO("epoll_wait running timeout, run timer tick");
-            TimerHeap::getInstance().tick();
-            for (int fd : TimerHeap::getInstance().getExpired()) {
-                LOG_INFO("close inactive connection, fd = " + to_string(fd));
-                if (conns[fd]->processing) {
-                    conns[fd]->pendingClose = true;
-                } else {
-                    close(fd);
-                    conns.erase(fd);
-                }
             }
             continue;
         }
@@ -111,21 +92,14 @@ int main(int argc, char *argv[]) {
                 while (true) {
                     sockaddr_in client_addr{};
                     socklen_t client_len = sizeof(client_addr);
-                    int connfd = accept(fd, reinterpret_cast<sockaddr *>(&client_addr), &client_len);
-                    if (connfd < 0) {
+                    int conn_fd = accept(fd, reinterpret_cast<sockaddr *>(&client_addr), &client_len);
+                    if (conn_fd < 0) {
                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
                             break;
                         }
                         LOG_ERROR("accept failed");
                         break;
                     }
-
-                    addfd(connfd);
-                    auto conn_ptr = make_unique<Connection>();
-                    conn_ptr->fd = connfd;
-                    conn_ptr->protocol = protocol_type;
-                    conns.emplace(connfd, move(conn_ptr));
-                    TimerHeap::getInstance().add(connfd, 6000);
 
                     char client_ip[INET_ADDRSTRLEN];
                     int client_port = ntohs(client_addr.sin_port);
@@ -134,75 +108,16 @@ int main(int argc, char *argv[]) {
                         string msg;
                         msg.reserve(32);
                         msg += "new connection, fd = ";
-                        msg += to_string(connfd);
+                        msg += to_string(conn_fd);
                         msg += " ip = ";
                         msg += client_ip;
                         msg += ':';
                         msg += to_string(client_port);
                         LOG_INFO(msg);
                     }
-                }
-            } else if (fd == notifyfd) {
-                uint64_t val;
-                read(notifyfd, &val, sizeof(val));
 
-                queue<TaskResult> localQueue;
-                {
-                    lock_guard<mutex> lock(ready_mutex);
-                    localQueue.swap(ready_queue);
-                }
-
-                LOG_DEBUG("start processing queue, queue len = " + to_string(localQueue.size()));
-                while (!localQueue.empty()) {
-                    auto &result = localQueue.front();
-                    if (conns.contains(result.fd)) {
-                        conns[result.fd]->outbuf = result.response;
-                        conns[result.fd]->processing = false;
-
-                        if (result.should_broadcast) {
-                            for (auto it = conns.begin(); it != conns.end(); it++) {
-                                trySend(*it->second);
-                            }
-                        } else if (result.file_fd) {
-                            // conns[result.fd]->file_fd = result.file_fd;
-                            // conns[result.fd]->file_size = result.file_size;
-                            trySend(*conns[result.fd]);
-                        } else {
-                            trySend(*conns[result.fd]);
-                        }
-                    }
-                    localQueue.pop();
-                }
-            } else if (events[i].events & EPOLLIN) {
-                TimerHeap::getInstance().update(fd, 6000);
-
-                char buf[BUFSIZE];
-                while (true) {
-                    int n = recv(fd, buf, BUFSIZE, 0);
-                    if (n > 0) {
-                        {
-                            lock_guard<mutex> lock(conns[fd]->inbuf_mutex);
-                            conns[fd]->inbuf.append(buf, n);
-                        }
-                    } else if (n == 0) {
-                        LOG_INFO("client closed writing, fd = " + to_string(fd));
-                        conns[fd]->readClosed = true;
-                        tryEnqueueTask(*conns[fd]);
-                        break;
-                    } else {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                            tryEnqueueTask(*conns[fd]);
-                            break;
-                        } else {
-                            LOG_ERROR("read failed");
-                            closeOrDefer(fd);
-                            break;
-                        }
-                    }
-                }
-            } else if (events[i].events & EPOLLOUT) {
-                if (conns.contains(fd)) {
-                    trySend(*conns[fd]);
+                    sub_reactors[next_reactor_idx]->addConnection(conn_fd, protocol_type);
+                    next_reactor_idx = (next_reactor_idx + 1) % num_reactors;
                 }
             } else {
                 LOG_WARN("something else happened");
@@ -210,16 +125,13 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    thread_pool.shutDown();
-
-    for (auto &[fd, conn] : conns) {
-        close(fd);
+    for (int i = 0; i < num_reactors; i++) {
+        sub_reactors[i]->shutDown();
     }
 
     close(http_listenfd);
     close(protobuf_listenfd);
     close(epollfd);
-    close(notifyfd);
 
     return 0;
 }
