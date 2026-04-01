@@ -24,7 +24,7 @@ int main(int argc, char *argv[]) {
         AsyncLogger::getInstance().setLevel(argv[4]);
     }
 
-    int num_reactors = 1;
+    int num_reactors = 5;
     int next_reactor_idx = 0;
     vector<unique_ptr<Reactor>> sub_reactors;
     for (int i = 0; i < num_reactors; i++) {

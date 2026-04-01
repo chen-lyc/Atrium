@@ -1,6 +1,7 @@
 #pragma once
 
 #include "connection.h"
+#include "memory_pool.h"
 #include "timerheap.h"
 #include <atomic>
 #include <memory>
@@ -11,7 +12,7 @@
 
 class Reactor {
   public:
-    Reactor(int index);
+    Reactor(int index, size_t num_memory = 100);
     ~Reactor();
     void addConnection(int fd, ProtocolType protocol);
     void shutDown();
@@ -32,7 +33,8 @@ class Reactor {
     std::queue<std::pair<int, ProtocolType>> m_conn_queue;
     std::mutex m_queue_mutex;
     TimerHeap m_timer_heap;
-    std::unordered_map<int, std::unique_ptr<Connection>> m_conns;
+    MemoryPool m_conn_pool;
+    std::unordered_map<int, std::unique_ptr<Connection, ConnDeleter>> m_conns;
     std::thread m_thread;
     std::atomic<bool> m_running{true};
 };

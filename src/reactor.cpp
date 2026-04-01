@@ -16,7 +16,7 @@ using namespace std;
 
 static bool isRequestComplete(Connection &conn);
 
-Reactor::Reactor(int index) : m_index(index) {
+Reactor::Reactor(int index, size_t num_memory) : m_index(index), m_conn_pool(num_memory) {
     m_epollfd = epoll_create1(0);
     m_notifyfd = eventfd(0, EFD_NONBLOCK);
     addfd(m_notifyfd);
@@ -89,19 +89,20 @@ void Reactor::loop() {
                     conn_queue.swap(m_conn_queue);
                 }
                 while (!conn_queue.empty()) {
+                    auto [conn_fd, protocol] = conn_queue.front();
+                    conn_queue.pop();
+
                     string msg;
                     msg.reserve(32);
                     msg += "fd = ";
-                    msg += to_string(fd);
+                    msg += to_string(conn_fd);
                     msg += " assigned to ";
                     msg += "reactor[";
                     msg += to_string(m_index);
                     msg += ']';
                     LOG_INFO(msg);
 
-                    auto [conn_fd, protocol] = conn_queue.front();
-                    conn_queue.pop();
-                    unique_ptr<Connection> conn_ptr = make_unique<Connection>();
+                    unique_ptr<Connection, ConnDeleter> conn_ptr = m_conn_pool.create();
                     conn_ptr->fd = conn_fd;
                     conn_ptr->protocol = protocol;
                     m_conns.emplace(conn_fd, move(conn_ptr));
@@ -122,6 +123,9 @@ void Reactor::loop() {
                         LOG_INFO("client closed writing, fd = " + to_string(fd));
                         m_conns[fd]->readClosed = true;
                         process(*m_conns[fd]);
+                        if (m_conns.contains(fd) && m_conns[fd]->outbuf.empty()) {
+                            closeNow(fd);
+                        }
                         break;
                     } else {
                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -420,6 +424,8 @@ void Reactor::process(Connection &conn) {
         }
         conn.inbuf.erase(conn.inbuf.begin(), conn.inbuf.begin() + end_pos);
 
+        int conn_fd = conn.fd;
+
         if (should_broadcast) {
             for (auto it = m_conns.begin(); it != m_conns.end();) {
                 if (it->second->fd != conn.fd) {
@@ -434,6 +440,10 @@ void Reactor::process(Connection &conn) {
             conn.outbuf.clear();
         } else {
             trySend(conn);
+        }
+
+        if (!m_conns.contains(conn_fd)) {
+            return;
         }
     }
 }

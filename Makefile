@@ -5,7 +5,7 @@ TARGET = build/server.out
 
 SRCS = src/server.cpp src/message.pb.cc src/server_utils.cpp src/timerheap.cpp \
        src/http_codec.cpp src/logger.cpp src/mysql_pool.cpp src/redis_pool.cpp \
-       src/protobuf_codec.cpp src/utils.cpp  src/reactor.cpp \
+       src/protobuf_codec.cpp src/utils.cpp  src/reactor.cpp src/memory_pool.cpp \
 
 OBJS = $(SRCS:src/%.cpp=build/%.o)
 OBJS := $(OBJS:src/%.cc=build/%.o)
