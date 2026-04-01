@@ -1,6 +1,11 @@
 #include "memory_pool.h"
 using namespace std;
 
+void ConnDeleter::operator()(Connection *p) {
+    p->~Connection();
+    pool->deallocate(p);
+}
+
 MemoryPool::MemoryPool(size_t n) : m_n(n) {
     expand(n);
 }

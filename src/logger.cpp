@@ -15,7 +15,25 @@ static string getTimestamp() {
     return buf;
 }
 
-AsyncLogger::AsyncLogger(size_t flush_threshold) : m_flush_threshold(flush_threshold), m_min_level(INFO) {
+AsyncLogger *g_instance = nullptr;
+
+AsyncLogger &AsyncLogger::getInstance() {
+    if (g_instance == nullptr) {
+        g_instance = new AsyncLogger(5);
+        pthread_atfork(nullptr, nullptr, AsyncLogger::forkChildReset);
+        atexit([] {
+            delete g_instance;
+            g_instance = nullptr;
+        });
+    }
+    return *g_instance;
+}
+
+void AsyncLogger::forkChildReset() {
+    g_instance = new AsyncLogger(5);
+}
+
+AsyncLogger::AsyncLogger(size_t flush_threshold) : m_flush_threshold(flush_threshold) {
     m_file.open("logs/server.log", ios::app);
     if (!m_file.is_open()) {
         std::cerr << "log file open failed!" << std::endl;
@@ -59,6 +77,11 @@ void AsyncLogger::log(LOGLEVEL level, string_view message) {
             m_cond.notify_one();
         }
     }
+}
+
+void AsyncLogger::setFilePath(const string file_path) {
+    m_file.close();
+    m_file.open(file_path, ios::app);
 }
 
 void AsyncLogger::setLevel(string_view min_level) {

@@ -9,10 +9,7 @@ class MemoryPool;
 
 struct ConnDeleter {
     MemoryPool *pool;
-    void operator()(Connection *p) {
-        p->~Connection();
-        pool->deallocate(p);
-    }
+    void operator()(Connection *p);
 };
 
 class MemoryPool {

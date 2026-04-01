@@ -44,15 +44,13 @@ class AsyncLogger {
         FATAL
     };
 
-    static AsyncLogger &getInstance() {
-        static AsyncLogger instance(5);
-        return instance;
-    }
+    static AsyncLogger &getInstance();
     ~AsyncLogger();
     void log(LOGLEVEL level, std::string_view message);
     void setLevel(LOGLEVEL min_level) {
         m_min_level = min_level;
     }
+    void setFilePath(const std::string file_path);
     void setLevel(std::string_view min_level);
     LOGLEVEL getMinLevel() const {
         return m_min_level;
@@ -60,6 +58,7 @@ class AsyncLogger {
 
   private:
     AsyncLogger(size_t flush_threshold);
+    static void forkChildReset();
     std::string_view levelToString(LOGLEVEL level) const;
     void backend();
 
@@ -71,6 +70,6 @@ class AsyncLogger {
     std::thread m_backend;
     size_t m_flush_threshold;
     std::ofstream m_file;
-    LOGLEVEL m_min_level;
+    LOGLEVEL m_min_level = INFO;
     bool m_stop = false;
 };
