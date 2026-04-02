@@ -84,6 +84,8 @@ Redis 连接池 + ConnGuard：登录时先查 Redis 缓存，未命中再查 MyS
 
 优雅关闭：SIGINT/SIGTERM 信号触发主线程退出，逐个 shutdown 子 Reactor，等待线程 join 后清理资源。
 
+sendfile 零拷贝：静态文件发送使用 sendfile 系统调用，数据直接从内核文件缓冲区传输到 socket 缓冲区，避免用户态拷贝，降低 CPU 开销。
+
 ## 压测数据
 | 测试场景 | QPS | 平均响应时间 | 失败数 |
 |---------|-----|------------|-------|
@@ -102,6 +104,8 @@ Redis 连接池 + ConnGuard：登录时先查 Redis 缓存，未命中再查 MyS
 | **v2.0版本（多Reactor架构）** | | | |
 | POST /login + Redis缓存 (-n 10000 -c 500) | 19917 | 23.1ms | 0 |
 | 对比v1.4同条件 (-n 10000 -c 500) | 10095 | 44.0ms | 0 |
+| **v2.3版本（sendfile零拷贝）** | | | |
+| GET /index.html (-n 10000 -c 500) | 26600 | 18.8ms | 0 |
 
 ## 数据库初始化
 ```bash

@@ -315,18 +315,12 @@ void Reactor::process(Connection &conn) {
                     struct stat st;
                     fstat(file_fd, &st);
                     size_t file_size = st.st_size;
-
-                    string body(file_size, '\0');
-                    read(file_fd, body.data(), file_size);
+                    conn.file_fd = file_fd;
+                    conn.file_size = file_size;
 
                     conn.outbuf += "HTTP/1.1 200 OK\r\nContent-Length: ";
                     conn.outbuf += to_string(file_size);
                     conn.outbuf += "\r\n\r\n";
-                    conn.outbuf += body;
-                    // trySend(conn);
-                    // off_t offset = 0;
-                    // sendfile(conn.fd, file_fd, &offset, file_size);
-                    close(file_fd);
                 }
             } else {
                 conn.outbuf = default_response;
@@ -475,7 +469,7 @@ void Reactor::modfd(int fd, uint32_t events) {
 }
 
 void Reactor::trySend(Connection &conn) {
-    if (conn.outbuf.empty()) {
+    if (conn.outbuf.empty() && conn.file_offset == conn.file_size) {
         return;
     }
 
@@ -492,10 +486,26 @@ void Reactor::trySend(Connection &conn) {
         } else {
             LOG_ERROR("write failed");
             conn.outbuf.erase(0, sent);
+            closeFile(conn);
             return;
         }
     }
     conn.outbuf.erase(0, sent);
+
+    while (conn.file_offset < conn.file_size) {
+        ssize_t n = sendfile(conn.fd, conn.file_fd, &conn.file_offset, conn.file_size - conn.file_offset);
+        if (n > 0) {
+        } else if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            LOG_DEBUG("sendfile would block, enable EPOLLOUT and send later");
+            modfd(conn.fd, EPOLLET | EPOLLIN | EPOLLOUT);
+            return;
+        } else {
+            LOG_ERROR("sendfile failed");
+            closeFile(conn);
+            return;
+        }
+    }
+    closeFile(conn);
 
     if (conn.readClosed) {
         LOG_INFO("send complete, close fd = " + to_string(conn.fd));
@@ -515,6 +525,13 @@ void Reactor::trySend(Connection &conn) {
             LOG_INFO(msg);
         }
     }
+}
+
+void Reactor::closeFile(Connection &conn) {
+    close(conn.file_fd);
+    conn.file_fd = -1;
+    conn.file_size = 0;
+    conn.file_offset = 0;
 }
 
 void Reactor::closeNow(int fd) {

@@ -23,6 +23,7 @@ class Reactor {
     void addfd(int fd);
     void modfd(int fd, uint32_t events);
     void trySend(Connection &conn);
+    void closeFile(Connection &conn);
     void closeNow(int fd);
     void process(Connection &conn);
 

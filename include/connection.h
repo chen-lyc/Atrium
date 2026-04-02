@@ -9,8 +9,9 @@ enum ProtocolType {
 
 struct Connection {
     int fd;
-    int file_fd = 0;
-    size_t file_size;
+    int file_fd = -1;
+    size_t file_size = 0;
+    off_t file_offset = 0;
     std::string inbuf;
     std::string outbuf;
     bool readClosed = false;
