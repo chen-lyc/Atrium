@@ -27,3 +27,19 @@ server stop
 server stop
 2026-04-02 08:51:09.604 INFO process start, pid is 90032
 2026-04-02 23:02:40.613 INFO process start, pid is 6707
+2026-04-12 18:33:15.377 INFO process start, pid is 2932878
+2026-04-12 18:33:15.380 INFO 
+server stop
+2026-04-12 18:33:44.510 INFO process start, pid is 2932971
+2026-04-12 18:33:44.512 INFO 
+server stop
+2026-04-12 18:36:05.314 INFO process start, pid is 2933291
+2026-04-12 18:42:09.83 INFO 
+server stop
+2026-04-12 18:42:10.108 INFO process start, pid is 2934285
+2026-04-12 19:24:15.704 INFO process start, pid is 4292
+2026-04-12 19:29:59.166 INFO pid = 4292, process terminated by signal 13, restarting...
+2026-04-12 19:29:59.166 INFO process start, pid is 4802
+2026-04-12 19:32:58.818 INFO 
+server stop
+2026-04-12 19:41:07.519 INFO process start, pid is 5628

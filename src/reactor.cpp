@@ -65,7 +65,7 @@ void Reactor::loop() {
         } else if (number == 0) {
             m_timer_heap.tick();
             for (auto fd : m_timer_heap.getExpired()) {
-                LOG_INFO("close inactive connection, fd = " + to_string(fd));
+                LOG_DEBUG("close inactive connection, fd = " + to_string(fd));
                 closeNow(fd);
             }
             continue;
@@ -92,15 +92,7 @@ void Reactor::loop() {
                     auto [conn_fd, protocol] = conn_queue.front();
                     conn_queue.pop();
 
-                    string msg;
-                    msg.reserve(32);
-                    msg += "fd = ";
-                    msg += to_string(conn_fd);
-                    msg += " assigned to ";
-                    msg += "reactor[";
-                    msg += to_string(m_index);
-                    msg += ']';
-                    LOG_INFO(msg);
+                    LOG_DEBUG("fd = " + to_string(conn_fd) + " assigned to " + "reactor[" + to_string(m_index) + ']');
 
                     unique_ptr<Connection, ConnDeleter> conn_ptr = m_conn_pool.create();
                     conn_ptr->fd = conn_fd;
@@ -120,7 +112,7 @@ void Reactor::loop() {
                     if (n > 0) {
                         m_conns[fd]->inbuf.append(buf, n);
                     } else if (n == 0) {
-                        LOG_INFO("client closed writing, fd = " + to_string(fd));
+                        LOG_DEBUG("client closed writing, fd = " + to_string(fd));
                         m_conns[fd]->readClosed = true;
                         process(*m_conns[fd]);
                         if (m_conns.contains(fd) && m_conns[fd]->outbuf.empty()) {
@@ -152,18 +144,9 @@ void Reactor::loop() {
 void Reactor::process(Connection &conn) {
     while (isRequestComplete(conn)) {
         bool should_broadcast = false;
-
-        {
-            string msg;
-            msg.reserve(32 + conn.inbuf.size());
-            msg += "fd = ";
-            msg += to_string(conn.fd);
-            msg += " send data : ";
-            msg += conn.inbuf;
-            LOG_INFO(msg);
-        }
-
         size_t end_pos;
+
+        LOG_DEBUG("fd = " + to_string(conn.fd) + " send data : " + conn.inbuf);
 
         auto do_register = [](const string &username, const string &password) {
             string salt = generateSalt();
@@ -203,7 +186,7 @@ void Reactor::process(Connection &conn) {
             string result_value;
             int ret = RedisPool::getInstance().executeCommand(command, result_value);
             if (ret) {
-                LOG_INFO("login cache hit in Redis");
+                LOG_DEBUG("login cache hit in Redis");
 
                 size_t separator_pos = result_value.find(':');
                 string password_hash = result_value.substr(0, separator_pos);
@@ -254,7 +237,7 @@ void Reactor::process(Connection &conn) {
             LOG_DEBUG("request is HTTP and method is " + req.method + ", target is " + req.target + ", version is " + req.version);
 
             if (ret == PARSE_ERROR) {
-                LOG_INFO("HTTP parse failed, fd = " + to_string(conn.fd));
+                LOG_DEBUG("HTTP parse failed, fd = " + to_string(conn.fd));
                 conn.outbuf = resp_bad_request;
             } else if (req.target == "/echo") {
                 conn.outbuf += "HTTP/1.1 200 OK\r\nContent-Length: ";
@@ -307,7 +290,7 @@ void Reactor::process(Connection &conn) {
             } else if (req.method == "GET") {
                 string file_path = "static" + req.target;
                 if (req.target == "/") file_path = "static/index.html";
-                LOG_INFO("file path is " + file_path);
+                LOG_DEBUG("file path is " + file_path);
                 int file_fd = open(file_path.c_str(), O_RDONLY);
                 if (file_fd == -1) {
                     conn.outbuf = resp_not_found;
@@ -335,19 +318,7 @@ void Reactor::process(Connection &conn) {
             end_pos = req.end_pos;
             conn.outbuf.reserve(256);
 
-            {
-                string msg;
-                msg.reserve(256);
-                msg += "parsed data: ";
-                msg += to_string(req.msg_type);
-                msg += ' ';
-                msg += to_string(req.msg_length);
-                msg += " usernamne=";
-                msg += req.username;
-                msg += " password=";
-                msg += req.password;
-                LOG_INFO(msg);
-            }
+            LOG_DEBUG("parsed data: " + to_string(req.msg_type) + ' ' + to_string(req.msg_length) + " usernamne=" + req.username + " password=" + req.password);
 
             enum ResponseKind {
                 REGISTER,
@@ -392,7 +363,7 @@ void Reactor::process(Connection &conn) {
             };
 
             if (ret == MSG_ERROR) {
-                LOG_INFO("protobuf parse failed, fd = " + to_string(conn.fd));
+                LOG_DEBUG("protobuf parse failed, fd = " + to_string(conn.fd));
 
                 buildResponse(ERROR, "parse error");
             } else if (ret == MSG_REGISTER_REQ) {
@@ -508,22 +479,15 @@ void Reactor::trySend(Connection &conn) {
     closeFile(conn);
 
     if (conn.readClosed) {
-        LOG_INFO("send complete, close fd = " + to_string(conn.fd));
+        LOG_DEBUG("send complete, close fd = " + to_string(conn.fd));
         closeNow(conn.fd);
         return;
     } else if (!conn.keepAlive) {
-        LOG_INFO("client not keep alive, send complete, close fd = " + to_string(conn.fd));
+        LOG_DEBUG("client not keep alive, send complete, close fd = " + to_string(conn.fd));
         closeNow(conn.fd);
         return;
     } else {
-        {
-            string msg;
-            msg.reserve(32);
-            msg += "fd = ";
-            msg += to_string(conn.fd);
-            msg += ", send complete";
-            LOG_INFO(msg);
-        }
+        LOG_DEBUG("fd = " + to_string(conn.fd) + ", send complete");
     }
 }
 

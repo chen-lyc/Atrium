@@ -50,9 +50,14 @@ int main(int argc, char *argv[]) {
         } else if (pid == 0) {
             LOG_INFO("\nserver starting");
 
-            if (argc <= 3) {
+            string ip = "127.0.0.1";
+            int http_port = 8080;
+            int protobuf_port = 9090;
+            if (argc > 3) {
                 LOG_WARN("usage: ./threadpool_epoll_demo.out ip port");
-                return -1;
+                ip = argv[1];
+                http_port = stoi(argv[2]);
+                protobuf_port = stoi(argv[3]);
             }
 
             if (argc > 4) {
@@ -71,10 +76,6 @@ int main(int argc, char *argv[]) {
 
             int epollfd = epoll_create(1);
 
-            string ip(argv[1]);
-            int http_port = stoi(argv[2]);
-            int protobuf_port = stoi(argv[3]);
-
             auto socket_bind_listen = [epollfd](const string &ip, int port) {
                 sockaddr_in addr{};
                 addr.sin_family = AF_INET;
@@ -87,15 +88,8 @@ int main(int argc, char *argv[]) {
                 bind(listenfd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
                 listen(listenfd, 1024);
                 addfd(epollfd, listenfd);
-                {
-                    string msg;
-                    msg.reserve(32);
-                    msg += "server listening on ";
-                    msg += ip;
-                    msg += ':';
-                    msg += to_string(port);
-                    LOG_INFO(msg);
-                }
+
+                LOG_DEBUG("server listening on " + ip + ':' + to_string(port));
                 return listenfd;
             };
 
@@ -139,17 +133,7 @@ int main(int argc, char *argv[]) {
                             char client_ip[INET_ADDRSTRLEN];
                             int client_port = ntohs(client_addr.sin_port);
                             inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
-                            {
-                                string msg;
-                                msg.reserve(32);
-                                msg += "new connection, fd = ";
-                                msg += to_string(conn_fd);
-                                msg += " ip = ";
-                                msg += client_ip;
-                                msg += ':';
-                                msg += to_string(client_port);
-                                LOG_INFO(msg);
-                            }
+                            LOG_DEBUG("new connection, fd = " + to_string(conn_fd) + " ip = " + client_ip + ':' + to_string(client_port));
 
                             sub_reactors[next_reactor_idx]->addConnection(conn_fd, protocol_type);
                             next_reactor_idx = (next_reactor_idx + 1) % num_reactors;
