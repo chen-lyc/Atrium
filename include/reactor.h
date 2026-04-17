@@ -12,27 +12,34 @@
 
 class Reactor {
   public:
-    Reactor(int index, size_t num_memory = 100);
+    Reactor(int index, std::vector<std::unique_ptr<Reactor>> &sub_reactors, size_t num_memory = 100);
     ~Reactor();
     void addConnection(int fd, ProtocolType protocol);
+    void enqueueBroadcast(std::shared_ptr<const std::string> frame);
     void shutDown();
 
   private:
     void loop();
-    void notify();
+    void conn_notify();
+    void broadcast_notify();
     void addfd(int fd);
     void modfd(int fd, uint32_t events);
     void trySend(Connection &conn);
     void closeFile(Connection &conn);
     void closeNow(int fd);
     void process(Connection &conn);
+    std::string_view getMimeType(const std::string &file_path);
 
   private:
     int m_index;
     int m_epollfd;
-    int m_notifyfd;
+    int m_conn_notifyfd;
+    int m_broadcast_notifyfd;
+    std::vector<std::unique_ptr<Reactor>> &m_sub_reactors;
     std::queue<std::pair<int, ProtocolType>> m_conn_queue;
     std::mutex m_queue_mutex;
+    std::queue<std::shared_ptr<const std::string>> m_broadcast_queue;
+    std::mutex m_broadcast_mutex;
     TimerHeap m_timer_heap;
     MemoryPool m_conn_pool;
     std::unordered_map<int, std::unique_ptr<Connection, ConnDeleter>> m_conns;

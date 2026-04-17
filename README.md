@@ -1,6 +1,6 @@
 # WebServer
 
-C++ Linux 高性能服务器，支持 HTTP 协议和自定义二进制协议（protobuf），包含多人聊天室功能。
+C++ Linux 高性能服务器，支持 HTTP / WebSocket / 自定义二进制协议，内置多人聊天室与单页前端演示。
 
 ## 架构
 
@@ -14,42 +14,50 @@ C++ Linux 高性能服务器，支持 HTTP 协议和自定义二进制协议（p
                           │   Client      │
                           └───────┬───────┘
                                   │
-                     ┌────────────┴────────────┐
-                     │                         │
-              HTTP (8080)              Binary (9090)
-                     │                         │
-                     └────────────┬────────────┘
-                                  │
-                          ┌───────▼────────┐
-                          │  MainReactor   │
-                          │  epoll_wait    │
-                          │  accept only   │
-                          └──┬───┬───┬─────┘
-                             │   │   │
-                    round-robin 分发 (eventfd + queue)
-                             │   │   │
-                ┌────────────┘   │   └────────────┐
-                ▼                ▼                 ▼
-          ┌───────────┐  ┌───────────┐     ┌───────────┐
-          │SubReactor │  │SubReactor │ ... │SubReactor │
-          │epoll_wait │  │epoll_wait │     │epoll_wait │
-          │ I/O+业务  │  │ I/O+业务  │     │ I/O+业务  │
-          │TimerHeap  │  │TimerHeap  │     │TimerHeap  │
-          │MemoryPool │  │MemoryPool │     │MemoryPool │
-          └───────────┘  └───────────┘     └───────────┘
-                               │
-                    ┌──────────┴──────────┐
-                    ▼                     ▼
-           ┌─────────────────┐   ┌──────────────┐
-           │  MySQL Pool     │   │  Redis Pool  │
-           │  ConnGuard RAII │   │  ConnGuard   │
-           │  (全局单例)      │   │  (全局单例)   │
-           └─────────────────┘   └──────────────┘
+                ┌─────────────────┼─────────────────┐
+                │                 │                 │
+        HTTP / WebSocket    Binary (9090)     Static files
+              (8080)                          (via HTTP)
+                │                 │                 │
+                └────────┬────────┴────────┬────────┘
+                         │                 │
+                 ┌───────▼────────┐        │
+                 │   MainReactor  │        │
+                 │   epoll_wait   │        │
+                 │   accept only  │        │
+                 └──┬───┬───┬─────┘        │
+                    │   │   │              │
+           round-robin 分发 (eventfd + queue)
+                    │   │   │              │
+       ┌────────────┘   │   └────────────┐ │
+       ▼                ▼                 ▼│
+  ┌───────────┐  ┌───────────┐     ┌──────▼────┐
+  │SubReactor │  │SubReactor │ ... │SubReactor │
+  │epoll ET   │  │epoll ET   │     │epoll ET   │
+  │I/O + 业务 │  │I/O + 业务 │     │I/O + 业务 │
+  │TimerHeap  │  │TimerHeap  │     │TimerHeap  │
+  │MemoryPool │  │MemoryPool │     │MemoryPool │
+  │broadcast_ │  │broadcast_ │     │broadcast_ │
+  │  evfd     │  │  evfd     │     │  evfd     │
+  └─────┬─────┘  └─────┬─────┘     └─────┬─────┘
+        └──────────────┼─────────────────┘
+                       │
+             WebSocket 跨 Reactor 广播
+          (shared_ptr<const string> 共享只读帧)
 
-          ┌─────────────────────────────────────┐
-          │  Async Logger (queue swap + flush)  │
-          │  (全局单例)                          │
-          └─────────────────────────────────────┘
+                       │
+            ┌──────────┴──────────┐
+            ▼                     ▼
+   ┌─────────────────┐   ┌──────────────┐
+   │  MySQL Pool     │   │  Redis Pool  │
+   │  ConnGuard RAII │   │  ConnGuard   │
+   │  (全局单例)      │   │  (全局单例)   │
+   └─────────────────┘   └──────────────┘
+
+  ┌─────────────────────────────────────┐
+  │  Async Logger (queue swap + flush)  │
+  │  (全局单例)                          │
+  └─────────────────────────────────────┘
 ```
 
 ## 目录结构
@@ -59,19 +67,29 @@ WebServer/
 ├── src/          # 源文件（.cpp/.cc）
 ├── include/      # 头文件（.h/.tpp）
 ├── build/        # 编译输出
-├── demos/        # protobuf客户端demo
-├── static/       # 静态文件
+├── demos/        # protobuf 客户端 demo
+├── static/       # 静态文件（index.html 聊天室前端）
 ├── logs/         # 运行日志
 ├── Makefile
 ├── message.proto
 └── README.md
 ```
 
+## 协议支持
+
+| 协议 | 端口 | 用途 |
+|---|---|---|
+| HTTP/1.1 | 8080 | 静态文件服务、登录/注册接口、WebSocket 升级入口 |
+| WebSocket | 8080 | 实时聊天室（HTTP Upgrade 升级而来） |
+| 自定义二进制（protobuf） | 9090 | Binary 客户端聊天与测试 |
+
+Connection 结构体通过 `protocol` 字段（`PROTO_HTTP` / `PROTO_BINARY` / `PROTO_WEBSOCKET`）区分连接状态，在同一 SubReactor 中统一管理。
+
 ## 设计说明
 
 **多 Reactor 架构**：MainReactor 只负责 accept，通过 round-robin 将新连接分发给 SubReactor，每个 SubReactor 独立持有 epollfd、连接表、时间堆、对象池，在自己的线程中完成 I/O 和业务处理，避免跨线程共享连接数据。
 
-**epoll ET 模式**：减少了 epoll_wait 对同一个 fd 的重复返回，降低事件处理的冗余。
+**epoll ET 模式**：减少 epoll_wait 对同一个 fd 的重复返回，降低事件处理的冗余。
 
 **eventfd 通知**：MainReactor 通过 eventfd + 队列将新连接 fd 传递给 SubReactor，避免跨线程共享连接数据。
 
@@ -87,11 +105,19 @@ WebServer/
 
 **自定义二进制协议**：4 字节消息类型 + 4 字节消息长度 + protobuf 序列化数据，支持粘包处理。
 
-**聊天室广播**：PROTO_BINARY 客户端发送聊天消息，服务端广播给同 Reactor 内所有其他 PROTO_BINARY 连接。
+**WebSocket 协议**：复用 HTTP 8080 端口，识别 Upgrade: websocket 头后走握手分支，OpenSSL 算 SHA1 + Base64 生成 Sec-WebSocket-Accept，握手成功后 Connection 的 protocol 切换为 PROTO_WEBSOCKET。帧解析拆分为 checkComplete 和 parseFrame，支持 TEXT/CLOSE/PING/PONG，服务端帧不带 MASK。
 
-**心跳保活**：客户端定时发送心跳包，SubReactor 识别后直接处理，刷新连接超时时间。
+**WebSocket 跨 Reactor 广播**：每个 SubReactor 持有独立的 broadcast_evfd 和 broadcast_queue（mutex 保护），队列元素为 shared_ptr<const string> 共享只读帧，const 在编译期防止跨线程写入。SubReactor 通过 Server 持有的 vector 互相 enqueue，MainReactor 不参与。handleBroadcast 用 swap 把成员队列换到局部变量，将锁临界区压缩为 O(1)。
 
-**异步日志 queue swap**：避免降低主线程和工作线程速率，后台处理日志写入。
+**Binary 协议聊天室广播**：早期实现，PROTO_BINARY 消息只广播给同 SubReactor 内其他 PROTO_BINARY 连接，未跨 Reactor。WebSocket 广播升级为跨 Reactor 方案后，Binary 路径保留原实现作为对照。
+
+**静态文件 + MIME type**：HTTP GET 请求通过 getMimeType 根据扩展名返回 Content-Type（static const unordered_map<string_view, string_view> O(1) 查表），未知类型按 HTTP 规范返回 application/octet-stream，支持 html/css/js/json/png/jpg/svg/ico。
+
+**聊天室前端**：`static/index.html` 是单文件 React SPA（CDN 加载依赖），通过 `ws://${window.location.host}/chat` 建连，消息 JSON 格式 {nickname, text}，服务端按 UTF-8 文本帧原样广播。
+
+**心跳保活**：Binary 客户端定时发送心跳包，SubReactor 识别后直接处理，刷新连接超时时间。WebSocket 当前依赖较长的空闲超时（60s）被动关闭，服务端主动 PING 保活作为后续优化点。
+
+**异步日志 queue swap**：避免降低主线程和工作线程速率，后台处理日志写入。AsyncLogger 单例改为全局指针 + `pthread_atfork` 解决 fork + mutex 死锁，`atexit` 注册 delete 确保日志 flush。
 
 **守护进程**：fork 模式运行，父进程通过 waitpid 监控子进程，子进程异常退出（信号终止）时自动重启，正常退出时停止。
 

@@ -21,6 +21,8 @@ struct HttpRequest {
     std::string connection;
     std::string content_type;
     uint32_t content_length = 0;
+    bool is_websocket = false;
+    std::string sec_websocket_key;
 
     std::string body;
 

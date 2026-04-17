@@ -59,6 +59,7 @@ int main(int argc, char *argv[]) {
                 http_port = stoi(argv[2]);
                 protobuf_port = stoi(argv[3]);
             }
+            cout << "ip = " << ip << ':' << http_port << endl;
 
             if (argc > 4) {
                 AsyncLogger::getInstance().setLevel(argv[4]);
@@ -68,7 +69,7 @@ int main(int argc, char *argv[]) {
             int next_reactor_idx = 0;
             vector<unique_ptr<Reactor>> sub_reactors;
             for (int i = 0; i < num_reactors; i++) {
-                sub_reactors.emplace_back(make_unique<Reactor>(i));
+                sub_reactors.emplace_back(make_unique<Reactor>(i, sub_reactors));
             }
 
             signal(SIGINT, handleSignal);

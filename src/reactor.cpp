@@ -7,7 +7,13 @@
 #include "protobuf_codec.h"
 #include "redis_pool.h"
 #include "utils.h"
+#include "websocket_codec.h"
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <openssl/bio.h>
+#include <openssl/buffer.h>
+#include <openssl/evp.h>
+#include <openssl/sha.h>
 #include <sys/epoll.h>
 #include <sys/sendfile.h>
 #include <sys/socket.h>
@@ -16,10 +22,12 @@ using namespace std;
 
 static bool isRequestComplete(Connection &conn);
 
-Reactor::Reactor(int index, size_t num_memory) : m_index(index), m_conn_pool(num_memory) {
+Reactor::Reactor(int index, vector<unique_ptr<Reactor>> &sub_reactors, size_t num_memory) : m_index(index), m_sub_reactors(sub_reactors), m_timer_heap(index), m_conn_pool(num_memory) {
     m_epollfd = epoll_create1(0);
-    m_notifyfd = eventfd(0, EFD_NONBLOCK);
-    addfd(m_notifyfd);
+    m_conn_notifyfd = eventfd(0, EFD_NONBLOCK);
+    m_broadcast_notifyfd = eventfd(0, EFD_NONBLOCK);
+    addfd(m_conn_notifyfd);
+    addfd(m_broadcast_notifyfd);
     m_thread = thread(&Reactor::loop, this);
 }
 
@@ -31,7 +39,7 @@ Reactor::~Reactor() {
 
 void Reactor::shutDown() {
     m_running = false;
-    notify();
+    conn_notify();
     if (m_thread.joinable()) {
         m_thread.join();
     }
@@ -39,7 +47,7 @@ void Reactor::shutDown() {
         close(fd);
     }
     close(m_epollfd);
-    close(m_notifyfd);
+    close(m_conn_notifyfd);
 }
 
 void Reactor::addConnection(int fd, ProtocolType protocol) {
@@ -47,7 +55,15 @@ void Reactor::addConnection(int fd, ProtocolType protocol) {
         lock_guard<mutex> lock(m_queue_mutex);
         m_conn_queue.emplace(fd, protocol);
     }
-    notify();
+    conn_notify();
+}
+
+void Reactor::enqueueBroadcast(shared_ptr<const string> frame) {
+    {
+        lock_guard<mutex> lock(m_broadcast_mutex);
+        m_broadcast_queue.emplace(frame);
+    }
+    broadcast_notify();
 }
 
 void Reactor::loop() {
@@ -74,9 +90,9 @@ void Reactor::loop() {
         for (int i = 0; i < number; i++) {
             int fd = events[i].data.fd;
             LOG_DEBUG("reactor[" + to_string(m_index) + "], event fd = " + to_string(fd));
-            if (fd == m_notifyfd) {
+            if (fd == m_conn_notifyfd) {
                 uint64_t val;
-                read(m_notifyfd, &val, sizeof(val));
+                read(m_conn_notifyfd, &val, sizeof(val));
 
                 if (!m_running) {
                     LOG_INFO("reactor close");
@@ -101,9 +117,35 @@ void Reactor::loop() {
                     addfd(conn_fd);
                     m_timer_heap.add(conn_fd, 6000);
                 }
+            } else if (fd == m_broadcast_notifyfd) {
+                uint64_t val;
+                read(m_broadcast_notifyfd, &val, sizeof(val));
+
+                queue<shared_ptr<const string>> broadcast_queue;
+                {
+                    lock_guard<mutex> lock(m_broadcast_mutex);
+                    broadcast_queue.swap(m_broadcast_queue);
+                }
+                LOG_DEBUG("reactor[" + to_string(m_index) + "] start to broadcast");
+                while (!broadcast_queue.empty()) {
+                    const auto &frame = *broadcast_queue.front();
+                    for (auto it = m_conns.begin(); it != m_conns.end();) {
+                        auto current = it++;
+                        if (current->second->protocol != PROTO_WEBSOCKET) continue;
+                        LOG_DEBUG("reactor[" + to_string(m_index) + "] broadcast frame :" + frame + " to fd = " + to_string(current->second->fd));
+                        current->second->outbuf += frame;
+                        trySend(*current->second);
+                    }
+                    broadcast_queue.pop();
+                }
             } else if (events[i].events & EPOLLIN) {
                 if (!m_conns.contains(fd)) continue;
-                m_timer_heap.update(fd, 6000);
+
+                if (m_conns[fd]->protocol == PROTO_WEBSOCKET) {
+                    m_timer_heap.update(fd, 60000);
+                } else {
+                    m_timer_heap.update(fd, 6000);
+                }
 
                 const int buf_size = 4096;
                 char buf[buf_size];
@@ -130,12 +172,20 @@ void Reactor::loop() {
                         }
                     }
                 }
+
+                if (m_conns[fd]->shouldClose) {
+                    closeNow(fd);
+                }
             } else if (events[i].events & EPOLLOUT) {
                 if (m_conns.contains(fd)) {
                     trySend(*m_conns[fd]);
                 }
+
+                if (m_conns[fd]->shouldClose) {
+                    closeNow(fd);
+                }
             } else {
-                LOG_WARN("something else happened");
+                LOG_DEBUG("something else happened");
             }
         }
     }
@@ -144,6 +194,7 @@ void Reactor::loop() {
 void Reactor::process(Connection &conn) {
     while (isRequestComplete(conn)) {
         bool should_broadcast = false;
+        string broadcast_frame;
         size_t end_pos;
 
         LOG_DEBUG("fd = " + to_string(conn.fd) + " send data : " + conn.inbuf);
@@ -207,7 +258,7 @@ void Reactor::process(Connection &conn) {
             }
 
             if (result_text.empty()) {
-                LOG_WARN("login: user not found");
+                LOG_DEBUG("login: user not found");
                 return false;
             }
 
@@ -232,13 +283,43 @@ void Reactor::process(Connection &conn) {
             HttpRequest req;
             ParseState ret = parseHttpRequest(conn.inbuf, req);
             end_pos = req.end_pos;
-            conn.outbuf.reserve(256 + req.body.size());
+            conn.outbuf.reserve(256);
 
             LOG_DEBUG("request is HTTP and method is " + req.method + ", target is " + req.target + ", version is " + req.version);
 
             if (ret == PARSE_ERROR) {
                 LOG_DEBUG("HTTP parse failed, fd = " + to_string(conn.fd));
                 conn.outbuf = resp_bad_request;
+            } else if (req.is_websocket) {
+                string websocket_accept;
+                websocket_accept.reserve(64);
+                websocket_accept += move(req.sec_websocket_key);
+                websocket_accept += websocket_magic;
+
+                unsigned char hash[SHA_DIGEST_LENGTH];
+                SHA1(reinterpret_cast<const unsigned char *>(websocket_accept.data()), websocket_accept.size(), hash);
+
+                BIO *b64 = BIO_new(BIO_f_base64());
+                BIO *mem = BIO_new(BIO_s_mem());
+                b64 = BIO_push(b64, mem);
+                BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+                BIO_write(b64, hash, SHA_DIGEST_LENGTH);
+                BIO_flush(b64);
+
+                BUF_MEM *buf;
+                BIO_get_mem_ptr(b64, &buf);
+                string accept(buf->data, buf->length);
+                LOG_DEBUG("websocket accpet size: " + to_string(accept.size()));
+                BIO_free_all(b64);
+
+                conn.protocol = PROTO_WEBSOCKET;
+                m_timer_heap.update(conn.fd, 60000);
+                conn.outbuf += "HTTP/1.1 101 Switching Protocols\r\n";
+                conn.outbuf += "Upgrade: websocket\r\n";
+                conn.outbuf += "Connection: Upgrade\r\n";
+                conn.outbuf += "Sec-WebSocket-Accept: ";
+                conn.outbuf += move(accept);
+                conn.outbuf += "\r\n\r\n";
             } else if (req.target == "/echo") {
                 conn.outbuf += "HTTP/1.1 200 OK\r\nContent-Length: ";
                 conn.outbuf += to_string(req.body.size());
@@ -254,7 +335,7 @@ void Reactor::process(Connection &conn) {
                 size_t password_value_pos = req.body.find(password_key);
 
                 if (username_value_pos == string::npos || password_value_pos == string::npos) {
-                    LOG_WARN("register request not have username or password");
+                    LOG_DEBUG("register request not have username or password");
                     conn.outbuf = resp_missing_params;
                 } else {
                     size_t username_start = username_value_pos + username_key.size();
@@ -301,7 +382,9 @@ void Reactor::process(Connection &conn) {
                     conn.file_fd = file_fd;
                     conn.file_size = file_size;
 
-                    conn.outbuf += "HTTP/1.1 200 OK\r\nContent-Length: ";
+                    conn.outbuf += "HTTP/1.1 200 OK\r\nContent-Type: ";
+                    conn.outbuf += getMimeType(file_path);
+                    conn.outbuf += "\r\nContent-Length: ";
                     conn.outbuf += to_string(file_size);
                     conn.outbuf += "\r\n\r\n";
                 }
@@ -364,11 +447,9 @@ void Reactor::process(Connection &conn) {
 
             if (ret == MSG_ERROR) {
                 LOG_DEBUG("protobuf parse failed, fd = " + to_string(conn.fd));
-
                 buildResponse(ERROR, "parse error");
             } else if (ret == MSG_REGISTER_REQ) {
                 int ret = do_register(req.username, req.password);
-
                 if (ret) {
                     buildResponse(REGISTER, "register success");
                 } else {
@@ -376,7 +457,6 @@ void Reactor::process(Connection &conn) {
                 }
             } else if (ret == MSG_LOGIN_REQ) {
                 int ret = do_login(req.username, req.password);
-
                 if (ret) {
                     buildResponse(LOGIN, "login success");
                 } else {
@@ -386,36 +466,119 @@ void Reactor::process(Connection &conn) {
                 buildResponse(CHAT, req.msg, req.sender_name);
                 should_broadcast = true;
             }
+        } else if (conn.protocol == PROTO_WEBSOCKET) {
+            WebSocketRequest req;
+            WebSocketOpcode ret = parseWebSocketFrame(conn.inbuf, req);
+            end_pos = req.end_pos;
+            conn.outbuf.reserve(256);
+
+            auto buildResponse = [&](WebSocketOpcode opcode, string msg = "", bool broadcast = false) {
+                string response;
+                response.reserve(10 + msg.size());
+
+                uint8_t byte0 = 0x80 | (uint8_t)opcode;
+                response.append(reinterpret_cast<char *>(&byte0), 1);
+                if (msg.size() < 126) {
+                    uint8_t byte1 = msg.size();
+                    response.append(reinterpret_cast<char *>(&byte1), 1);
+                } else if (msg.size() < (1 << 16)) {
+                    uint8_t byte1 = 126;
+                    response.append(reinterpret_cast<char *>(&byte1), 1);
+                    uint16_t payload_length = msg.size();
+                    uint16_t ext = htons(payload_length);
+                    response.append(reinterpret_cast<char *>(&ext), 2);
+                } else {
+                    uint8_t byte1 = 127;
+                    response.append(reinterpret_cast<char *>(&byte1), 1);
+                    uint64_t payload_length = msg.size();
+                    uint64_t ext = htobe64(payload_length);
+                    response.append(reinterpret_cast<char *>(&ext), 8);
+                }
+                response += move(msg);
+                LOG_DEBUG("fd = " + to_string(conn.fd) + " build response frame: " + response);
+
+                if (broadcast) {
+                    broadcast_frame = move(response);
+                    LOG_DEBUG("fd = " + to_string(conn.fd) + " move response to broadcast frame: " + broadcast_frame);
+                } else {
+                    conn.outbuf += move(response);
+                }
+            };
+
+            if (ret == WS_ERROR) {
+                LOG_DEBUG("websocket parse failed, fd = " + to_string(conn.fd));
+            } else if (ret == WS_TEXT) {
+                should_broadcast = true;
+                buildResponse(WS_TEXT, move(req.payload_data), should_broadcast);
+            } else if (ret == WS_CLOSE) {
+                buildResponse(WS_CLOSE);
+                conn.shouldClose = true;
+            } else if (ret == WS_PING) {
+                buildResponse(WS_PONG, move(req.payload_data));
+            }
         }
         conn.inbuf.erase(conn.inbuf.begin(), conn.inbuf.begin() + end_pos);
 
-        int conn_fd = conn.fd;
-
         if (should_broadcast) {
-            for (auto it = m_conns.begin(); it != m_conns.end();) {
-                if (it->second->fd != conn.fd) {
-                    LOG_DEBUG("send broadcast to fd = " + to_string(it->second->fd));
-                    it->second->outbuf += conn.outbuf;
-                    auto current = it++;
-                    trySend(*current->second);
-                } else {
-                    it++;
-                }
+            shared_ptr<const string> frame = make_shared<string>(broadcast_frame);
+            LOG_DEBUG("reactor[" + to_string(m_index) + "] push a broadcast frame: " + broadcast_frame + " to other sub reactor");
+            for (auto &peer : m_sub_reactors) {
+                if (peer.get() == this) continue;
+                peer->enqueueBroadcast(frame);
             }
-            conn.outbuf.clear();
+
+            for (auto it = m_conns.begin(); it != m_conns.end();) {
+                LOG_DEBUG("send broadcast to fd = " + to_string(it->second->fd));
+                auto current = it++;
+                if (current->second->protocol != PROTO_WEBSOCKET) continue;
+                current->second->outbuf += broadcast_frame;
+                trySend(*current->second);
+            }
         } else {
             trySend(conn);
         }
 
+        int conn_fd = conn.fd;
         if (!m_conns.contains(conn_fd)) {
             return;
         }
     }
 }
 
-void Reactor::notify() {
+string_view Reactor::getMimeType(const string &file_path) {
+    static const string_view unkonwn_type = "application/octet-stream";
+    static const unordered_map<string_view, string_view> mime_table = {
+        {"html", "text/html; charset=utf-8"},
+        {"css", "text/css; charset=utf-8"},
+        {"js", "application/javascript; charset=utf-8"},
+        {"json", "application/json; charset=utf-8"},
+        {"png", "image/png"},
+        {"jpg", "image/jpeg"},
+        {"jpeg", "image/jpeg"},
+        {"svg", "image/svg+xml"},
+        {"ico", "image/x-icon"}};
+
+    size_t pos = file_path.rfind('.');
+    if (pos == string::npos || file_path.size() < pos + 2) {
+        return unkonwn_type;
+    }
+
+    string_view ext(file_path.data() + pos + 1, file_path.size() - pos - 1);
+    auto it = mime_table.find(ext);
+    if (it == mime_table.end()) {
+        return unkonwn_type;
+    }
+    return it->second;
+};
+
+void Reactor::conn_notify() {
     uint64_t val = 1;
-    write(m_notifyfd, &val, sizeof(val));
+    write(m_conn_notifyfd, &val, sizeof(val));
+}
+
+void Reactor::broadcast_notify() {
+    uint64_t val = 1;
+    write(m_broadcast_notifyfd, &val, sizeof(val));
 }
 
 static void setnonblocking(int fd) {
@@ -443,6 +606,8 @@ void Reactor::trySend(Connection &conn) {
     if (conn.outbuf.empty() && conn.file_offset == conn.file_size) {
         return;
     }
+
+    LOG_DEBUG("fd = " + to_string(conn.fd) + ", will send packet size: " + to_string(conn.outbuf.size()) + ", packet: " + conn.outbuf);
 
     ssize_t sent = 0;
     while (sent < conn.outbuf.size()) {
@@ -552,7 +717,7 @@ static bool isRequestComplete(Connection &conn) {
         uint32_t msg_type_debug;
         memcpy(&msg_type_debug, conn.inbuf.data(), 4);
         if (msg_type_debug > MSG_ERROR) {
-            LOG_WARN("protobuf type error");
+            LOG_DEBUG("protobuf type error");
             return false;
         }
 
@@ -580,6 +745,53 @@ static bool isRequestComplete(Connection &conn) {
         }
         conn.inbuf.erase(0, prefix_consumed);
         return false;
+    } else if (conn.protocol == PROTO_WEBSOCKET) {
+        int prefix_length = 2;
+        if (conn.inbuf.size() < prefix_length) {
+            LOG_DEBUG("fd = " + to_string(conn.fd) + ", websocket incomplete");
+            return false;
+        }
+
+        uint8_t byte1 = static_cast<uint8_t>(conn.inbuf[1]);
+        bool masked = byte1 & 0x80;
+        uint64_t payload_length = byte1 & 0x7F;
+
+        auto read_extended_length = [&](int len) {
+            if (conn.inbuf.size() < prefix_length + len) {
+                LOG_DEBUG("fd = " + to_string(conn.fd) + ", websocket payload_length incomplete");
+                return false;
+            }
+
+            if (len == 2) {
+                uint16_t ext;
+                memcpy(&ext, conn.inbuf.data() + prefix_length, len);
+                payload_length = ntohs(ext);
+            } else if (len == 8) {
+                uint64_t ext;
+                memcpy(&ext, conn.inbuf.data() + prefix_length, len);
+                payload_length = be64toh(ext);
+            }
+            prefix_length += len;
+            return true;
+        };
+
+        if (payload_length == 126) {
+            if (!read_extended_length(2)) {
+                return false;
+            }
+        } else if (payload_length == 127) {
+            if (!read_extended_length(8)) {
+                return false;
+            }
+        }
+
+        prefix_length += 4 * masked;
+
+        if (conn.inbuf.size() < prefix_length + payload_length) {
+            LOG_DEBUG("fd = " + to_string(conn.fd) + ", websocket payload_data incomplete");
+            return false;
+        }
+        return true;
     }
 
     return false;

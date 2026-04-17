@@ -80,6 +80,14 @@ ParseState parseHttpRequest(const string &raw, HttpRequest &req) {
                     LOG_WARN("invail content-length: " + value);
                     req.state = PARSE_ERROR;
                 }
+            } else if (key == "upgrade") {
+                transform(value.begin(), value.end(), value.begin(), ::tolower);
+                if (value == "websocket") {
+                    req.is_websocket = true;
+                }
+            } else if (key == "sec-websocket-key") {
+                LOG_DEBUG("key size: " + to_string(value.size()) + ", key: [" + value + "]");
+                req.sec_websocket_key = value;
             }
             break;
         }

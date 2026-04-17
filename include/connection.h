@@ -4,7 +4,8 @@
 
 enum ProtocolType {
     PROTO_HTTP,
-    PROTO_BINARY
+    PROTO_BINARY,
+    PROTO_WEBSOCKET
 };
 
 struct Connection {
@@ -16,5 +17,6 @@ struct Connection {
     std::string outbuf;
     bool readClosed = false;
     bool keepAlive = true;
+    bool shouldClose = false;
     ProtocolType protocol;
 };

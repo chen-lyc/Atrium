@@ -17,3 +17,5 @@ inline constexpr std::string_view resp_login_failed = "HTTP/1.1 401 Unauthorized
 
 // 默认响应
 inline constexpr std::string_view default_response = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello";
+
+inline constexpr std::string_view websocket_magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";

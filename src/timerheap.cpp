@@ -44,13 +44,13 @@ int TimerHeap::getNextTimeout() {
         tick();
     }
 
-    LOG_WARN("no timer");
+    LOG_DEBUG("reactor[" + to_string(m_index) + "] no timer");
     return -1;
 }
 
 void TimerHeap::update(int fd, long long timeout) {
     if (!m_timers_index.contains(fd)) {
-        LOG_WARN("timer heap update: fd not found");
+        LOG_DEBUG("timer heap update: fd not found");
         return;
     }
 
