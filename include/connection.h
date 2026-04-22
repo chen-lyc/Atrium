@@ -13,6 +13,7 @@ struct Connection {
     int file_fd = -1;
     size_t file_size = 0;
     off_t file_offset = 0;
+    std::string username;
     std::string inbuf;
     std::string outbuf;
     bool readClosed = false;

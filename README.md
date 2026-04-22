@@ -1,6 +1,8 @@
 # WebServer
 
-C++ Linux 高性能服务器，支持 HTTP / WebSocket / 自定义二进制协议，内置多人聊天室与单页前端演示。
+基于 C++20 / Linux 的多 Reactor WebServer，支持静态文件服务、Cookie 会话鉴权、MySQL / Redis 登录注册、WebSocket 聊天与跨 Reactor 广播。
+
+**Live Demo**: `http://lyctalk.com/`  
 
 ## 架构
 
@@ -210,5 +212,5 @@ ab -n 10000 -c 500 -p post.txt -T application/x-www-form-urlencoded http://local
 ## 依赖安装
 
 ```bash
-sudo apt install g++ libmysqlclient-dev mysql-server redis-server libhiredis-dev protobuf-compiler libprotobuf-dev
+sudo apt install g++ make default-libmysqlclient-dev mysql-server redis-server libhiredis-dev protobuf-compiler libprotobuf-dev libssl-dev
 ```

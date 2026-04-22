@@ -2,6 +2,8 @@
 #include <cstring>
 using namespace std;
 
+AsyncLogger::LOGLEVEL AsyncLogger::m_min_level = AsyncLogger::INFO;
+
 static string getTimestamp() {
     auto now = chrono::system_clock::now();
     auto ms = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()) % 1000;
@@ -18,14 +20,15 @@ static string getTimestamp() {
 AsyncLogger *g_instance = nullptr;
 
 AsyncLogger &AsyncLogger::getInstance() {
-    if (g_instance == nullptr) {
+    static once_flag flag;
+    call_once(flag, [] {
         g_instance = new AsyncLogger(5);
         pthread_atfork(nullptr, nullptr, AsyncLogger::forkChildReset);
         atexit([] {
             delete g_instance;
             g_instance = nullptr;
         });
-    }
+    });
     return *g_instance;
 }
 

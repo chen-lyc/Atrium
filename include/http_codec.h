@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 
 enum ParseState {
     PARSE_REQUEST_LINE,
@@ -23,6 +24,7 @@ struct HttpRequest {
     uint32_t content_length = 0;
     bool is_websocket = false;
     std::string sec_websocket_key;
+    std::unordered_map<std::string, std::string> cookies;
 
     std::string body;
 

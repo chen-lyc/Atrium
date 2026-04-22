@@ -88,6 +88,22 @@ ParseState parseHttpRequest(const string &raw, HttpRequest &req) {
             } else if (key == "sec-websocket-key") {
                 LOG_DEBUG("key size: " + to_string(value.size()) + ", key: [" + value + "]");
                 req.sec_websocket_key = value;
+            } else if (key == "cookie") {
+                value += "; ";
+                size_t semi_pos = value.find("; ");
+                size_t start = 0;
+                while (semi_pos != string::npos) {
+                    size_t eq_pos = value.find('=', start);
+                    if (eq_pos == string::npos) {
+                        break;
+                    }
+                    string name = value.substr(start, eq_pos - start);
+                    start = eq_pos + 1;
+                    string val = value.substr(start, semi_pos - start);
+                    start = semi_pos + 2;
+                    req.cookies[name] = val;
+                    semi_pos = value.find("; ", start);
+                }
             }
             break;
         }

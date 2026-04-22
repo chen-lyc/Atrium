@@ -9,6 +9,7 @@
 #include "utils.h"
 #include "websocket_codec.h"
 #include <fcntl.h>
+#include <json.hpp>
 #include <netinet/in.h>
 #include <openssl/bio.h>
 #include <openssl/buffer.h>
@@ -19,6 +20,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 using namespace std;
+using json = nlohmann::json;
 
 static bool isRequestComplete(Connection &conn);
 
@@ -173,7 +175,12 @@ void Reactor::loop() {
                     }
                 }
 
-                if (m_conns[fd]->shouldClose) {
+                auto it = m_conns.find(fd);
+                if (it == m_conns.end()) {
+                    continue;
+                }
+
+                if (it->second->shouldClose) {
                     closeNow(fd);
                 }
             } else if (events[i].events & EPOLLOUT) {
@@ -181,7 +188,12 @@ void Reactor::loop() {
                     trySend(*m_conns[fd]);
                 }
 
-                if (m_conns[fd]->shouldClose) {
+                auto it = m_conns.find(fd);
+                if (it == m_conns.end()) {
+                    continue;
+                }
+
+                if (it->second->shouldClose) {
                     closeNow(fd);
                 }
             } else {
@@ -199,13 +211,32 @@ void Reactor::process(Connection &conn) {
 
         LOG_DEBUG("fd = " + to_string(conn.fd) + " send data : " + conn.inbuf);
 
-        auto do_register = [](const string &username, const string &password) {
+        enum class RegisterResult {
+            Success,
+            UserExists,
+            ServerError
+        };
+
+        enum class LoginResult {
+            Success,
+            UserNotFound,
+            WrongPassword,
+            ServerError
+        };
+
+        auto do_register = [](const string &username, const string &password, const string &session = "") {
+            string result_text;
+            string query = "SELECT username FROM users WHERE username = '" + username + '\'';
+            MysqlPool::getInstance().executeQuery(query, result_text);
+            if (!result_text.empty()) {
+                return RegisterResult::UserExists;
+            }
+
             string salt = generateSalt();
             string password_hash = to_string(hasher(password + salt));
 
-            string query;
             query.reserve(128);
-            query += "INSERT INTO users (username, password_hash, salt) VALUES ('";
+            query = "INSERT INTO users (username, password_hash, salt) VALUES ('";
             query += username;
             query += "', '";
             query += password_hash;
@@ -224,12 +255,20 @@ void Reactor::process(Connection &conn) {
                 command += ':';
                 command += salt;
                 RedisPool::getInstance().executeCommand(command);
+
+                command = "SET session:";
+                command += session;
+                command += ' ';
+                command += username;
+                command += " EX 86400";
+                RedisPool::getInstance().executeCommand(command);
+                return RegisterResult::Success;
             }
 
-            return ret;
+            return RegisterResult::ServerError;
         };
 
-        auto do_login = [](const string &username, const string &password) {
+        auto do_login = [](const string &username, const string &password, const string &session = "") {
             string command;
             command.reserve(56);
             command += "GET user:";
@@ -243,7 +282,16 @@ void Reactor::process(Connection &conn) {
                 string password_hash = result_value.substr(0, separator_pos);
                 string salt = result_value.substr(separator_pos + 1, result_value.size() - separator_pos);
 
-                return to_string(hasher(password + salt)) == password_hash;
+                if (to_string(hasher(password + salt)) == password_hash) {
+                    command = "SET session:";
+                    command += session;
+                    command += ' ';
+                    command += username;
+                    command += " EX 86400";
+                    RedisPool::getInstance().executeCommand(command);
+                    return LoginResult::Success;
+                }
+                return LoginResult::WrongPassword;
             }
 
             string result_text;
@@ -253,13 +301,12 @@ void Reactor::process(Connection &conn) {
                 query += "SELECT password_hash, salt FROM users WHERE username = '";
                 query += username;
                 query += '\'';
-                query += result_text;
-                MysqlPool::getInstance().executeQuery(query);
+                MysqlPool::getInstance().executeQuery(query, result_text);
             }
 
             if (result_text.empty()) {
                 LOG_DEBUG("login: user not found");
-                return false;
+                return LoginResult::UserNotFound;
             }
 
             string password_hash = result_text.substr(0, result_text.find(' '));
@@ -267,19 +314,46 @@ void Reactor::process(Connection &conn) {
 
             string salt = result_text;
 
-            command.clear();
-            command += "SET user:";
-            command += username;
-            command += ' ';
-            command += password_hash;
-            command += ':';
-            command += salt;
-            RedisPool::getInstance().executeCommand(command);
+            if (to_string(hasher(password + salt)) == password_hash) {
+                command = "SET user:";
+                command += username;
+                command += ' ';
+                command += password_hash;
+                command += ':';
+                command += salt;
+                RedisPool::getInstance().executeCommand(command);
 
-            return to_string(hasher(password + salt)) == password_hash;
+                command = "SET session:";
+                command += session;
+                command += ' ';
+                command += username;
+                command += " EX 86400";
+                RedisPool::getInstance().executeCommand(command);
+
+                return LoginResult::Success;
+            }
+            return LoginResult::WrongPassword;
         };
 
         if (conn.protocol == PROTO_HTTP) {
+            auto auth_session = [](HttpRequest &req, string &username) {
+                auto it = req.cookies.find("session_id");
+                if (it == req.cookies.end()) {
+                    return false;
+                }
+
+                string command;
+                command.reserve(32);
+                command += "GET session:";
+                command += it->second;
+                int ret = RedisPool::getInstance().executeCommand(command, username);
+                if (!ret) {
+                    return false;
+                }
+
+                return true;
+            };
+
             HttpRequest req;
             ParseState ret = parseHttpRequest(conn.inbuf, req);
             end_pos = req.end_pos;
@@ -293,7 +367,7 @@ void Reactor::process(Connection &conn) {
             } else if (req.is_websocket) {
                 string websocket_accept;
                 websocket_accept.reserve(64);
-                websocket_accept += move(req.sec_websocket_key);
+                websocket_accept = move(req.sec_websocket_key);
                 websocket_accept += websocket_magic;
 
                 unsigned char hash[SHA_DIGEST_LENGTH];
@@ -312,19 +386,57 @@ void Reactor::process(Connection &conn) {
                 LOG_DEBUG("websocket accpet size: " + to_string(accept.size()));
                 BIO_free_all(b64);
 
-                conn.protocol = PROTO_WEBSOCKET;
-                m_timer_heap.update(conn.fd, 60000);
-                conn.outbuf += "HTTP/1.1 101 Switching Protocols\r\n";
-                conn.outbuf += "Upgrade: websocket\r\n";
-                conn.outbuf += "Connection: Upgrade\r\n";
-                conn.outbuf += "Sec-WebSocket-Accept: ";
-                conn.outbuf += move(accept);
-                conn.outbuf += "\r\n\r\n";
+                if (auth_session(req, conn.username)) {
+                    conn.protocol = PROTO_WEBSOCKET;
+                    m_timer_heap.update(conn.fd, 60000);
+                    conn.outbuf += "HTTP/1.1 101 Switching Protocols\r\n";
+                    conn.outbuf += "Upgrade: websocket\r\n";
+                    conn.outbuf += "Connection: Upgrade\r\n";
+                    conn.outbuf += "Sec-WebSocket-Accept: ";
+                    conn.outbuf += move(accept);
+                    conn.outbuf += "\r\n\r\n";
+                } else {
+                    conn.outbuf = resp_unauthorized;
+                    conn.shouldClose = true;
+                }
             } else if (req.target == "/echo") {
                 conn.outbuf += "HTTP/1.1 200 OK\r\nContent-Length: ";
                 conn.outbuf += to_string(req.body.size());
                 conn.outbuf += "\r\n\r\n";
                 conn.outbuf += req.body;
+            } else if (req.target == "/me") {
+                if (auth_session(req, conn.username)) {
+                    string body = R"({"username":")" + conn.username + R"("})";
+                    conn.outbuf = "HTTP/1.1 200 OK\r\n";
+                    conn.outbuf += "Content-Type: application/json\r\n";
+                    conn.outbuf += "Content-Length: " + to_string(body.size()) + "\r\n\r\n";
+                    conn.outbuf += body;
+                } else {
+                    conn.outbuf = resp_unauthorized;
+                    conn.shouldClose = true;
+                }
+            } else if (req.method == "GET") {
+                string file_path = "static" + req.target;
+                if (req.target == "/" || req.target == "/login" || req.target == "/register" || req.target == "/chat") {
+                    file_path = "static/index.html";
+                }
+                LOG_DEBUG("file path is " + file_path);
+                int file_fd = open(file_path.c_str(), O_RDONLY);
+                if (file_fd == -1) {
+                    conn.outbuf = resp_not_found;
+                } else {
+                    struct stat st;
+                    fstat(file_fd, &st);
+                    size_t file_size = st.st_size;
+                    conn.file_fd = file_fd;
+                    conn.file_size = file_size;
+
+                    conn.outbuf += "HTTP/1.1 200 OK\r\nContent-Type: ";
+                    conn.outbuf += getMimeType(file_path);
+                    conn.outbuf += "\r\nContent-Length: ";
+                    conn.outbuf += to_string(file_size);
+                    conn.outbuf += "\r\n\r\n";
+                }
             } else if (req.target == "/register" || req.target == "/login") {
                 LOG_DEBUG("HTTP request register or login");
 
@@ -350,43 +462,36 @@ void Reactor::process(Connection &conn) {
 
                     LOG_DEBUG("username = " + username + ", password = " + password);
 
+                    string session(generateSessionId());
                     if (req.target == "/register") {
-                        int ret = do_register(username, password);
+                        RegisterResult ret = do_register(username, password, session);
 
-                        if (ret) {
-                            conn.outbuf = resp_register_sussess;
-                        } else {
-                            conn.outbuf = resp_register_failed;
+                        if (ret == RegisterResult::Success) {
+                            conn.outbuf += resp_header_register_sussess;
+                            conn.outbuf += "Set-Cookie: session_id=";
+                            conn.outbuf += session;
+                            conn.outbuf += "\r\n\r\nregister success";
+                        } else if (ret == RegisterResult::ServerError) {
+                            conn.outbuf = resp_server_error;
+                        } else if (ret == RegisterResult::UserExists) {
+                            conn.outbuf = resp_user_exists;
                         }
                     } else {
-                        int ret = do_login(username, password);
+                        LoginResult ret = do_login(username, password, session);
 
-                        if (ret) {
-                            conn.outbuf = resp_login_success;
-                        } else {
-                            conn.outbuf = resp_login_failed;
+                        if (ret == LoginResult::Success) {
+                            conn.outbuf += resp_header_login_success;
+                            conn.outbuf += "Set-Cookie: session_id=";
+                            conn.outbuf += session;
+                            conn.outbuf += "\r\n\r\nlogin success";
+                        } else if (ret == LoginResult::ServerError) {
+                            conn.outbuf = resp_server_error;
+                        } else if (ret == LoginResult::UserNotFound) {
+                            conn.outbuf = resp_user_not_found;
+                        } else if (ret == LoginResult::WrongPassword) {
+                            conn.outbuf = resp_wrong_password;
                         }
                     }
-                }
-            } else if (req.method == "GET") {
-                string file_path = "static" + req.target;
-                if (req.target == "/") file_path = "static/index.html";
-                LOG_DEBUG("file path is " + file_path);
-                int file_fd = open(file_path.c_str(), O_RDONLY);
-                if (file_fd == -1) {
-                    conn.outbuf = resp_not_found;
-                } else {
-                    struct stat st;
-                    fstat(file_fd, &st);
-                    size_t file_size = st.st_size;
-                    conn.file_fd = file_fd;
-                    conn.file_size = file_size;
-
-                    conn.outbuf += "HTTP/1.1 200 OK\r\nContent-Type: ";
-                    conn.outbuf += getMimeType(file_path);
-                    conn.outbuf += "\r\nContent-Length: ";
-                    conn.outbuf += to_string(file_size);
-                    conn.outbuf += "\r\n\r\n";
                 }
             } else {
                 conn.outbuf = default_response;
@@ -449,15 +554,15 @@ void Reactor::process(Connection &conn) {
                 LOG_DEBUG("protobuf parse failed, fd = " + to_string(conn.fd));
                 buildResponse(ERROR, "parse error");
             } else if (ret == MSG_REGISTER_REQ) {
-                int ret = do_register(req.username, req.password);
-                if (ret) {
+                RegisterResult ret = do_register(req.username, req.password);
+                if (ret == RegisterResult::Success) {
                     buildResponse(REGISTER, "register success");
                 } else {
                     buildResponse(ERROR, "register failed");
                 }
             } else if (ret == MSG_LOGIN_REQ) {
-                int ret = do_login(req.username, req.password);
-                if (ret) {
+                LoginResult ret = do_login(req.username, req.password);
+                if (ret == LoginResult::Success) {
                     buildResponse(LOGIN, "login success");
                 } else {
                     buildResponse(ERROR, "login failed");
@@ -472,36 +577,52 @@ void Reactor::process(Connection &conn) {
             end_pos = req.end_pos;
             conn.outbuf.reserve(256);
 
-            auto buildResponse = [&](WebSocketOpcode opcode, string msg = "", bool broadcast = false) {
+            auto buildResponse = [&](WebSocketOpcode opcode, string payload_data = "", bool broadcast = false) {
+                if (opcode == WS_TEXT) {
+                    try {
+                        json in = json::parse(payload_data);
+
+                        json out;
+                        out["nickname"] = conn.username;
+                        out["text"] = in["text"];
+                        out["timestamp"] = chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count();
+
+                        payload_data = out.dump();
+                    } catch (const json::exception &e) {
+                        LOG_WARN(string("bad json: ") + e.what());
+                        return;
+                    }
+                }
+
                 string response;
-                response.reserve(10 + msg.size());
+                response.reserve(10 + payload_data.size());
 
                 uint8_t byte0 = 0x80 | (uint8_t)opcode;
                 response.append(reinterpret_cast<char *>(&byte0), 1);
-                if (msg.size() < 126) {
-                    uint8_t byte1 = msg.size();
+                if (payload_data.size() < 126) {
+                    uint8_t byte1 = payload_data.size();
                     response.append(reinterpret_cast<char *>(&byte1), 1);
-                } else if (msg.size() < (1 << 16)) {
+                } else if (payload_data.size() < (1 << 16)) {
                     uint8_t byte1 = 126;
                     response.append(reinterpret_cast<char *>(&byte1), 1);
-                    uint16_t payload_length = msg.size();
+                    uint16_t payload_length = payload_data.size();
                     uint16_t ext = htons(payload_length);
                     response.append(reinterpret_cast<char *>(&ext), 2);
                 } else {
                     uint8_t byte1 = 127;
                     response.append(reinterpret_cast<char *>(&byte1), 1);
-                    uint64_t payload_length = msg.size();
+                    uint64_t payload_length = payload_data.size();
                     uint64_t ext = htobe64(payload_length);
                     response.append(reinterpret_cast<char *>(&ext), 8);
                 }
-                response += move(msg);
+                response += move(payload_data);
                 LOG_DEBUG("fd = " + to_string(conn.fd) + " build response frame: " + response);
 
                 if (broadcast) {
                     broadcast_frame = move(response);
                     LOG_DEBUG("fd = " + to_string(conn.fd) + " move response to broadcast frame: " + broadcast_frame);
                 } else {
-                    conn.outbuf += move(response);
+                    conn.outbuf = move(response);
                 }
             };
 
@@ -519,7 +640,7 @@ void Reactor::process(Connection &conn) {
         }
         conn.inbuf.erase(conn.inbuf.begin(), conn.inbuf.begin() + end_pos);
 
-        if (should_broadcast) {
+        if (should_broadcast && !broadcast_frame.empty()) {
             shared_ptr<const string> frame = make_shared<string>(broadcast_frame);
             LOG_DEBUG("reactor[" + to_string(m_index) + "] push a broadcast frame: " + broadcast_frame + " to other sub reactor");
             for (auto &peer : m_sub_reactors) {
@@ -643,7 +764,7 @@ void Reactor::trySend(Connection &conn) {
     }
     closeFile(conn);
 
-    if (conn.readClosed) {
+    if (conn.readClosed || conn.shouldClose) {
         LOG_DEBUG("send complete, close fd = " + to_string(conn.fd));
         closeNow(conn.fd);
         return;

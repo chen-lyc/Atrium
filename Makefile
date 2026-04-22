@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -std=c++20 -Wall -Wno-sign-compare -Iinclude
+CXXFLAGS = -std=c++20 -Wall -Wno-sign-compare -I include -I third_party
 
 TARGET = build/server.out
 

@@ -50,6 +50,9 @@ int main(int argc, char *argv[]) {
         } else if (pid == 0) {
             LOG_INFO("\nserver starting");
 
+            signal(SIGINT, handleSignal);
+            signal(SIGTERM, handleSignal);
+
             string ip = "127.0.0.1";
             int http_port = 8080;
             int protobuf_port = 9090;
@@ -71,9 +74,6 @@ int main(int argc, char *argv[]) {
             for (int i = 0; i < num_reactors; i++) {
                 sub_reactors.emplace_back(make_unique<Reactor>(i, sub_reactors));
             }
-
-            signal(SIGINT, handleSignal);
-            signal(SIGTERM, handleSignal);
 
             int epollfd = epoll_create(1);
 

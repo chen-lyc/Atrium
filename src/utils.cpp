@@ -1,4 +1,5 @@
 #include "utils.h"
+#include <openssl/rand.h>
 using namespace std;
 
 hash<string> hasher;
@@ -26,4 +27,17 @@ string generateSalt(size_t len) {
         salt += charset[rand() % (sizeof(charset) - 1)];
     }
     return salt;
+}
+
+string generateSessionId() {
+    unsigned char buf[16];
+    RAND_bytes(buf, 16);
+    string s;
+    s.reserve(32);
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 16; i++) {
+        s += hex[buf[i] >> 4];
+        s += hex[buf[i] & 0x0f];
+    }
+    return s;
 }

@@ -43,13 +43,13 @@ int MysqlPool::executeQuery(const string &sql, string &result_text) {
 
     int ret = mysql_query(mysql_conn, sql.c_str());
     if (ret != 0) {
-        LOG_ERROR("mysql_query failed: " + string(mysql_error(mysql_conn)));
+        LOG_DEBUG("mysql_query failed: " + string(mysql_error(mysql_conn)));
         return -1;
     }
 
     MYSQL_RES *result = mysql_store_result(mysql_conn);
     if (result == nullptr) {
-        LOG_ERROR("mysql_store_result returned null");
+        LOG_DEBUG("mysql_store_result returned null");
         return -1;
     }
 
@@ -85,10 +85,10 @@ bool MysqlPool::executeQuery(const string &sql) {
 
     int ret = mysql_query(mysql_conn, sql.c_str());
     if (ret != 0) {
-        LOG_ERROR("mysql_query failed: " + string(mysql_error(mysql_conn)));
+        LOG_DEBUG("mysql_query failed: " + string(mysql_error(mysql_conn)));
         return false;
     } else {
-        LOG_INFO("success, affected rows = " + to_string(mysql_affected_rows(mysql_conn)));
+        LOG_DEBUG("success, affected rows = " + to_string(mysql_affected_rows(mysql_conn)));
     }
 
     return true;
