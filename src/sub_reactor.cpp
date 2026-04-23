@@ -1,4 +1,4 @@
-#include "reactor.h"
+#include "sub_reactor.h"
 #include "http.h"
 #include "http_codec.h"
 #include "logger.h"
@@ -15,14 +15,13 @@
 #include <openssl/buffer.h>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
+#include <optional>
 #include <sys/epoll.h>
 #include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 using namespace std;
 using json = nlohmann::json;
-
-static bool isRequestComplete(Connection &conn);
 
 Reactor::Reactor(int index, vector<unique_ptr<Reactor>> &sub_reactors, size_t num_memory) : m_index(index), m_sub_reactors(sub_reactors), m_timer_heap(index), m_conn_pool(num_memory) {
     m_epollfd = epoll_create1(0);
@@ -75,7 +74,7 @@ void Reactor::loop() {
         int number = epoll_wait(m_epollfd, events, maxevents, m_timer_heap.getNextTimeout());
         if (number < 0) {
             if (errno == EINTR && m_running == false) {
-                LOG_INFO("server stopped by signal SIGINT or SIGTERM");
+                LOG_INFO("reactor[%d]server stopped by signal SIGINT or SIGTERM", m_index);
             } else {
                 LOG_ERROR("epoll_wait failed");
             }
@@ -83,7 +82,7 @@ void Reactor::loop() {
         } else if (number == 0) {
             m_timer_heap.tick();
             for (auto fd : m_timer_heap.getExpired()) {
-                LOG_DEBUG("close inactive connection, fd = " + to_string(fd));
+                LOG_DEBUG("close inactive connection, fd = %d", fd);
                 closeNow(fd);
             }
             continue;
@@ -91,13 +90,13 @@ void Reactor::loop() {
 
         for (int i = 0; i < number; i++) {
             int fd = events[i].data.fd;
-            LOG_DEBUG("reactor[" + to_string(m_index) + "], event fd = " + to_string(fd));
+            LOG_DEBUG("reactor[%d], event fd = %d", m_index, fd);
             if (fd == m_conn_notifyfd) {
                 uint64_t val;
                 read(m_conn_notifyfd, &val, sizeof(val));
 
                 if (!m_running) {
-                    LOG_INFO("reactor close");
+                    LOG_INFO("reactor[%d] close", m_index);
                     return;
                 }
 
@@ -110,7 +109,7 @@ void Reactor::loop() {
                     auto [conn_fd, protocol] = conn_queue.front();
                     conn_queue.pop();
 
-                    LOG_DEBUG("fd = " + to_string(conn_fd) + " assigned to " + "reactor[" + to_string(m_index) + ']');
+                    LOG_DEBUG("fd = %d assigned to reactor[%d]", conn_fd, m_index);
 
                     unique_ptr<Connection, ConnDeleter> conn_ptr = m_conn_pool.create();
                     conn_ptr->fd = conn_fd;
@@ -128,13 +127,16 @@ void Reactor::loop() {
                     lock_guard<mutex> lock(m_broadcast_mutex);
                     broadcast_queue.swap(m_broadcast_queue);
                 }
-                LOG_DEBUG("reactor[" + to_string(m_index) + "] start to broadcast");
+                LOG_DEBUG("reactor[%d] start to broadcast", m_index);
                 while (!broadcast_queue.empty()) {
                     const auto &frame = *broadcast_queue.front();
                     for (auto it = m_conns.begin(); it != m_conns.end();) {
                         auto current = it++;
                         if (current->second->protocol != PROTO_WEBSOCKET) continue;
-                        LOG_DEBUG("reactor[" + to_string(m_index) + "] broadcast frame :" + frame + " to fd = " + to_string(current->second->fd));
+                        LOG_DEBUG("reactor[%d] broadcast frame size = %zu to fd = %d",
+                                  m_index,
+                                  frame.size(),
+                                  current->second->fd);
                         current->second->outbuf += frame;
                         trySend(*current->second);
                     }
@@ -156,45 +158,28 @@ void Reactor::loop() {
                     if (n > 0) {
                         m_conns[fd]->inbuf.append(buf, n);
                     } else if (n == 0) {
-                        LOG_DEBUG("client closed writing, fd = " + to_string(fd));
+                        LOG_DEBUG("client closed writing, fd = %d", fd);
                         m_conns[fd]->readClosed = true;
                         process(*m_conns[fd]);
-                        if (m_conns.contains(fd) && m_conns[fd]->outbuf.empty()) {
-                            closeNow(fd);
-                        }
                         break;
                     } else {
                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
                             process(*m_conns[fd]);
                             break;
                         } else {
-                            LOG_ERROR("read failed");
+                            LOG_DEBUG("read failed");
                             closeNow(fd);
                             break;
                         }
                     }
                 }
-
-                auto it = m_conns.find(fd);
-                if (it == m_conns.end()) {
-                    continue;
-                }
-
-                if (it->second->shouldClose) {
-                    closeNow(fd);
-                }
             } else if (events[i].events & EPOLLOUT) {
-                if (m_conns.contains(fd)) {
-                    trySend(*m_conns[fd]);
-                }
+                if (!m_conns.contains(fd)) continue;
 
-                auto it = m_conns.find(fd);
-                if (it == m_conns.end()) {
-                    continue;
-                }
-
-                if (it->second->shouldClose) {
-                    closeNow(fd);
+                trySend(*m_conns[fd]);
+                if (!m_conns.contains(fd)) continue;
+                if (!m_conns[fd]->inbuf.empty() && m_conns[fd]->outbuf.empty() && m_conns[fd]->file_offset == m_conns[fd]->file_size) {
+                    process(*m_conns[fd]);
                 }
             } else {
                 LOG_DEBUG("something else happened");
@@ -204,166 +189,30 @@ void Reactor::loop() {
 }
 
 void Reactor::process(Connection &conn) {
-    while (isRequestComplete(conn)) {
+    FrameResult res;
+    while ((res = checkFrame(conn)).status == FrameStatus::Complete) {
         bool should_broadcast = false;
         string broadcast_frame;
-        size_t end_pos;
 
-        LOG_DEBUG("fd = " + to_string(conn.fd) + " send data : " + conn.inbuf);
-
-        enum class RegisterResult {
-            Success,
-            UserExists,
-            ServerError
-        };
-
-        enum class LoginResult {
-            Success,
-            UserNotFound,
-            WrongPassword,
-            ServerError
-        };
-
-        auto do_register = [](const string &username, const string &password, const string &session = "") {
-            string result_text;
-            string query = "SELECT username FROM users WHERE username = '" + username + '\'';
-            MysqlPool::getInstance().executeQuery(query, result_text);
-            if (!result_text.empty()) {
-                return RegisterResult::UserExists;
-            }
-
-            string salt = generateSalt();
-            string password_hash = to_string(hasher(password + salt));
-
-            query.reserve(128);
-            query = "INSERT INTO users (username, password_hash, salt) VALUES ('";
-            query += username;
-            query += "', '";
-            query += password_hash;
-            query += "', '";
-            query += salt;
-            query += "')";
-            int ret = MysqlPool::getInstance().executeQuery(query);
-
-            if (ret) {
-                string command;
-                command.reserve(56);
-                command += "SET user:";
-                command += username;
-                command += ' ';
-                command += password_hash;
-                command += ':';
-                command += salt;
-                RedisPool::getInstance().executeCommand(command);
-
-                command = "SET session:";
-                command += session;
-                command += ' ';
-                command += username;
-                command += " EX 86400";
-                RedisPool::getInstance().executeCommand(command);
-                return RegisterResult::Success;
-            }
-
-            return RegisterResult::ServerError;
-        };
-
-        auto do_login = [](const string &username, const string &password, const string &session = "") {
-            string command;
-            command.reserve(56);
-            command += "GET user:";
-            command += username;
-            string result_value;
-            int ret = RedisPool::getInstance().executeCommand(command, result_value);
-            if (ret) {
-                LOG_DEBUG("login cache hit in Redis");
-
-                size_t separator_pos = result_value.find(':');
-                string password_hash = result_value.substr(0, separator_pos);
-                string salt = result_value.substr(separator_pos + 1, result_value.size() - separator_pos);
-
-                if (to_string(hasher(password + salt)) == password_hash) {
-                    command = "SET session:";
-                    command += session;
-                    command += ' ';
-                    command += username;
-                    command += " EX 86400";
-                    RedisPool::getInstance().executeCommand(command);
-                    return LoginResult::Success;
-                }
-                return LoginResult::WrongPassword;
-            }
-
-            string result_text;
-            {
-                string query;
-                query.reserve(56);
-                query += "SELECT password_hash, salt FROM users WHERE username = '";
-                query += username;
-                query += '\'';
-                MysqlPool::getInstance().executeQuery(query, result_text);
-            }
-
-            if (result_text.empty()) {
-                LOG_DEBUG("login: user not found");
-                return LoginResult::UserNotFound;
-            }
-
-            string password_hash = result_text.substr(0, result_text.find(' '));
-            result_text.erase(result_text.begin(), result_text.begin() + password_hash.size() + 1);
-
-            string salt = result_text;
-
-            if (to_string(hasher(password + salt)) == password_hash) {
-                command = "SET user:";
-                command += username;
-                command += ' ';
-                command += password_hash;
-                command += ':';
-                command += salt;
-                RedisPool::getInstance().executeCommand(command);
-
-                command = "SET session:";
-                command += session;
-                command += ' ';
-                command += username;
-                command += " EX 86400";
-                RedisPool::getInstance().executeCommand(command);
-
-                return LoginResult::Success;
-            }
-            return LoginResult::WrongPassword;
-        };
+        LOG_DEBUG("fd = %d send data : %.*s",
+                  conn.fd,
+                  static_cast<int>(conn.inbuf.size()),
+                  conn.inbuf.c_str());
 
         if (conn.protocol == PROTO_HTTP) {
-            auto auth_session = [](HttpRequest &req, string &username) {
-                auto it = req.cookies.find("session_id");
-                if (it == req.cookies.end()) {
-                    return false;
-                }
-
-                string command;
-                command.reserve(32);
-                command += "GET session:";
-                command += it->second;
-                int ret = RedisPool::getInstance().executeCommand(command, username);
-                if (!ret) {
-                    return false;
-                }
-
-                return true;
-            };
-
             HttpRequest req;
             ParseState ret = parseHttpRequest(conn.inbuf, req);
-            end_pos = req.end_pos;
-            conn.outbuf.reserve(256);
+            conn.outbuf.reserve(conn.outbuf.size() + 256);
 
-            LOG_DEBUG("request is HTTP and method is " + req.method + ", target is " + req.target + ", version is " + req.version);
+            LOG_DEBUG("request is HTTP and method is %s, target is %s, version is %s",
+                      req.method.c_str(),
+                      req.target.c_str(),
+                      req.version.c_str());
 
             if (ret == PARSE_ERROR) {
-                LOG_DEBUG("HTTP parse failed, fd = " + to_string(conn.fd));
-                conn.outbuf = resp_bad_request;
+                LOG_DEBUG("HTTP parse failed, fd = %d", conn.fd);
+                sendError(conn, resp_bad_request);
+                return;
             } else if (req.is_websocket) {
                 string websocket_accept;
                 websocket_accept.reserve(64);
@@ -383,10 +232,11 @@ void Reactor::process(Connection &conn) {
                 BUF_MEM *buf;
                 BIO_get_mem_ptr(b64, &buf);
                 string accept(buf->data, buf->length);
-                LOG_DEBUG("websocket accpet size: " + to_string(accept.size()));
+                LOG_DEBUG("websocket accpet size: %zu, accept = %s", accept.size(), accept.c_str());
                 BIO_free_all(b64);
 
-                if (auth_session(req, conn.username)) {
+                SessionResult ret = get_session(req, conn.username);
+                if (ret == SessionResult::Success) {
                     conn.protocol = PROTO_WEBSOCKET;
                     m_timer_heap.update(conn.fd, 60000);
                     conn.outbuf += "HTTP/1.1 101 Switching Protocols\r\n";
@@ -395,9 +245,13 @@ void Reactor::process(Connection &conn) {
                     conn.outbuf += "Sec-WebSocket-Accept: ";
                     conn.outbuf += move(accept);
                     conn.outbuf += "\r\n\r\n";
-                } else {
-                    conn.outbuf = resp_unauthorized;
-                    conn.shouldClose = true;
+                } else if (ret == SessionResult::TokenExpired) {
+                    conn.outbuf += resp_unauthorized;
+                } else if (ret == SessionResult::InvalidRequest) {
+                    sendError(conn, resp_bad_request);
+                    return;
+                } else if (ret == SessionResult::ServerError) {
+                    conn.outbuf += resp_server_error;
                 }
             } else if (req.target == "/echo") {
                 conn.outbuf += "HTTP/1.1 200 OK\r\nContent-Length: ";
@@ -405,25 +259,34 @@ void Reactor::process(Connection &conn) {
                 conn.outbuf += "\r\n\r\n";
                 conn.outbuf += req.body;
             } else if (req.target == "/me") {
-                if (auth_session(req, conn.username)) {
-                    string body = R"({"username":")" + conn.username + R"("})";
-                    conn.outbuf = "HTTP/1.1 200 OK\r\n";
+                SessionResult ret = get_session(req, conn.username);
+                if (ret == SessionResult::Success) {
+                    json out;
+                    out["nickname"] = conn.username;
+                    string body = out.dump();
+                    conn.outbuf += "HTTP/1.1 200 OK\r\n";
                     conn.outbuf += "Content-Type: application/json\r\n";
-                    conn.outbuf += "Content-Length: " + to_string(body.size()) + "\r\n\r\n";
+                    conn.outbuf += "Content-Length: ";
+                    conn.outbuf += to_string(body.size());
+                    conn.outbuf += "\r\n\r\n";
                     conn.outbuf += body;
-                } else {
-                    conn.outbuf = resp_unauthorized;
-                    conn.shouldClose = true;
+                } else if (ret == SessionResult::TokenExpired) {
+                    conn.outbuf += resp_unauthorized;
+                } else if (ret == SessionResult::InvalidRequest) {
+                    sendError(conn, resp_bad_request);
+                    return;
+                } else if (ret == SessionResult::ServerError) {
+                    conn.outbuf += resp_server_error;
                 }
             } else if (req.method == "GET") {
                 string file_path = "static" + req.target;
                 if (req.target == "/" || req.target == "/login" || req.target == "/register" || req.target == "/chat") {
                     file_path = "static/index.html";
                 }
-                LOG_DEBUG("file path is " + file_path);
+                LOG_DEBUG("file path is %s", file_path.c_str());
                 int file_fd = open(file_path.c_str(), O_RDONLY);
                 if (file_fd == -1) {
-                    conn.outbuf = resp_not_found;
+                    conn.outbuf += resp_not_found;
                 } else {
                     struct stat st;
                     fstat(file_fd, &st);
@@ -448,53 +311,74 @@ void Reactor::process(Connection &conn) {
 
                 if (username_value_pos == string::npos || password_value_pos == string::npos) {
                     LOG_DEBUG("register request not have username or password");
-                    conn.outbuf = resp_missing_params;
+                    conn.outbuf += resp_missing_params;
                 } else {
                     size_t username_start = username_value_pos + username_key.size();
                     size_t username_end = req.body.find("&", username_start);
-                    string username = req.body.substr(username_start, username_end - username_start);
-                    username = escapeSqlString(username);
+                    optional<string> username_result = url_decode(req.body.substr(username_start, username_end - username_start));
 
                     size_t password_start = password_value_pos + password_key.size();
                     size_t password_end = req.body.find("&", password_start);
-                    string password = req.body.substr(password_start, password_end - password_start);
-                    password = escapeSqlString(password);
+                    optional<string> password_result = url_decode(req.body.substr(password_start, password_end - password_start));
+                    if (!username_result.has_value() || !password_result.has_value()) {
+                        sendError(conn, resp_invalid_encode, res.end_pos);
+                        return;
+                    }
+                    if (!is_valid_username(username_result.value())) {
+                        sendError(conn, resp_invalid_username, res.end_pos);
+                        return;
+                    }
+                    if (!is_valid_password(password_result.value())) {
+                        sendError(conn, resp_invalid_password, res.end_pos);
+                        return;
+                    }
 
-                    LOG_DEBUG("username = " + username + ", password = " + password);
-
-                    string session(generateSessionId());
+                    string &username = username_result.value();
+                    string &password = password_result.value();
                     if (req.target == "/register") {
-                        RegisterResult ret = do_register(username, password, session);
+                        RegisterResult ret = do_register(username, password);
 
                         if (ret == RegisterResult::Success) {
-                            conn.outbuf += resp_header_register_sussess;
-                            conn.outbuf += "Set-Cookie: session_id=";
-                            conn.outbuf += session;
-                            conn.outbuf += "\r\n\r\nregister success";
+                            string token;
+                            SessionResult ret = create_session(username, token);
+                            if (ret == SessionResult::Success) {
+                                conn.outbuf += resp_header_register_success;
+                                conn.outbuf += "Set-Cookie: session_id=";
+                                conn.outbuf += token;
+                                conn.outbuf += "\r\n\r\nregister success";
+                            } else if (ret == SessionResult::ServerError) {
+                                conn.outbuf += resp_server_error;
+                            }
                         } else if (ret == RegisterResult::ServerError) {
-                            conn.outbuf = resp_server_error;
+                            conn.outbuf += resp_server_error;
                         } else if (ret == RegisterResult::UserExists) {
-                            conn.outbuf = resp_user_exists;
+                            conn.outbuf += resp_user_exists;
                         }
                     } else {
-                        LoginResult ret = do_login(username, password, session);
+                        LoginResult ret = do_login(username, password);
 
                         if (ret == LoginResult::Success) {
-                            conn.outbuf += resp_header_login_success;
-                            conn.outbuf += "Set-Cookie: session_id=";
-                            conn.outbuf += session;
-                            conn.outbuf += "\r\n\r\nlogin success";
+                            string token;
+                            SessionResult ret = create_session(username, token);
+                            if (ret == SessionResult::Success) {
+                                conn.outbuf += resp_header_login_success;
+                                conn.outbuf += "Set-Cookie: session_id=";
+                                conn.outbuf += token;
+                                conn.outbuf += "\r\n\r\nlogin success";
+                            } else if (ret == SessionResult::ServerError) {
+                                conn.outbuf += resp_server_error;
+                            }
                         } else if (ret == LoginResult::ServerError) {
-                            conn.outbuf = resp_server_error;
+                            conn.outbuf += resp_server_error;
                         } else if (ret == LoginResult::UserNotFound) {
-                            conn.outbuf = resp_user_not_found;
+                            conn.outbuf += resp_user_not_found;
                         } else if (ret == LoginResult::WrongPassword) {
-                            conn.outbuf = resp_wrong_password;
+                            conn.outbuf += resp_wrong_password;
                         }
                     }
                 }
             } else {
-                conn.outbuf = default_response;
+                conn.outbuf += default_response;
             }
 
             if (req.version == "HTTP/1.0" || req.connection == "close") {
@@ -503,10 +387,13 @@ void Reactor::process(Connection &conn) {
         } else if (conn.protocol == PROTO_BINARY) {
             ProtobufRequest req;
             MessageType ret = parseProtobufMessage(conn.inbuf, req);
-            end_pos = req.end_pos;
-            conn.outbuf.reserve(256);
+            conn.outbuf.reserve(conn.outbuf.size() + 256);
 
-            LOG_DEBUG("parsed data: " + to_string(req.msg_type) + ' ' + to_string(req.msg_length) + " usernamne=" + req.username + " password=" + req.password);
+            LOG_DEBUG("parsed data: %u %u usernamne=%s password=%s",
+                      static_cast<unsigned int>(req.msg_type),
+                      static_cast<unsigned int>(req.msg_length),
+                      req.username.c_str(),
+                      req.password.c_str());
 
             enum ResponseKind {
                 REGISTER,
@@ -551,7 +438,7 @@ void Reactor::process(Connection &conn) {
             };
 
             if (ret == MSG_ERROR) {
-                LOG_DEBUG("protobuf parse failed, fd = " + to_string(conn.fd));
+                LOG_DEBUG("protobuf parse failed, fd = %d", conn.fd);
                 buildResponse(ERROR, "parse error");
             } else if (ret == MSG_REGISTER_REQ) {
                 RegisterResult ret = do_register(req.username, req.password);
@@ -574,10 +461,9 @@ void Reactor::process(Connection &conn) {
         } else if (conn.protocol == PROTO_WEBSOCKET) {
             WebSocketRequest req;
             WebSocketOpcode ret = parseWebSocketFrame(conn.inbuf, req);
-            end_pos = req.end_pos;
-            conn.outbuf.reserve(256);
+            conn.outbuf.reserve(conn.outbuf.size() + 256);
 
-            auto buildResponse = [&](WebSocketOpcode opcode, string payload_data = "", bool broadcast = false) {
+            auto buildResponse = [&](WebSocketOpcode opcode, string payload_data = "", bool broadcast = false, uint16_t close_code = 0) {
                 if (opcode == WS_TEXT) {
                     try {
                         json in = json::parse(payload_data);
@@ -588,10 +474,16 @@ void Reactor::process(Connection &conn) {
                         out["timestamp"] = chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count();
 
                         payload_data = out.dump();
+                        LOG_DEBUG("fd = %d websocket payload: %s", conn.fd, payload_data.c_str());
                     } catch (const json::exception &e) {
-                        LOG_WARN(string("bad json: ") + e.what());
+                        LOG_WARN("bad json: %s", e.what());
                         return;
                     }
+                }
+
+                if (close_code) {
+                    uint16_t code = htons(close_code);
+                    payload_data.append(reinterpret_cast<char *>(&code), 2);
                 }
 
                 string response;
@@ -616,18 +508,22 @@ void Reactor::process(Connection &conn) {
                     response.append(reinterpret_cast<char *>(&ext), 8);
                 }
                 response += move(payload_data);
-                LOG_DEBUG("fd = " + to_string(conn.fd) + " build response frame: " + response);
+                LOG_DEBUG("fd = %d build response frame size: %zu", conn.fd, response.size());
 
                 if (broadcast) {
                     broadcast_frame = move(response);
-                    LOG_DEBUG("fd = " + to_string(conn.fd) + " move response to broadcast frame: " + broadcast_frame);
+                    LOG_DEBUG("fd = %d move response to broadcast frame size: %zu", conn.fd, broadcast_frame.size());
                 } else {
-                    conn.outbuf = move(response);
+                    conn.outbuf += move(response);
                 }
             };
 
-            if (ret == WS_ERROR) {
-                LOG_DEBUG("websocket parse failed, fd = " + to_string(conn.fd));
+            if (ret == WS_PROTOCOLERROR) {
+                LOG_DEBUG("fd = %d send websocket parse failed", conn.fd);
+                buildResponse(WS_CLOSE, "", false, WS_PROTOCOLERROR);
+                conn.shouldClose = true;
+                trySend(conn);
+                return;
             } else if (ret == WS_TEXT) {
                 should_broadcast = true;
                 buildResponse(WS_TEXT, move(req.payload_data), should_broadcast);
@@ -638,18 +534,20 @@ void Reactor::process(Connection &conn) {
                 buildResponse(WS_PONG, move(req.payload_data));
             }
         }
-        conn.inbuf.erase(conn.inbuf.begin(), conn.inbuf.begin() + end_pos);
+        conn.inbuf.erase(conn.inbuf.begin(), conn.inbuf.begin() + res.end_pos);
 
         if (should_broadcast && !broadcast_frame.empty()) {
             shared_ptr<const string> frame = make_shared<string>(broadcast_frame);
-            LOG_DEBUG("reactor[" + to_string(m_index) + "] push a broadcast frame: " + broadcast_frame + " to other sub reactor");
+            LOG_DEBUG("reactor[%d] push a broadcast frame size = %zu to other sub reactor",
+                      m_index,
+                      broadcast_frame.size());
             for (auto &peer : m_sub_reactors) {
                 if (peer.get() == this) continue;
                 peer->enqueueBroadcast(frame);
             }
 
             for (auto it = m_conns.begin(); it != m_conns.end();) {
-                LOG_DEBUG("send broadcast to fd = " + to_string(it->second->fd));
+                LOG_DEBUG("send broadcast to fd = %d", it->second->fd);
                 auto current = it++;
                 if (current->second->protocol != PROTO_WEBSOCKET) continue;
                 current->second->outbuf += broadcast_frame;
@@ -661,6 +559,10 @@ void Reactor::process(Connection &conn) {
 
         int conn_fd = conn.fd;
         if (!m_conns.contains(conn_fd)) {
+            return;
+        }
+
+        if (!conn.outbuf.empty() || conn.file_offset < conn.file_size) {
             return;
         }
     }
@@ -728,9 +630,13 @@ void Reactor::trySend(Connection &conn) {
         return;
     }
 
-    LOG_DEBUG("fd = " + to_string(conn.fd) + ", will send packet size: " + to_string(conn.outbuf.size()) + ", packet: " + conn.outbuf);
+    LOG_DEBUG("fd = %d, will send packet size: %zu, packet: %.*s",
+              conn.fd,
+              conn.outbuf.size(),
+              static_cast<int>(conn.outbuf.size()),
+              conn.outbuf.c_str());
 
-    ssize_t sent = 0;
+    size_t sent = 0;
     while (sent < conn.outbuf.size()) {
         ssize_t n = send(conn.fd, conn.outbuf.data() + sent, conn.outbuf.size() - sent, 0);
         if (n > 0) {
@@ -741,9 +647,9 @@ void Reactor::trySend(Connection &conn) {
             conn.outbuf.erase(0, sent);
             return;
         } else {
-            LOG_ERROR("write failed");
-            conn.outbuf.erase(0, sent);
-            closeFile(conn);
+            LOG_DEBUG("write failed");
+            if (conn.file_fd > 0) closeFile(conn);
+            closeNow(conn.fd);
             return;
         }
     }
@@ -757,24 +663,38 @@ void Reactor::trySend(Connection &conn) {
             modfd(conn.fd, EPOLLET | EPOLLIN | EPOLLOUT);
             return;
         } else {
-            LOG_ERROR("sendfile failed");
+            LOG_DEBUG("sendfile failed");
             closeFile(conn);
+            closeNow(conn.fd);
             return;
         }
     }
     closeFile(conn);
 
     if (conn.readClosed || conn.shouldClose) {
-        LOG_DEBUG("send complete, close fd = " + to_string(conn.fd));
+        LOG_DEBUG("send complete, close fd = %d", conn.fd);
         closeNow(conn.fd);
         return;
     } else if (!conn.keepAlive) {
-        LOG_DEBUG("client not keep alive, send complete, close fd = " + to_string(conn.fd));
+        LOG_DEBUG("client not keep alive, send complete, close fd = %d", conn.fd);
         closeNow(conn.fd);
         return;
     } else {
-        LOG_DEBUG("fd = " + to_string(conn.fd) + ", send complete");
+        LOG_DEBUG("fd = %d, send complete", conn.fd);
+        modfd(conn.fd, EPOLLET | EPOLLIN);
     }
+}
+
+void Reactor::sendError(Connection &conn, string_view resp, uint64_t end_pos) {
+    if (resp == resp_bad_request) {
+        conn.outbuf = resp;
+        conn.shouldClose = true;
+        modfd(conn.fd, EPOLLET | EPOLLOUT);
+    } else {
+        conn.inbuf.erase(conn.inbuf.begin(), conn.inbuf.begin() + end_pos);
+        conn.outbuf += resp;
+    }
+    trySend(conn);
 }
 
 void Reactor::closeFile(Connection &conn) {
@@ -791,129 +711,15 @@ void Reactor::closeNow(int fd) {
     m_conns.erase(fd);
 }
 
-static bool isRequestComplete(Connection &conn) {
+FrameResult Reactor::checkFrame(Connection &conn) {
     if (conn.protocol == PROTO_HTTP) {
-        size_t head_end_pos = conn.inbuf.find("\r\n\r\n");
-        if (head_end_pos == string::npos) {
-            LOG_DEBUG("HTTP header incomplete : missing CRLFCRLF");
-            return false;
+        FrameResult res = checkHttpFrame(conn.inbuf, conn.fd);
+        if (res.status == FrameStatus::ProtocolError) {
+            sendError(conn, resp_bad_request);
         }
-
-        string header_lower(head_end_pos, '\0');
-        transform(conn.inbuf.begin(), conn.inbuf.begin() + head_end_pos, header_lower.begin(), ::tolower);
-
-        static constexpr string_view key = "content-length:";
-        size_t value_pos = header_lower.find(key);
-        if (value_pos == string::npos) {
-            LOG_DEBUG("HTTP no body");
-            return true;
-        }
-        value_pos += key.size();
-        value_pos = conn.inbuf.find_first_not_of(' ', value_pos);
-
-        if (value_pos == string::npos) {
-            LOG_DEBUG("HTTP incomplete or error");
-            return false;
-        }
-
-        size_t value_end = conn.inbuf.find("\r\n", value_pos);
-        size_t value = stoi(conn.inbuf.substr(value_pos, value_end - value_pos));
-
-        size_t body_start_pos = head_end_pos + 4;
-        size_t body_size = conn.inbuf.size() - body_start_pos;
-        if (body_size < value) {
-            LOG_DEBUG("HTTP body incomplete, received body size = " + to_string(body_size) + " ,expected = " + to_string(value));
-            return false;
-        } else {
-            LOG_DEBUG("HTTP received complete");
-        }
-
-        return true;
-    } else if (conn.protocol == PROTO_BINARY) {
-        if (conn.inbuf.size() < 8) {
-            LOG_DEBUG("fd = " + to_string(conn.fd) + " ,protobuf incomplete");
-            return false;
-        }
-
-        uint32_t msg_type_debug;
-        memcpy(&msg_type_debug, conn.inbuf.data(), 4);
-        if (msg_type_debug > MSG_ERROR) {
-            LOG_DEBUG("protobuf type error");
-            return false;
-        }
-
-        uint32_t msg_length;
-        memcpy(&msg_length, conn.inbuf.data() + 4, 4);
-        LOG_DEBUG("fd = " + to_string(conn.fd) + " ,is_request_complete: type=" + to_string(msg_type_debug) + " length=" + to_string(msg_length) + " inbuf_size=" + to_string(conn.inbuf.size()));
-
-        size_t prefix_consumed = 0;
-        while (conn.inbuf.size() >= prefix_consumed + 8) {
-            uint32_t msg_length;
-            memcpy(&msg_length, conn.inbuf.data() + prefix_consumed + 4, 4);
-
-            if (msg_length == 0) {
-                prefix_consumed += 8;
-                continue;
-            }
-
-            if (conn.inbuf.size() < prefix_consumed + 8 + msg_length) {
-                LOG_DEBUG("fd = " + to_string(conn.fd) + ", protobuf message incomplete");
-                return false;
-            }
-
-            conn.inbuf.erase(0, prefix_consumed);
-            return true;
-        }
-        conn.inbuf.erase(0, prefix_consumed);
-        return false;
-    } else if (conn.protocol == PROTO_WEBSOCKET) {
-        int prefix_length = 2;
-        if (conn.inbuf.size() < prefix_length) {
-            LOG_DEBUG("fd = " + to_string(conn.fd) + ", websocket incomplete");
-            return false;
-        }
-
-        uint8_t byte1 = static_cast<uint8_t>(conn.inbuf[1]);
-        bool masked = byte1 & 0x80;
-        uint64_t payload_length = byte1 & 0x7F;
-
-        auto read_extended_length = [&](int len) {
-            if (conn.inbuf.size() < prefix_length + len) {
-                LOG_DEBUG("fd = " + to_string(conn.fd) + ", websocket payload_length incomplete");
-                return false;
-            }
-
-            if (len == 2) {
-                uint16_t ext;
-                memcpy(&ext, conn.inbuf.data() + prefix_length, len);
-                payload_length = ntohs(ext);
-            } else if (len == 8) {
-                uint64_t ext;
-                memcpy(&ext, conn.inbuf.data() + prefix_length, len);
-                payload_length = be64toh(ext);
-            }
-            prefix_length += len;
-            return true;
-        };
-
-        if (payload_length == 126) {
-            if (!read_extended_length(2)) {
-                return false;
-            }
-        } else if (payload_length == 127) {
-            if (!read_extended_length(8)) {
-                return false;
-            }
-        }
-
-        prefix_length += 4 * masked;
-
-        if (conn.inbuf.size() < prefix_length + payload_length) {
-            LOG_DEBUG("fd = " + to_string(conn.fd) + ", websocket payload_data incomplete");
-            return false;
-        }
-        return true;
+        return res;
     }
-
-    return false;
+    if (conn.protocol == PROTO_BINARY) return checkProtobufFrame(conn.inbuf, conn.fd);
+    if (conn.protocol == PROTO_WEBSOCKET) return checkWebSocketFrame(conn.inbuf, conn.fd);
+    return {FrameStatus::ProtocolError, 0};
 }

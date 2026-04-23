@@ -5,6 +5,7 @@
 #include "timerheap.h"
 #include <atomic>
 #include <memory>
+#include <protocol_frame.h>
 #include <queue>
 #include <sys/eventfd.h>
 #include <thread>
@@ -28,7 +29,9 @@ class Reactor {
     void closeFile(Connection &conn);
     void closeNow(int fd);
     void process(Connection &conn);
+    FrameResult checkFrame(Connection &conn);
     std::string_view getMimeType(const std::string &file_path);
+    void sendError(Connection &conn, std::string_view resp, uint64_t end_pos = 0);
 
   private:
     int m_index;
