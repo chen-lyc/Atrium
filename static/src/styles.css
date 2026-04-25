@@ -1483,6 +1483,17 @@ button:not(:disabled) {
     box-shadow: 0 10px 24px color-mix(in srgb, var(--text) 12%, transparent);
 }
 
+.auth-demo-send:disabled:hover {
+    background: transparent;
+    color: color-mix(in srgb, var(--text-subtle) 70%, transparent);
+    box-shadow: none;
+}
+
+.auth-demo-send:disabled {
+    cursor: default;
+    pointer-events: none;
+}
+
 .auth-demo-composer-input::placeholder {
     color: var(--text-subtle);
 }
@@ -1898,6 +1909,8 @@ button:not(:disabled) {
     justify-content: center;
     transition: opacity 180ms var(--easing);
     overscroll-behavior: contain;
+    overflow-anchor: none;
+    scroll-behavior: auto;
 }
 
 .messages-inner {
@@ -2143,7 +2156,9 @@ button:not(:disabled) {
     pointer-events: none;
     padding-left: 16px;
     transform-origin: left top;
-    will-change: transform, width, opacity;
+    backface-visibility: hidden;
+    contain: layout paint style;
+    will-change: transform, opacity;
 }
 
 .message-flight .message-text {

@@ -4,9 +4,16 @@
 
     window.AppConstants = {
         CHAT_URL: `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/chat`,
+        CHAT_RUNTIME_SCRIPTS: [
+            "./src/chat/ConnectionStatus.js",
+            "./src/chat/MessageInput.js",
+            "./src/chat/MessageFlight.js",
+            "./src/chat/Sidebar.js",
+            "./src/chat/ChatRoom.js"
+        ],
         EASE,
         TAP_TRANSITION: { duration: 0.12, ease: EASE },
-        NORMAL_SEND_SPRING: { type: "spring", stiffness: 300, damping: 30, mass: 0.78 },
+        NORMAL_SEND_FLIGHT: { duration: 0.34, ease: [0.2, 0.82, 0.2, 1] },
         LOCAL_SEND_SETTLE_DELAY: 900,
         STATUS_LABEL: {
             idle: "等待加入",

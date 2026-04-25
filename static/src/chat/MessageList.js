@@ -32,7 +32,6 @@
         messages,
         onScrolled = () => {},
         hiddenMessageId,
-        suspendSmoothScroll,
         shouldAnimateEntry,
         entryDelay,
         entryDuration = 0.26,
@@ -67,7 +66,7 @@
             }
 
             viewport.scrollTop = viewport.scrollHeight;
-        }, [messages.length, resolvedViewportRef, stickToBottom, suspendSmoothScroll]);
+        }, [messages.length, resolvedViewportRef, stickToBottom]);
 
         function handleScroll() {
             const viewport = resolvedViewportRef.current;

@@ -852,13 +852,13 @@
             }
         }
 
-        function handleAuthSuccess(username) {
+        function handleAuthSuccess(nickname) {
             if (authSuccessLockedRef.current) {
                 return;
             }
 
             authSuccessLockedRef.current = true;
-            onSuccess(username);
+            onSuccess(nickname);
         }
 
         const trimmedComposerValue = autoTyping.inputValue.trim();
@@ -1312,7 +1312,7 @@
                                                                     type="button"
                                                                     className={`send-button auth-demo-send focus-ring ${
                                                                         isSendEmphasized ? "is-active is-emphasized" : ""
-                                                                    } ${isSendHovered ? "is-hovered" : ""}`}
+                                                                    } ${trimmedComposerValue && isSendHovered ? "is-hovered" : ""}`}
                                                                     onClick={handleSend}
                                                                     onMouseEnter={() => setSendHovered(true)}
                                                                     onMouseLeave={() => setSendHovered(false)}

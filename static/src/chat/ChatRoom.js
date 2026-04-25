@@ -4,7 +4,7 @@
     const { EASE } = window.AppConstants;
 
     function ChatRoom({
-        username,
+        nickname,
         connectionState,
         messages,
         isHeaderScrolled,
@@ -76,7 +76,7 @@
         return (
             <div className="shell">
                 <Sidebar
-                    username={username}
+                    nickname={nickname}
                     onLogout={onLogout}
                     shouldAnimateEntry={false}
                     transitionMode={resolvedTransitionMode}
@@ -108,7 +108,6 @@
                             messages={visibleMessages}
                             onScrolled={onScrolled}
                             hiddenMessageId={hiddenMessageId}
-                            suspendSmoothScroll={Boolean(messageFlight)}
                             shouldAnimateEntry={false}
                             itemAnimationMode="calm"
                             isFading={isFading}

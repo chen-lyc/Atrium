@@ -1,18 +1,23 @@
-// Defines the register form without changing validation or request flow.
+// Defines the register form with frontend/backend-aligned auth validation.
 (() => {
     const { useState } = window.React;
     const { motion } = window;
     const { TAP_TRANSITION } = window.AppConstants;
-    const { buildAuthBody } = window.AppUtils;
+    const {
+        buildAuthBody,
+        validateAuthNickname,
+        validateAuthPassword,
+        resolveAuthFailure
+    } = window.AppUtils;
     const InlineError = window.InlineError;
     const LoadingDots = window.LoadingDots;
 
     function RegisterPage({ onSwitchLogin, onSuccess, disabled }) {
-        const [username, setUsername] = useState("");
+        const [nickname, setNickname] = useState("");
         const [password, setPassword] = useState("");
         const [confirmPassword, setConfirmPassword] = useState("");
         const [fieldErrors, setFieldErrors] = useState({
-            username: "",
+            nickname: "",
             password: "",
             confirm: ""
         });
@@ -25,10 +30,10 @@
                 ? "两次输入不一致"
                 : fieldErrors.confirm;
 
-        function handleUsernameChange(value) {
-            setUsername(value);
+        function handleNicknameChange(value) {
+            setNickname(value);
             setNetworkError("");
-            setFieldErrors((prev) => ({ ...prev, username: "" }));
+            setFieldErrors((prev) => ({ ...prev, nickname: "" }));
         }
 
         function handlePasswordChange(value) {
@@ -48,38 +53,34 @@
                 return;
             }
 
-            const trimmedUsername = username.trim();
-            if (!trimmedUsername) {
-                setFieldErrors({ username: "请输入用户名", password: "", confirm: "" });
+            const trimmedNickname = nickname.trim();
+            const nicknameError = validateAuthNickname(trimmedNickname);
+            if (nicknameError) {
+                setFieldErrors({ nickname: nicknameError, password: "", confirm: "" });
                 setNetworkError("");
                 return;
             }
 
-            if (/\s/.test(trimmedUsername)) {
-                setFieldErrors({ username: "用户名不能包含空格", password: "", confirm: "" });
-                setNetworkError("");
-                return;
-            }
-
-            if (!password) {
-                setFieldErrors({ username: "", password: "请输入密码", confirm: "" });
+            const passwordError = validateAuthPassword(password);
+            if (passwordError) {
+                setFieldErrors({ nickname: "", password: passwordError, confirm: "" });
                 setNetworkError("");
                 return;
             }
 
             if (!confirmPassword) {
-                setFieldErrors({ username: "", password: "", confirm: "请再次输入密码" });
+                setFieldErrors({ nickname: "", password: "", confirm: "请再次输入密码" });
                 setNetworkError("");
                 return;
             }
 
             if (password !== confirmPassword) {
-                setFieldErrors({ username: "", password: "", confirm: "两次输入不一致" });
+                setFieldErrors({ nickname: "", password: "", confirm: "两次输入不一致" });
                 setNetworkError("");
                 return;
             }
 
-            setFieldErrors({ username: "", password: "", confirm: "" });
+            setFieldErrors({ nickname: "", password: "", confirm: "" });
             setNetworkError("");
             setIsSubmitting(true);
 
@@ -87,26 +88,22 @@
                 const res = await fetch("/register", {
                     method: "POST",
                     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                    body: buildAuthBody(trimmedUsername, password),
+                    body: buildAuthBody(trimmedNickname, password),
                     credentials: "include"
                 });
 
                 if (res.ok) {
-                    onSuccess(trimmedUsername);
+                    onSuccess(trimmedNickname);
                     return;
                 }
 
-                if (res.status === 409) {
-                    setFieldErrors({ username: "用户名已被占用", password: "", confirm: "" });
-                    return;
-                }
-
-                if (res.status >= 500) {
-                    setNetworkError("服务器开小差了，请稍后再试");
-                    return;
-                }
-
-                setNetworkError("注册失败，请稍后重试");
+                const failure = await resolveAuthFailure(res, "register");
+                setFieldErrors({
+                    nickname: failure.field === "nickname" ? failure.message : "",
+                    password: failure.field === "password" ? failure.message : "",
+                    confirm: ""
+                });
+                setNetworkError(failure.networkError);
             } catch (error) {
                 setNetworkError("网络连接失败，请检查网络");
             } finally {
@@ -126,17 +123,17 @@
                 <div className="auth-fields">
                     <div className="auth-field">
                         <input
-                            id="register-username"
+                            id="register-nickname"
                             name="username"
-                            className={`field-input ${fieldErrors.username ? "is-error" : ""}`}
-                            value={username}
-                            onChange={(event) => handleUsernameChange(event.target.value)}
+                            className={`field-input ${fieldErrors.nickname ? "is-error" : ""}`}
+                            value={nickname}
+                            onChange={(event) => handleNicknameChange(event.target.value)}
                             onKeyDown={handleKeyDown}
-                            placeholder="用户名"
+                            placeholder="昵称"
                             autoComplete="username"
                             disabled={isLocked}
                         />
-                        <InlineError message={fieldErrors.username} />
+                        <InlineError message={fieldErrors.nickname} />
                     </div>
 
                     <div className="auth-field">

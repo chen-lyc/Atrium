@@ -1,24 +1,29 @@
-// Defines the login form without changing its original auth behavior.
+// Defines the login form with frontend/backend-aligned auth validation.
 (() => {
     const { useState } = window.React;
     const { motion } = window;
     const { TAP_TRANSITION } = window.AppConstants;
-    const { buildAuthBody } = window.AppUtils;
+    const {
+        buildAuthBody,
+        validateAuthNickname,
+        validateAuthPassword,
+        resolveAuthFailure
+    } = window.AppUtils;
     const InlineError = window.InlineError;
     const LoadingDots = window.LoadingDots;
 
     function LoginPage({ onSwitchRegister, onSuccess, disabled }) {
-        const [username, setUsername] = useState("");
+        const [nickname, setNickname] = useState("");
         const [password, setPassword] = useState("");
-        const [fieldErrors, setFieldErrors] = useState({ username: "", password: "" });
+        const [fieldErrors, setFieldErrors] = useState({ nickname: "", password: "" });
         const [networkError, setNetworkError] = useState("");
         const [isSubmitting, setIsSubmitting] = useState(false);
         const isLocked = isSubmitting || disabled;
 
-        function handleUsernameChange(value) {
-            setUsername(value);
+        function handleNicknameChange(value) {
+            setNickname(value);
             setNetworkError("");
-            setFieldErrors((prev) => ({ ...prev, username: "", password: "" }));
+            setFieldErrors((prev) => ({ ...prev, nickname: "", password: "" }));
         }
 
         function handlePasswordChange(value) {
@@ -32,20 +37,22 @@
                 return;
             }
 
-            const trimmedUsername = username.trim();
-            if (!trimmedUsername) {
-                setFieldErrors({ username: "请输入用户名", password: "" });
+            const trimmedNickname = nickname.trim();
+            const nicknameError = validateAuthNickname(trimmedNickname);
+            if (nicknameError) {
+                setFieldErrors({ nickname: nicknameError, password: "" });
                 setNetworkError("");
                 return;
             }
 
-            if (!password) {
-                setFieldErrors({ username: "", password: "请输入密码" });
+            const passwordError = validateAuthPassword(password);
+            if (passwordError) {
+                setFieldErrors({ nickname: "", password: passwordError });
                 setNetworkError("");
                 return;
             }
 
-            setFieldErrors({ username: "", password: "" });
+            setFieldErrors({ nickname: "", password: "" });
             setNetworkError("");
             setIsSubmitting(true);
 
@@ -53,21 +60,21 @@
                 const res = await fetch("/login", {
                     method: "POST",
                     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                    body: buildAuthBody(trimmedUsername, password),
+                    body: buildAuthBody(trimmedNickname, password),
                     credentials: "include"
                 });
 
                 if (res.ok) {
-                    onSuccess(trimmedUsername);
+                    onSuccess(trimmedNickname);
                     return;
                 }
 
-                if (res.status === 401) {
-                    setFieldErrors({ username: "", password: "用户名或密码错误" });
-                    return;
-                }
-
-                setNetworkError("网络连接失败，请检查网络");
+                const failure = await resolveAuthFailure(res, "login");
+                setFieldErrors({
+                    nickname: failure.field === "nickname" ? failure.message : "",
+                    password: failure.field === "password" ? failure.message : ""
+                });
+                setNetworkError(failure.networkError);
             } catch (error) {
                 setNetworkError("网络连接失败，请检查网络");
             } finally {
@@ -87,17 +94,17 @@
                 <div className="auth-fields">
                     <div className="auth-field">
                         <input
-                            id="login-username"
+                            id="login-nickname"
                             name="username"
-                            className={`field-input ${fieldErrors.username ? "is-error" : ""}`}
-                            value={username}
-                            onChange={(event) => handleUsernameChange(event.target.value)}
+                            className={`field-input ${fieldErrors.nickname ? "is-error" : ""}`}
+                            value={nickname}
+                            onChange={(event) => handleNicknameChange(event.target.value)}
                             onKeyDown={handleKeyDown}
-                            placeholder="用户名"
+                            placeholder="昵称"
                             autoComplete="username"
                             disabled={isLocked}
                         />
-                        <InlineError message={fieldErrors.username} />
+                        <InlineError message={fieldErrors.nickname} />
                     </div>
 
                     <div className="auth-field">

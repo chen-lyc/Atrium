@@ -1,5 +1,7 @@
 // Defines shared utility helpers for messages, auth, and session state.
 (() => {
+    const babelScriptLoads = new Map();
+
     function createId(prefix = "msg") {
         if (window.crypto && typeof window.crypto.randomUUID === "function") {
             return `${prefix}-${window.crypto.randomUUID()}`;
@@ -41,7 +43,7 @@
         return "";
     }
 
-    function normalizeIncomingMessage(payload, currentUsername) {
+    function normalizeIncomingMessage(payload, currentNickname) {
         const normalizedNickname =
             typeof payload.nickname === "string" && payload.nickname.trim()
                 ? payload.nickname.trim()
@@ -58,7 +60,7 @@
             nickname: normalizedNickname,
             text: getIncomingText(payload),
             timestamp: payload.timestamp || Date.now(),
-            isSelf: Boolean(currentUsername && normalizedNickname === currentUsername),
+            isSelf: Boolean(currentNickname && normalizedNickname === currentNickname),
             status: payload.status || "sent",
             source: "server"
         };
@@ -157,7 +159,185 @@
         document.cookie = "session_id=; Max-Age=0; Path=/";
     }
 
+    function hasCookie(name) {
+        const prefix = `${name}=`;
+        return document.cookie
+            .split(";")
+            .map((part) => part.trim())
+            .some((part) => part.startsWith(prefix));
+    }
+
+    function hasSessionCookie() {
+        return hasCookie("session_id");
+    }
+
+    function getUtf8ByteLength(value) {
+        if (typeof TextEncoder === "function") {
+            return new TextEncoder().encode(value).length;
+        }
+
+        return unescape(encodeURIComponent(value)).length;
+    }
+
+    function hasInvalidControlCharacter(value) {
+        return Array.from(value).some((char) => {
+            const codePoint = char.codePointAt(0);
+            return codePoint < 0x20 || codePoint === 0x7f;
+        });
+    }
+
+    function validateAuthNickname(nickname) {
+        if (!nickname) {
+            return "请输入昵称";
+        }
+
+        if (hasInvalidControlCharacter(nickname)) {
+            return "昵称包含无效字符";
+        }
+
+        if (getUtf8ByteLength(nickname) > 32) {
+            return "昵称不能超过 32 字节";
+        }
+
+        return "";
+    }
+
+    function validateAuthPassword(password) {
+        if (!password) {
+            return "请输入密码";
+        }
+
+        if (hasInvalidControlCharacter(password)) {
+            return "密码包含无效字符";
+        }
+
+        if (getUtf8ByteLength(password) > 64) {
+            return "密码不能超过 64 字节";
+        }
+
+        return "";
+    }
+
+    async function readResponseText(response) {
+        try {
+            return (await response.text()).trim();
+        } catch (error) {
+            return "";
+        }
+    }
+
+    async function resolveAuthFailure(response, mode) {
+        const responseText = await readResponseText(response);
+
+        if (response.status === 400) {
+            if (responseText === "invalid_username") {
+                return { field: "nickname", message: "昵称不合法", networkError: "" };
+            }
+
+            if (responseText === "invalid_password") {
+                return { field: "password", message: "密码不合法", networkError: "" };
+            }
+
+            if (responseText === "invalid_encode") {
+                return { field: null, message: "", networkError: "请求格式异常，请重试" };
+            }
+
+            if (responseText === "missing username or password") {
+                return { field: null, message: "", networkError: "请完整填写昵称和密码" };
+            }
+
+            return { field: null, message: "", networkError: "输入格式不正确，请检查后重试" };
+        }
+
+        if (mode === "login" && response.status === 401) {
+            return { field: "password", message: "昵称或密码错误", networkError: "" };
+        }
+
+        if (mode === "register" && response.status === 409) {
+            return { field: "nickname", message: "昵称已被占用", networkError: "" };
+        }
+
+        if (response.status >= 500) {
+            return { field: null, message: "", networkError: "服务器开小差了，请稍后再试" };
+        }
+
+        return {
+            field: null,
+            message: "",
+            networkError: mode === "register" ? "注册失败，请稍后重试" : "登录失败，请稍后重试"
+        };
+    }
+
+    async function loadBabelScript(path) {
+        if (window.__signalLoadedScripts?.[path]) {
+            return true;
+        }
+
+        if (babelScriptLoads.has(path)) {
+            return babelScriptLoads.get(path);
+        }
+
+        const loadPromise = (async () => {
+            if (!window.Babel || typeof window.Babel.transform !== "function") {
+                throw new Error("Babel runtime is unavailable");
+            }
+
+            const response = await fetch(path, {
+                method: "GET",
+                credentials: "same-origin"
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to load ${path}: ${response.status}`);
+            }
+
+            const source = await response.text();
+            const transformed = window.Babel.transform(source, {
+                presets: ["react"],
+                sourceType: "script"
+            }).code;
+            const resolvedUrl = new URL(path, window.location.href).href;
+
+            window.eval(`${transformed}\n//# sourceURL=${resolvedUrl}`);
+
+            if (!window.__signalLoadedScripts) {
+                window.__signalLoadedScripts = {};
+            }
+            window.__signalLoadedScripts[path] = true;
+            return true;
+        })().catch((error) => {
+            babelScriptLoads.delete(path);
+            throw error;
+        });
+
+        babelScriptLoads.set(path, loadPromise);
+        return loadPromise;
+    }
+
+    function loadBabelScripts(paths) {
+        return paths.reduce(
+            (promise, path) => promise.then(() => loadBabelScript(path)),
+            Promise.resolve()
+        );
+    }
+
+    function normalizeAuthNickname(data) {
+        if (typeof data?.nickname === "string" && data.nickname.trim()) {
+            return data.nickname.trim();
+        }
+
+        if (typeof data?.username === "string" && data.username.trim()) {
+            return data.username.trim();
+        }
+
+        return "";
+    }
+
     async function fetchCurrentUser() {
+        if (!hasSessionCookie()) {
+            return { ok: false, status: 0, data: null };
+        }
+
         const res = await fetch("/me", {
             method: "GET",
             credentials: "include"
@@ -168,12 +348,17 @@
         }
 
         const data = await res.json().catch(() => ({}));
-        return { ok: true, status: res.status, data };
+        const nickname = normalizeAuthNickname(data);
+        if (!nickname) {
+            return { ok: false, status: res.status, data: null };
+        }
+
+        return { ok: true, status: res.status, data: { ...data, nickname } };
     }
 
-    function buildAuthBody(username, password) {
+    function buildAuthBody(nickname, password) {
         const body = new URLSearchParams();
-        body.append("username", username);
+        body.append("username", nickname);
         body.append("password", password);
         return body.toString();
     }
@@ -189,6 +374,15 @@
         mergeIncomingMessage,
         decorateMessages,
         deleteSessionCookie,
+        hasCookie,
+        hasSessionCookie,
+        getUtf8ByteLength,
+        validateAuthNickname,
+        validateAuthPassword,
+        resolveAuthFailure,
+        loadBabelScript,
+        loadBabelScripts,
+        normalizeAuthNickname,
         fetchCurrentUser,
         buildAuthBody
     };

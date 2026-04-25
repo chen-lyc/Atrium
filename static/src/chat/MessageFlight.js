@@ -5,10 +5,12 @@
 
     function MessageFlight({ flight, onComplete }) {
         if (!flight) {
-            return null;
+            return <AnimatePresence initial={false} />;
         }
 
-        const { id, text, startRect, targetRect, spring } = flight;
+        const { id, text, startRect, targetRect, transition } = flight;
+        const activeWidth = targetRect ? targetRect.width : startRect.width;
+        const flightTransition = transition || { duration: 0.34, ease: EASE };
 
         return (
             <AnimatePresence initial={false}>
@@ -18,12 +20,11 @@
                     style={{
                         left: startRect.left,
                         top: startRect.top,
-                        width: startRect.width
+                        width: activeWidth
                     }}
                     initial={{
                         x: 0,
                         y: 0,
-                        width: startRect.width,
                         opacity: 0.96
                     }}
                     animate={
@@ -31,18 +32,16 @@
                             ? {
                                 x: targetRect.left - startRect.left,
                                 y: targetRect.top - startRect.top,
-                                width: targetRect.width,
                                 opacity: 1
                             }
                             : {
                                 x: 0,
                                 y: 0,
-                                width: startRect.width,
                                 opacity: 0.96
                             }
                     }
-                    exit={{ opacity: 0 }}
-                    transition={targetRect ? spring : { duration: 0.08, ease: EASE }}
+                    exit={{ opacity: 0, transition: { duration: 0.08, ease: EASE } }}
+                    transition={targetRect ? flightTransition : { duration: 0.06, ease: EASE }}
                     onAnimationComplete={() => {
                         if (targetRect) {
                             onComplete(id);

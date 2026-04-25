@@ -4,7 +4,7 @@
     const { EASE, TAP_TRANSITION } = window.AppConstants;
 
     function Sidebar({
-        username,
+        nickname,
         onLogout,
         shouldAnimateEntry,
         entryDelay,
@@ -51,7 +51,7 @@
                 </motion.div>
 
                 <div className="identity">
-                    <div className="identity-name">{username}</div>
+                    <div className="identity-name">{nickname}</div>
                     {readOnly ? null : (
                         <motion.button
                             type="button"

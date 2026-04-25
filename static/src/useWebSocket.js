@@ -4,12 +4,14 @@
     const { LOCAL_SEND_SETTLE_DELAY } = window.AppConstants;
     const {
         createId,
+        fetchCurrentUser,
+        hasSessionCookie,
         normalizeIncomingMessage,
         findPendingLocalMatch,
         mergeIncomingMessage
     } = window.AppUtils;
 
-    function useWebSocket({ url, username, enabled, onAuthFailed }) {
+    function useWebSocket({ url, nickname, enabled, onAuthFailed }) {
         const socketRef = useRef(null);
         const reconnectTimerRef = useRef(null);
         const reconnectAttemptRef = useRef(0);
@@ -84,13 +86,13 @@
             setLastError("");
             reconnectAttemptRef.current = 0;
             setReconnectAttempt(0);
-            if (!username) {
+            if (!nickname) {
                 setConnectionState("idle");
             }
-        }, [username]);
+        }, [nickname]);
 
         useEffect(() => {
-            if (!enabled || !username) {
+            if (!enabled || !nickname) {
                 window.clearTimeout(reconnectTimerRef.current);
                 cleanupSocket();
                 setConnectionState("idle");
@@ -157,7 +159,7 @@
                             }
 
                             const payload = JSON.parse(rawData);
-                            const nextMessage = normalizeIncomingMessage(payload, username);
+                            const nextMessage = normalizeIncomingMessage(payload, nickname);
                             setMessages((prev) => {
                                 if (nextMessage.isSelf) {
                                     const matchIndex = findPendingLocalMatch(prev, nextMessage);
@@ -189,7 +191,29 @@
 
                         if (!opened) {
                             setConnectionState("idle");
-                            authFailedRef.current?.();
+                            if (!hasSessionCookie()) {
+                                authFailedRef.current?.();
+                                return;
+                            }
+
+                            fetchCurrentUser()
+                                .then((result) => {
+                                    if (cancelled) {
+                                        return;
+                                    }
+
+                                    if (result.ok) {
+                                        scheduleReconnect();
+                                        return;
+                                    }
+
+                                    authFailedRef.current?.();
+                                })
+                                .catch(() => {
+                                    if (!cancelled) {
+                                        scheduleReconnect();
+                                    }
+                                });
                             return;
                         }
 
@@ -210,20 +234,20 @@
                 clearAllPendingTimers();
                 cleanupSocket();
             };
-        }, [url, username, enabled]);
+        }, [url, nickname, enabled]);
 
         function sendChatMessage(text) {
             const content = text.trim();
             const current = socketRef.current;
 
-            if (!content || !username || !current || current.readyState !== WebSocket.OPEN) {
+            if (!content || !nickname || !current || current.readyState !== WebSocket.OPEN) {
                 return null;
             }
 
             const localMessage = {
                 id: createId("local"),
                 clientMessageId: createId("client"),
-                nickname: username,
+                nickname,
                 text: content,
                 timestamp: Date.now(),
                 isSelf: true,

@@ -35,6 +35,15 @@
             },
             layout: false
         },
+        flightTarget: {
+            initial: false,
+            animate: { opacity: 1, y: 0, scale: 1 },
+            exit: { opacity: 0 },
+            transition: {
+                opacity: { duration: 0.12, ease: EASE }
+            },
+            layout: false
+        },
         welcome: {
             initial: { opacity: 0 },
             animate: { opacity: 1 },
@@ -58,7 +67,9 @@
     function MessageItem({ message, hiddenMessageId, itemAnimationMode = "standard" }) {
         const isHiddenForFlight = message.id === hiddenMessageId;
         const resolvedAnimationMode = message.source === "local-welcome" ? "welcome" : itemAnimationMode;
-        const animationPreset = ANIMATION_PRESETS[resolvedAnimationMode] || ANIMATION_PRESETS.standard;
+        const animationPreset = isHiddenForFlight
+            ? ANIMATION_PRESETS.flightTarget
+            : ANIMATION_PRESETS[resolvedAnimationMode] || ANIMATION_PRESETS.standard;
         const shouldShowDivider = message.showDivider && message.source !== "local-welcome";
 
         if (message.nickname === "__system__") {
@@ -98,9 +109,15 @@
 
                 <motion.article
                     className="message-block"
-                    style={{ opacity: isHiddenForFlight ? 0 : 1 }}
-                    animate={{ backgroundColor: "rgba(47, 128, 237, 0)" }}
-                    transition={{ duration: 0.15, ease: EASE }}
+                    initial={false}
+                    animate={{
+                        opacity: isHiddenForFlight ? 0 : 1,
+                        backgroundColor: "rgba(47, 128, 237, 0)"
+                    }}
+                    transition={{
+                        opacity: { duration: isHiddenForFlight ? 0.04 : 0.12, ease: EASE },
+                        backgroundColor: { duration: 0.15, ease: EASE }
+                    }}
                 >
                     {message.showAuthor ? (
                         <div className="message-meta">

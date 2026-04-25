@@ -2,8 +2,8 @@
 (() => {
     const { useEffect, useRef, useState } = window.React;
     const { motion, AnimatePresence } = window;
-    const { CHAT_URL, EASE, NORMAL_SEND_SPRING } = window.AppConstants;
-    const { createId, deleteSessionCookie, fetchCurrentUser } = window.AppUtils;
+    const { CHAT_URL, CHAT_RUNTIME_SCRIPTS, EASE, NORMAL_SEND_FLIGHT } = window.AppConstants;
+    const { createId, deleteSessionCookie, fetchCurrentUser, hasSessionCookie, loadBabelScripts } = window.AppUtils;
     const useWebSocket = window.useWebSocket;
 
     const NORMAL_LOGIN_RITUAL = {
@@ -94,12 +94,12 @@
     function App() {
         const LoadingStage = window.LoadingStage;
         const AuthShell = window.AuthShell;
-        const ChatRoom = window.ChatRoom;
         const launchTimerRef = useRef(null);
         const launchFrameRef = useRef(null);
         const focusFrameRef = useRef(null);
         const authPanelCloseTimerRef = useRef(null);
         const ritualTimerRef = useRef(null);
+        const chatRuntimePromiseRef = useRef(null);
         const lastSendFlightAtRef = useRef(0);
         const composerFieldRef = useRef(null);
         const chatMessagesViewportRef = useRef(null);
@@ -111,7 +111,7 @@
 
         const [appStage, setAppStage] = useState("loading");
         const [authPanelOpen, setAuthPanelOpen] = useState(false);
-        const [authedUsername, setAuthedUsername] = useState("");
+        const [authedNickname, setAuthedNickname] = useState("");
         const [authHandoffPending, setAuthHandoffPending] = useState(false);
         const [wsEnabled, setWsEnabled] = useState(false);
         const [localSystemMessages, setLocalSystemMessages] = useState([]);
@@ -120,21 +120,22 @@
         const [messageFlight, setMessageFlight] = useState(null);
         const [hiddenMessageId, setHiddenMessageId] = useState(null);
         const [sceneTransition, setSceneTransition] = useState(null);
+        const [isChatRuntimeReady, setChatRuntimeReady] = useState(Boolean(window.ChatRoom));
         const shouldKeepSocketEnabled =
-            Boolean(authedUsername) &&
+            Boolean(authedNickname) &&
             (sceneTransition?.kind === "login" ||
                 sceneTransition?.kind === "logout" ||
                 (appStage === "chat" && sceneTransition?.kind !== "logout"));
 
         const { messages, connectionState, sendChatMessage } = useWebSocket({
             url: CHAT_URL,
-            username: authedUsername,
+            nickname: authedNickname,
             enabled: shouldKeepSocketEnabled && wsEnabled,
             onAuthFailed: () => {
                 clearRitualTimers();
                 setSceneTransition(null);
                 deleteSessionCookie();
-                setAuthedUsername("");
+                setAuthedNickname("");
                 setWsEnabled(false);
                 setAuthHandoffPending(false);
                 setLocalSystemMessages([]);
@@ -171,8 +172,8 @@
             });
         }
 
-        function installWelcomeMessage(username) {
-            const resolved = username.trim();
+        function installWelcomeMessage(nickname) {
+            const resolved = nickname.trim();
             if (!resolved) {
                 return;
             }
@@ -196,6 +197,29 @@
             });
         }
 
+        function ensureChatRuntimeLoaded() {
+            if (window.ChatRoom) {
+                setChatRuntimeReady(true);
+                return Promise.resolve();
+            }
+
+            if (chatRuntimePromiseRef.current) {
+                return chatRuntimePromiseRef.current;
+            }
+
+            chatRuntimePromiseRef.current = loadBabelScripts(CHAT_RUNTIME_SCRIPTS)
+                .then(() => {
+                    setChatRuntimeReady(true);
+                    chatRuntimePromiseRef.current = null;
+                })
+                .catch((error) => {
+                    chatRuntimePromiseRef.current = null;
+                    throw error;
+                });
+
+            return chatRuntimePromiseRef.current;
+        }
+
         function syncAuthRoute(mode, isPanelVisible, { replace = false } = {}) {
             const resolvedMode = mode === "register" ? "register" : "login";
             const panelVisible = Boolean(isPanelVisible);
@@ -215,13 +239,31 @@
 
             const bootstrap = async () => {
                 try {
+                    const shouldPrepareChatRuntime = hasSessionCookie();
+                    const chatRuntimePromise = shouldPrepareChatRuntime
+                        ? ensureChatRuntimeLoaded().then(
+                            () => true,
+                            (error) => {
+                                console.error("Failed to preload chat runtime during bootstrap:", error);
+                                return false;
+                            }
+                        )
+                        : Promise.resolve(false);
                     const result = await fetchCurrentUser();
                     if (cancelled) {
                         return;
                     }
 
-                    if (result.ok && typeof result.data?.username === "string" && result.data.username.trim()) {
-                        setAuthedUsername(result.data.username.trim());
+                    if (result.ok && typeof result.data?.nickname === "string" && result.data.nickname.trim()) {
+                        const chatRuntimeReady = await chatRuntimePromise;
+                        if (!chatRuntimeReady || !window.ChatRoom) {
+                            throw new Error("Chat runtime was not ready after session bootstrap");
+                        }
+                        if (cancelled) {
+                            return;
+                        }
+
+                        setAuthedNickname(result.data.nickname.trim());
                         setAuthHandoffPending(false);
                         setLocalSystemMessages([]);
                         setWsEnabled(true);
@@ -235,7 +277,7 @@
                     }
 
                     const authRoute = getAuthRoute();
-                    setAuthedUsername("");
+                    setAuthedNickname("");
                     setWsEnabled(false);
                     setAuthHandoffPending(false);
                     setLocalSystemMessages([]);
@@ -252,7 +294,7 @@
                     }
 
                     const authRoute = getAuthRoute();
-                    setAuthedUsername("");
+                    setAuthedNickname("");
                     setWsEnabled(false);
                     setAuthHandoffPending(false);
                     setLocalSystemMessages([]);
@@ -275,7 +317,7 @@
 
         useEffect(() => {
             function handlePopState() {
-                if (authedUsername && (appStage === "chat" || sceneTransition?.kind === "login")) {
+                if (authedNickname && (appStage === "chat" || sceneTransition?.kind === "login")) {
                     if (window.location.pathname !== "/chat") {
                         window.history.replaceState({ path: "/chat" }, "", "/chat");
                     }
@@ -301,7 +343,7 @@
             return () => {
                 window.removeEventListener("popstate", handlePopState);
             };
-        }, [appStage, authedUsername, sceneTransition]);
+        }, [appStage, authedNickname, sceneTransition]);
 
         useEffect(() => {
             if (shouldKeepSocketEnabled) {
@@ -341,9 +383,9 @@
             }
         }, [appStage]);
 
-        function beginLoginRitual(username, config) {
-            const resolved = username.trim();
-            setAuthedUsername(resolved);
+        function beginLoginRitual(nickname, config) {
+            const resolved = nickname.trim();
+            setAuthedNickname(resolved);
             setLocalSystemMessages([]);
             setMessageDraft("");
             setMessageFlight(null);
@@ -369,19 +411,27 @@
             }, config.totalMs);
         }
 
-        function handleAuthSuccess(username) {
-            const resolved = username.trim();
+        function handleAuthSuccess(nickname) {
+            const resolved = nickname.trim();
             if (!resolved) {
                 return;
             }
 
             clearRitualTimers();
             setAuthHandoffPending(true);
-            setAuthPanelOpen(false);
 
-            authPanelCloseTimerRef.current = window.setTimeout(() => {
-                beginLoginRitual(resolved, loginRitualConfig);
-            }, loginRitualConfig.panelCloseMs);
+            ensureChatRuntimeLoaded()
+                .then(() => {
+                    setAuthPanelOpen(false);
+
+                    authPanelCloseTimerRef.current = window.setTimeout(() => {
+                        beginLoginRitual(resolved, loginRitualConfig);
+                    }, loginRitualConfig.panelCloseMs);
+                })
+                .catch((error) => {
+                    console.error("Failed to load chat runtime:", error);
+                    setAuthHandoffPending(false);
+                });
         }
 
         function handleLogout() {
@@ -405,7 +455,7 @@
             ritualTimerRef.current = window.setTimeout(() => {
                 setSceneTransition(null);
                 setWsEnabled(false);
-                setAuthedUsername("");
+                setAuthedNickname("");
                 setLocalSystemMessages([]);
                 setMessageDraft("");
                 setMessageFlight(null);
@@ -448,7 +498,7 @@
                 setMessageFlight({
                     id: sentMessage.id,
                     text: trimmedMessage,
-                    spring: NORMAL_SEND_SPRING,
+                    transition: NORMAL_SEND_FLIGHT,
                     startRect: {
                         left: composerRect.left,
                         top: composerRect.top + 6,
@@ -513,6 +563,7 @@
         const authTransitionMode = isLoginTransition ? "exit-to-chat" : isLogoutTransition ? "enter-from-chat" : "idle";
         const chatTransitionMode = isLoginTransition ? "enter-from-auth" : isLogoutTransition ? "exit-to-auth" : "idle";
         const displayMessages = isLoginTransition ? [] : [...localSystemMessages, ...messages];
+        const ChatRoom = window.ChatRoom;
 
         return (
             <>
@@ -543,7 +594,7 @@
                         />
                     ) : null}
 
-                    {showChatStage ? (
+                    {showChatStage && isChatRuntimeReady && ChatRoom ? (
                         <motion.div
                             key="chat-stage"
                             className={`chat-stage ${
@@ -559,7 +610,7 @@
                             transition={{ duration: isSceneTransitioning ? 0.2 : 0.3, ease: EASE }}
                         >
                             <ChatRoom
-                                username={authedUsername}
+                                nickname={authedNickname}
                                 connectionState={connectionState}
                                 messages={displayMessages}
                                 isHeaderScrolled={isHeaderScrolled}
