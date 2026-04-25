@@ -6,7 +6,7 @@
 #include <unistd.h>
 using namespace std;
 
-int epollfd;
+int stopfd;
 
 volatile bool running = true;
 
@@ -33,6 +33,7 @@ void modfd(int epollfd, int fd, uint32_t events) {
 
 void handleSignal(int sig) {
     if (sig == SIGINT || sig == SIGTERM) {
-        running = false;
+        uint64_t val = 1;
+        write(stopfd, &val, sizeof(val));
     }
 }

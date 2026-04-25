@@ -2,10 +2,9 @@
 
 #include <cstdint>
 
-constexpr int MAXSIZE = 1024;
 constexpr int BUFSIZE = 4096;
 
-extern volatile bool running;
+extern int stopfd;
 
 void setnonblocking(int fd);
 void addfd(int epollfd, int fd);
