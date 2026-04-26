@@ -1,5 +1,6 @@
 #pragma once
 
+#include "protocol_frame.h"
 #include <string>
 #include <unordered_map>
 
@@ -21,14 +22,13 @@ struct HttpRequest {
     std::string host;
     std::string connection;
     std::string content_type;
-    uint32_t content_length = 0;
+    uint64_t content_length = 0;
     bool is_websocket = false;
     std::string sec_websocket_key;
     std::unordered_map<std::string, std::string> cookies;
 
     std::string body;
-
-    size_t end_pos = 0;
 };
 
-ParseState parseHttpRequest(const std::string &raw, HttpRequest &req);
+FrameResult checkHttpFrame(const std::string &raw, int fd);
+ParseState parseHttpRequest(std::string_view raw, HttpRequest &req);

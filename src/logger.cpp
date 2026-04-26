@@ -1,4 +1,6 @@
 #include "logger.h"
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 using namespace std;
 
@@ -57,6 +59,29 @@ AsyncLogger::~AsyncLogger() {
     }
 }
 
+constexpr size_t STACK_BUF_SIZE = 1024;
+
+void AsyncLogger::logf(LOGLEVEL level, const char *fmt, ...) {
+    va_list args, args_copy;
+    va_start(args, fmt);
+    va_copy(args_copy, args);
+
+    char stack_buf[STACK_BUF_SIZE];
+    int n = vsnprintf(stack_buf, STACK_BUF_SIZE, fmt, args);
+
+    if (n >= STACK_BUF_SIZE) {
+        unique_ptr<char[]> heap_buf = make_unique<char[]>(n + 1);
+        vsnprintf(heap_buf.get(), n + 1, fmt, args_copy);
+        log(level, string_view(heap_buf.get(), n));
+    } else if (n >= 0) {
+        log(level, string_view(stack_buf, n));
+    } else {
+        log(ERROR, "vsnprintf failed");
+    }
+    va_end(args);
+    va_end(args_copy);
+}
+
 void AsyncLogger::log(LOGLEVEL level, string_view message) {
     if (level < m_min_level) return;
 
@@ -68,14 +93,9 @@ void AsyncLogger::log(LOGLEVEL level, string_view message) {
     entry += " ";
     entry += message;
 
-    if (level == ERROR) {
-        entry += ": ";
-        entry += strerror(errno);
-    }
-
     {
         lock_guard<mutex> lock(m_mutex);
-        m_front_buffer.push(entry);
+        m_front_buffer.emplace(move(entry));
         if (m_front_buffer.size() > m_flush_threshold) {
             m_cond.notify_one();
         }
@@ -94,7 +114,7 @@ void AsyncLogger::setLevel(string_view min_level) {
     else if (min_level == "ERROR") m_min_level = ERROR;
     else if (min_level == "FATAL") m_min_level = FATAL;
     else {
-        this->log(ERROR, "no level");
+        cerr << "no level" << endl;
     }
 }
 

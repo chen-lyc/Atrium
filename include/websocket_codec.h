@@ -1,5 +1,6 @@
 #pragma once
 
+#include "protocol_frame.h"
 #include <stdint.h>
 #include <string>
 
@@ -8,7 +9,7 @@ enum WebSocketOpcode {
     WS_CLOSE = 0x8,
     WS_PING = 0x9,
     WS_PONG = 0xA,
-    WS_ERROR
+    WS_PROTOCOLERROR = 1002
 };
 
 struct WebSocketRequest {
@@ -17,8 +18,7 @@ struct WebSocketRequest {
     bool masked;
     uint64_t payload_length;
     std::string payload_data;
-
-    size_t end_pos = 0;
 };
 
-WebSocketOpcode parseWebSocketFrame(const std::string &raw, WebSocketRequest &req);
+FrameResult checkWebSocketFrame(std::string_view raw, int fd);
+WebSocketOpcode parseWebSocketFrame(std::string_view raw, WebSocketRequest &req);

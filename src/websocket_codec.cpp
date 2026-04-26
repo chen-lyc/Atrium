@@ -1,9 +1,63 @@
 #include "websocket_codec.h"
+#include "logger.h"
 #include <cstring>
 #include <netinet/in.h>
 using namespace std;
 
-WebSocketOpcode parseWebSocketFrame(const std::string &raw, WebSocketRequest &req) {
+FrameResult checkWebSocketFrame(string_view raw, int fd) {
+    FrameResult res{FrameStatus::Incomplete};
+
+    int prefix_length = 2;
+    if (raw.size() < prefix_length) {
+        LOG_DEBUG("fd = %d, websocket incomplete", fd);
+        return res;
+    }
+
+    uint8_t byte1 = static_cast<uint8_t>(raw[1]);
+    bool masked = byte1 & 0x80;
+    uint64_t payload_length = byte1 & 0x7F;
+
+    auto read_extended_length = [&](int len) {
+        if (raw.size() < prefix_length + len) {
+            LOG_DEBUG("fd = %d, websocket payload_length incomplete", fd);
+            return false;
+        }
+
+        if (len == 2) {
+            uint16_t ext;
+            memcpy(&ext, raw.data() + prefix_length, len);
+            payload_length = ntohs(ext);
+        } else if (len == 8) {
+            uint64_t ext;
+            memcpy(&ext, raw.data() + prefix_length, len);
+            payload_length = be64toh(ext);
+        }
+        prefix_length += len;
+        return true;
+    };
+
+    if (payload_length == 126) {
+        if (!read_extended_length(2)) {
+            return res;
+        }
+    } else if (payload_length == 127) {
+        if (!read_extended_length(8)) {
+            return res;
+        }
+    }
+
+    prefix_length += 4 * masked;
+
+    if (raw.size() < prefix_length + payload_length) {
+        LOG_DEBUG("fd = %d, websocket payload_data incomplete", fd);
+        return res;
+    }
+    res.status = FrameStatus::Complete;
+    res.end_pos = prefix_length + payload_length;
+    return res;
+}
+
+WebSocketOpcode parseWebSocketFrame(string_view raw, WebSocketRequest &req) {
     uint8_t byte0 = static_cast<uint8_t>(raw[0]);
     uint8_t byte1 = static_cast<uint8_t>(raw[1]);
 
@@ -27,8 +81,8 @@ WebSocketOpcode parseWebSocketFrame(const std::string &raw, WebSocketRequest &re
         break;
 
     default:
-        req.opcode = WS_ERROR;
-        return WS_ERROR;
+        req.opcode = WS_PROTOCOLERROR;
+        return WS_PROTOCOLERROR;
     }
 
     int prefix_length = 2;
@@ -48,7 +102,7 @@ WebSocketOpcode parseWebSocketFrame(const std::string &raw, WebSocketRequest &re
     }
 
     if (!req.masked) {
-        return WS_ERROR;
+        return WS_PROTOCOLERROR;
     }
 
     uint8_t masking_key[4];
@@ -60,6 +114,5 @@ WebSocketOpcode parseWebSocketFrame(const std::string &raw, WebSocketRequest &re
         req.payload_data[i] ^= masking_key[i % 4];
     }
 
-    req.end_pos = prefix_length + req.payload_length;
     return req.opcode;
 }

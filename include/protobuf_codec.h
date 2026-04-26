@@ -1,5 +1,6 @@
 #pragma once
 
+#include "protocol_frame.h"
 #include <cstdlib>
 #include <string>
 
@@ -21,8 +22,7 @@ struct ProtobufRequest {
 
     std::string sender_name;
     std::string msg;
-
-    size_t end_pos = 0;
 };
 
+FrameResult checkProtobufFrame(std::string &raw, int fd);
 MessageType parseProtobufMessage(std::string_view raw, ProtobufRequest &req);

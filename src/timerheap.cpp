@@ -18,7 +18,10 @@ void TimerHeap::add(int fd, long long timeout) {
 
 void TimerHeap::tick() {
     while (!m_timers.empty() && getMilliseconds() >= m_timers[0].expire_time) {
-        LOG_DEBUG("tick: fd = " + to_string(m_timers[0].fd) + ", tick: now=" + to_string(getMilliseconds()) + " expire=" + to_string(m_timers[0].expire_time) + ", expired");
+        LOG_DEBUG("tick: fd = %d, tick: now=%lld expire=%lld, expired",
+                  m_timers[0].fd,
+                  getMilliseconds(),
+                  m_timers[0].expire_time);
 
         m_expired.push_back(m_timers[0].fd);
         swap(m_timers[0], m_timers[m_timers.size() - 1]);
@@ -37,14 +40,14 @@ int TimerHeap::getNextTimeout() {
     while (!m_timers.empty()) {
         int timeout = m_timers[0].expire_time - getMilliseconds();
         if (timeout > 0) {
-            LOG_DEBUG("fd = " + to_string(m_timers[0].fd) + " ,timeout = " + to_string(timeout));
+            LOG_DEBUG("fd = %d ,timeout = %d", m_timers[0].fd, timeout);
             return timeout;
         }
 
         tick();
     }
 
-    LOG_DEBUG("reactor[" + to_string(m_index) + "] no timer");
+    LOG_DEBUG("reactor[%d] no timer", m_index);
     return -1;
 }
 
@@ -57,7 +60,7 @@ void TimerHeap::update(int fd, long long timeout) {
     int index = m_timers_index[fd];
     int old_timeout = m_timers[index].expire_time;
     m_timers[index].expire_time = getMilliseconds() + timeout;
-    LOG_DEBUG("fd = " + to_string(fd) + " , expire time updata to " + to_string(timeout));
+    LOG_DEBUG("fd = %d , expire time updata to %lld", fd, timeout);
     if (m_timers[index].expire_time > old_timeout) {
         siftDown(index);
     } else {
