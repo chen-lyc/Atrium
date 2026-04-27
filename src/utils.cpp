@@ -29,7 +29,7 @@ int hex_char_to_int(char c) {
     return -1;
 }
 
-optional<string> url_decode(const string &s) {
+optional<string> url_decode(string_view s) {
     string decoded;
     decoded.reserve(s.size());
     for (size_t i = 0; i < s.size();) {

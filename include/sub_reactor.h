@@ -25,13 +25,14 @@ class Reactor {
     void broadcast_notify();
     void addfd(int fd);
     void modfd(int fd, uint32_t events);
-    void trySend(Connection &conn);
+    void trySend(Connection &conn, bool should_mod = true);
     void closeFile(Connection &conn);
     void closeNow(int fd);
     void process(Connection &conn);
     FrameResult checkFrame(Connection &conn);
     std::string_view getMimeType(const std::string &file_path);
-    void sendError(Connection &conn, std::string_view resp, uint64_t end_pos = 0);
+    bool sendError(Connection &conn, std::string_view resp, uint64_t end_pos = 0);
+    void sendError(Connection &conn, uint16_t close_code);
 
   private:
     int m_index;

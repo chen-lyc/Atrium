@@ -35,7 +35,7 @@ struct HashedPassword {
     std::array<unsigned char, 32> hash;
 };
 
-std::optional<std::string> url_decode(const std::string &s);
+std::optional<std::string> url_decode(std::string_view s);
 bool is_valid_username(const std::string &username);
 bool is_valid_password(const std::string &password);
 std::optional<HashedPassword> hash_password(const std::string &password);

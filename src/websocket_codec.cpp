@@ -4,10 +4,12 @@
 #include <netinet/in.h>
 using namespace std;
 
+constexpr uint64_t MAX_FRAME_SIZE = 1 * 1024 * 1024;
+
 FrameResult checkWebSocketFrame(string_view raw, int fd) {
     FrameResult res{FrameStatus::Incomplete};
 
-    int prefix_length = 2;
+    uint64_t prefix_length = 2;
     if (raw.size() < prefix_length) {
         LOG_DEBUG("fd = %d, websocket incomplete", fd);
         return res;
@@ -48,6 +50,11 @@ FrameResult checkWebSocketFrame(string_view raw, int fd) {
 
     prefix_length += 4 * masked;
 
+    if (payload_length > MAX_FRAME_SIZE - prefix_length) {
+        res.status = FrameStatus::ProtocolError;
+        return res;
+    }
+
     if (raw.size() < prefix_length + payload_length) {
         LOG_DEBUG("fd = %d, websocket payload_data incomplete", fd);
         return res;
@@ -84,6 +91,10 @@ WebSocketOpcode parseWebSocketFrame(string_view raw, WebSocketRequest &req) {
         req.opcode = WS_PROTOCOLERROR;
         return WS_PROTOCOLERROR;
     }
+    if (req.fin == 0 || req.opcode == WS_CONT) {
+        req.opcode = WS_PROTOCOLERROR;
+        return WS_PROTOCOLERROR;
+    }
 
     int prefix_length = 2;
 
@@ -115,4 +126,17 @@ WebSocketOpcode parseWebSocketFrame(string_view raw, WebSocketRequest &req) {
     }
 
     return req.opcode;
+}
+
+bool isValidSecWebSocketKey(const std::string &key) {
+    if (key.size() != 24) return false;
+    if (key[22] != '=' || key[23] != '=') return false;
+
+    for (int i = 0; i < 22; i++) {
+        if (!(isalnum(static_cast<unsigned char>(key[i])) || key[i] == '/' || key[i] == '+')) {
+            return false;
+        }
+    }
+
+    return true;
 }

@@ -5,6 +5,7 @@
 #include <string>
 
 enum WebSocketOpcode {
+    WS_CONT = 0x0,
     WS_TEXT = 0x1,
     WS_CLOSE = 0x8,
     WS_PING = 0x9,
@@ -22,3 +23,4 @@ struct WebSocketRequest {
 
 FrameResult checkWebSocketFrame(std::string_view raw, int fd);
 WebSocketOpcode parseWebSocketFrame(std::string_view raw, WebSocketRequest &req);
+bool isValidSecWebSocketKey(const std::string &key);

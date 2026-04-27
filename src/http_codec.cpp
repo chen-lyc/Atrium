@@ -126,9 +126,30 @@ ParseState parseHttpRequest(string_view raw, HttpRequest &req) {
         case PARSE_REQUEST_LINE: {
             size_t start = 0;
             size_t end = line.find(' ');
+            if (end == string::npos) {
+                req.state = PARSE_ERROR;
+                return PARSE_ERROR;
+            }
+
             req.method = line.substr(start, end - start);
+            if (req.method == "GET") {
+                req.is_get = true;
+            } else if (req.method == "HEAD") {
+                req.is_head = true;
+            } else if (req.method == "POST") {
+                req.is_post = true;
+            } else {
+                LOG_DEBUG("request method error, method is %s", req.method.data());
+                req.state = PARSE_ERROR;
+                return PARSE_ERROR;
+            }
+
             start = end + 1;
             end = line.find(' ', start);
+            if (end == string::npos) {
+                req.state = PARSE_ERROR;
+                return PARSE_ERROR;
+            }
             req.target = line.substr(start, end - start);
             req.version = line.substr(end + 1);
             if (req.method.empty() || req.target.empty() || req.version.empty()) {
@@ -136,11 +157,7 @@ ParseState parseHttpRequest(string_view raw, HttpRequest &req) {
                 req.state = PARSE_ERROR;
                 break;
             }
-            if (req.method != "GET" && req.method != "POST" && req.method != "HEAD") {
-                LOG_DEBUG("request method error, method is %s", req.method.c_str());
-                req.state = PARSE_ERROR;
-                break;
-            }
+
             req.state = PARSE_HEADERS;
             break;
         }
@@ -168,6 +185,10 @@ ParseState parseHttpRequest(string_view raw, HttpRequest &req) {
             if (start != string::npos) {
                 value.erase(0, start);
             }
+            size_t end = value.find_last_not_of(' ');
+            if (end != string::npos) {
+                value.erase(end);
+            }
 
             transform(key.begin(), key.end(), key.begin(), ::tolower);
 
@@ -190,27 +211,45 @@ ParseState parseHttpRequest(string_view raw, HttpRequest &req) {
                 }
             } else if (key == "upgrade") {
                 transform(value.begin(), value.end(), value.begin(), ::tolower);
-                if (value == "websocket") {
-                    req.is_websocket = true;
+                req.upgrade = move(value);
+            } else if (key == "sec-websocket-version") {
+                size_t end = 0;
+                try {
+                    req.sec_websocket_version = stoi(value, &end);
+                } catch (const invalid_argument &e) {
+                    LOG_WARN("invalid sec-websocket-version, value = %s, reason = %s", value.data(), e.what());
+                    req.sec_websocket_version = -1;
+                } catch (const out_of_range &e) {
+                    LOG_WARN("sec-websocket-version out of range, value = %s, reason = %s", value.data(), e.what());
+                    req.sec_websocket_version = -1;
+                }
+                if (end != value.size()) {
+                    req.state = PARSE_ERROR;
+                    return PARSE_ERROR;
                 }
             } else if (key == "sec-websocket-key") {
-                LOG_DEBUG("key size: %zu, key: [%s]", value.size(), value.c_str());
-                req.sec_websocket_key = value;
+                req.sec_websocket_key = move(value);
             } else if (key == "cookie") {
-                value += "; ";
-                size_t semi_pos = value.find("; ");
                 size_t start = 0;
-                while (semi_pos != string::npos) {
+                while (start < value.size()) {
                     size_t eq_pos = value.find('=', start);
                     if (eq_pos == string::npos) {
+                        req.state = PARSE_ERROR;
+                        return PARSE_ERROR;
+                    }
+
+                    size_t end = value.find(';', eq_pos + 1);
+                    if (end == string::npos) end = value.size();
+
+                    string key(value.data() + start, eq_pos - start);
+                    start = eq_pos + 1;
+                    string val(value.data() + start, end - start);
+                    req.cookies[key] = val;
+
+                    start = value.find_first_not_of(" \t", end + 1);
+                    if (start == string::npos) {
                         break;
                     }
-                    string name = value.substr(start, eq_pos - start);
-                    start = eq_pos + 1;
-                    string val = value.substr(start, semi_pos - start);
-                    start = semi_pos + 2;
-                    req.cookies[name] = val;
-                    semi_pos = value.find("; ", start);
                 }
             }
             break;

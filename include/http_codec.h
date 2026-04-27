@@ -16,6 +16,9 @@ struct HttpRequest {
     ParseState state = PARSE_REQUEST_LINE;
 
     std::string method;
+    bool is_get = false;
+    bool is_head = false;
+    bool is_post = false;
     std::string target;
     std::string version;
 
@@ -23,7 +26,8 @@ struct HttpRequest {
     std::string connection;
     std::string content_type;
     uint64_t content_length = 0;
-    bool is_websocket = false;
+    std::string upgrade;
+    int sec_websocket_version = 0;
     std::string sec_websocket_key;
     std::unordered_map<std::string, std::string> cookies;
 

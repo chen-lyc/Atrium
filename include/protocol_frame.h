@@ -1,6 +1,6 @@
 #pragma once
 
-#include <cstddef>
+#include <cstdint>
 
 enum class FrameStatus {
     Incomplete,
@@ -10,5 +10,5 @@ enum class FrameStatus {
 
 struct FrameResult {
     FrameStatus status;
-    std::size_t end_pos = 0;
+    uint64_t end_pos = 0;
 };
