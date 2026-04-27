@@ -187,7 +187,7 @@ ParseState parseHttpRequest(string_view raw, HttpRequest &req) {
             }
             size_t end = value.find_last_not_of(' ');
             if (end != string::npos) {
-                value.erase(end);
+                value.erase(end + 1);
             }
 
             transform(key.begin(), key.end(), key.begin(), ::tolower);
