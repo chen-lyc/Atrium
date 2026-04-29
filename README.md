@@ -156,10 +156,10 @@ mysql -u root -p
 CREATE DATABASE webserver;
 USE webserver;
 CREATE TABLE users (
-  id INT NOT NULL AUTO_INCREMENT,
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   username VARCHAR(50) UNIQUE,
-  password_hash VARCHAR(255),
-  salt VARCHAR(255),
+  password_hash BINARY(32),
+  salt BINARY(16),
   PRIMARY KEY (id)
 );
 ```

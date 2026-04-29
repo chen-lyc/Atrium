@@ -5,6 +5,7 @@
 #include <hiredis/hiredis.h>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 
@@ -40,6 +41,9 @@ class RedisPool {
     enum CommandResult {
         Success,
         NotFound,
+        NetWorkError,
+        UnexpectedType,
+        CommandError,
         ServerError
     };
     using ReplyPtr = std::unique_ptr<redisReply, ReplyDeleter>;
@@ -50,7 +54,8 @@ class RedisPool {
     }
     ~RedisPool();
     CommandResult executeCommand(int argc, const char *argv[], size_t arglen[]);
-    CommandResult executeCommand(int argc, const char *argv[], size_t arglen[], std::string &result_value);
+    CommandResult executeCommand(int argc, const char *argv[], size_t arglen[], std::string &value);
+    CommandResult executeCommand(int argc, const char *argv[], size_t arglen[], std::vector<std::optional<std::string>> &values);
 
   private:
     RedisPool(int min_connections, int max_connections);

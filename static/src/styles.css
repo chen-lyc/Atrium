@@ -1779,6 +1779,15 @@ button:not(:disabled) {
     letter-spacing: 0.01em;
 }
 
+.section-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-subtle);
+    font-weight: 500;
+    padding: 16px 12px 6px;
+}
+
 .sidebar-group {
     font-size: 11px;
     line-height: 1.4;

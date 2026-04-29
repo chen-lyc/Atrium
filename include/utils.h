@@ -10,13 +10,13 @@ extern std::hash<std::string> hasher;
 
 std::string generateSessionId();
 
-enum class RegisterResult {
+enum class RegisterStatus {
     Success,
     UserExists,
     ServerError
 };
 
-enum class LoginResult {
+enum class LoginStatus {
     Success,
     UserNotFound,
     WrongPassword,
@@ -27,7 +27,18 @@ enum class SessionResult {
     Success,
     TokenExpired,
     InvalidRequest,
+    NetWorkError,
     ServerError
+};
+
+struct RegisterResult {
+    RegisterStatus state;
+    uint64_t user_id;
+};
+
+struct LoginResult {
+    LoginStatus state;
+    uint64_t user_id;
 };
 
 struct HashedPassword {
@@ -43,6 +54,6 @@ std::optional<HashedPassword> hash_password(const std::string &password);
 RegisterResult do_register(const std::string &username, const std::string &password);
 LoginResult do_login(const std::string &username, const std::string &password);
 
-SessionResult create_session(const std::string &username, std::string &token_out);
-SessionResult get_session(HttpRequest &req, std::string &username_out);
+SessionResult create_session(uint64_t user_id, const std::string &username, std::string &token_out);
+SessionResult get_session(HttpRequest &req, uint64_t &user_id, std::string &username);
 void destroy_session(const std::string &token);

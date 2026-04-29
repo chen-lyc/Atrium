@@ -52,7 +52,7 @@ RedisPool::CommandResult RedisPool::executeCommand(int argc, const char *argv[],
     return checkReply(reply);
 }
 
-RedisPool::CommandResult RedisPool::executeCommand(int argc, const char *argv[], size_t arglen[], string &result_value) {
+RedisPool::CommandResult RedisPool::executeCommand(int argc, const char *argv[], size_t arglen[], string &value) {
     RedisPool::ReplyPtr reply = executeRaw(argc, argv, arglen);
     RedisPool::CommandResult status = checkReply(reply);
     if (status != RedisPool::CommandResult::Success) {
@@ -60,11 +60,38 @@ RedisPool::CommandResult RedisPool::executeCommand(int argc, const char *argv[],
     }
 
     if (reply->type != REDIS_REPLY_STRING) {
-        LOG_ERROR("unexpected reply type: %d", reply->type);
-        return RedisPool::CommandResult::ServerError;
+        LOG_WARN("unexpected reply type: %d", reply->type);
+        return RedisPool::CommandResult::UnexpectedType;
     }
 
-    result_value.assign(reply->str, reply->len);
+    value.assign(reply->str, reply->len);
+    return RedisPool::CommandResult::Success;
+}
+
+RedisPool::CommandResult RedisPool::executeCommand(int argc, const char *argv[], size_t arglen[], vector<optional<string>> &values) {
+    RedisPool::ReplyPtr reply = executeRaw(argc, argv, arglen);
+    RedisPool::CommandResult status = checkReply(reply);
+    if (status != RedisPool::CommandResult::Success) {
+        return status;
+    }
+
+    if (reply->type != REDIS_REPLY_ARRAY) {
+        LOG_WARN("unexpected reply type: %d", reply->type);
+        return RedisPool::CommandResult::UnexpectedType;
+    }
+
+    if (reply->elements == 0) return RedisPool::CommandResult::NotFound;
+
+    for (size_t i = 0; i < reply->elements; ++i) {
+        redisReply *sub = reply->element[i];
+        if (sub->type == REDIS_REPLY_STRING) {
+            values.emplace_back(std::in_place, sub->str, sub->len);
+        } else if (sub->type == REDIS_REPLY_INTEGER) {
+            values.emplace_back(to_string(sub->integer));
+        } else {
+            values.emplace_back(nullptr);
+        }
+    }
     return RedisPool::CommandResult::Success;
 }
 
@@ -92,12 +119,12 @@ RedisPool::ReplyPtr RedisPool::executeRaw(int argc, const char *argv[], size_t a
 
 RedisPool::CommandResult RedisPool::checkReply(RedisPool::ReplyPtr &reply) {
     if (reply == nullptr) {
-        return RedisPool::CommandResult::ServerError;
+        return RedisPool::CommandResult::NetWorkError;
     }
 
     if (reply->type == REDIS_REPLY_ERROR) {
         LOG_WARN("redis command error: %.*s", static_cast<int>(reply->len), reply->str);
-        return RedisPool::CommandResult::ServerError;
+        return RedisPool::CommandResult::CommandError;
     }
 
     if (reply->type == REDIS_REPLY_NIL) {

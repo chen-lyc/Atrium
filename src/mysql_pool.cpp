@@ -2,6 +2,8 @@
 #include "logger.h"
 #include <cppconn/exception.h>
 #include <cppconn/prepared_statement.h>
+#include <cppconn/resultset.h>
+#include <cppconn/statement.h>
 #include <cstring>
 #include <sstream>
 using namespace std;
@@ -48,7 +50,7 @@ MysqlPool::~MysqlPool() {
     }
 }
 
-MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, const string &username, vector<string> &result) {
+MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, const string &username, vector<string> &result, uint64_t &user_id) {
     MysqlConnGuard guard(*this);
     sql::Connection *conn = guard.get();
     if (conn == nullptr) {
@@ -65,6 +67,7 @@ MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, const string &
             return MysqlPool::QueryResult::NotFound;
         }
 
+        user_id = res->getUInt64("id");
         result.emplace_back(res->getString("salt"));
         result.emplace_back(res->getString("password_hash"));
         return MysqlPool::QueryResult::Success;
@@ -88,7 +91,7 @@ MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, const string &
     }
 }
 
-MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, const std::string &username, const std::string &salt, const std::string &hash) {
+MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, const std::string &username, const std::string &salt, const std::string &hash, uint64_t &user_id) {
     MysqlConnGuard guard(*this);
     sql::Connection *conn = guard.get();
     if (conn == nullptr) {
@@ -104,6 +107,17 @@ MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, const std::str
         stmt->setBlob(3, &hash_stream);
 
         stmt->executeUpdate();
+
+        unique_ptr<sql::Statement> id_stmt(conn->createStatement());
+        unique_ptr<sql::ResultSet> rs(
+            id_stmt->executeQuery("SELECT LAST_INSERT_ID()"));
+
+        if (rs->next()) {
+            user_id = rs->getUInt64(1);
+        } else {
+            return MysqlPool::QueryResult::ServerError;
+        }
+
         return MysqlPool::QueryResult::Success;
     } catch (const sql::SQLException &e) {
         if (e.getErrorCode() == 1062) {

@@ -1,7 +1,7 @@
 // Defines the shared WebSocket hook used by the chat runtime.
 (() => {
     const { useEffect, useRef, useState } = window.React;
-    const { LOCAL_SEND_SETTLE_DELAY } = window.AppConstants;
+    const { DEFAULT_CONVERSATION_ID, LOCAL_SEND_SETTLE_DELAY } = window.AppConstants;
     const {
         createId,
         fetchCurrentUser,
@@ -11,12 +11,28 @@
         mergeIncomingMessage
     } = window.AppUtils;
 
-    function useWebSocket({ url, nickname, enabled, onAuthFailed }) {
+    function normalizeConversationId(value) {
+        if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+            return value;
+        }
+
+        if (typeof value === "string" && value.trim()) {
+            const numericValue = Number(value);
+            if (Number.isSafeInteger(numericValue) && numericValue > 0) {
+                return numericValue;
+            }
+        }
+
+        return DEFAULT_CONVERSATION_ID;
+    }
+
+    function useWebSocket({ url, nickname, enabled, onAuthFailed, conversationId = DEFAULT_CONVERSATION_ID }) {
         const socketRef = useRef(null);
         const reconnectTimerRef = useRef(null);
         const reconnectAttemptRef = useRef(0);
         const pendingResolveTimersRef = useRef(new Map());
         const authFailedRef = useRef(onAuthFailed);
+        const activeConversationId = normalizeConversationId(conversationId);
 
         const [messages, setMessages] = useState([]);
         const [connectionState, setConnectionState] = useState(enabled ? "connecting" : "idle");
@@ -89,7 +105,7 @@
             if (!nickname) {
                 setConnectionState("idle");
             }
-        }, [nickname]);
+        }, [nickname, activeConversationId]);
 
         useEffect(() => {
             if (!enabled || !nickname) {
@@ -160,6 +176,12 @@
 
                             const payload = JSON.parse(rawData);
                             const nextMessage = normalizeIncomingMessage(payload, nickname);
+                            if (
+                                nextMessage.conversationId &&
+                                nextMessage.conversationId !== activeConversationId
+                            ) {
+                                return;
+                            }
                             setMessages((prev) => {
                                 if (nextMessage.isSelf) {
                                     const matchIndex = findPendingLocalMatch(prev, nextMessage);
@@ -234,7 +256,7 @@
                 clearAllPendingTimers();
                 cleanupSocket();
             };
-        }, [url, nickname, enabled]);
+        }, [url, nickname, enabled, activeConversationId]);
 
         function sendChatMessage(text) {
             const content = text.trim();
@@ -247,6 +269,7 @@
             const localMessage = {
                 id: createId("local"),
                 clientMessageId: createId("client"),
+                conversationId: activeConversationId,
                 nickname,
                 text: content,
                 timestamp: Date.now(),
@@ -258,7 +281,10 @@
             setMessages((prev) => [...prev, localMessage]);
 
             try {
-                current.send(JSON.stringify({ text: content }));
+                current.send(JSON.stringify({
+                    text: content,
+                    conversation_id: localMessage.conversationId
+                }));
                 schedulePendingResolve(localMessage.id);
                 return localMessage;
             } catch (error) {

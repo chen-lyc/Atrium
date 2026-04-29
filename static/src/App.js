@@ -2,8 +2,8 @@
 (() => {
     const { useEffect, useRef, useState } = window.React;
     const { motion, AnimatePresence } = window;
-    const { CHAT_URL, CHAT_RUNTIME_SCRIPTS, EASE, NORMAL_SEND_FLIGHT } = window.AppConstants;
-    const { createId, deleteSessionCookie, fetchCurrentUser, hasSessionCookie, loadBabelScripts } = window.AppUtils;
+    const { CHAT_URL, CHAT_RUNTIME_SCRIPTS, DEFAULT_CONVERSATION_ID, EASE, NORMAL_SEND_FLIGHT } = window.AppConstants;
+    const { createId, deleteSessionCookie, fetchCurrentUser, getConversationIdCookie, hasSessionCookie, loadBabelScripts } = window.AppUtils;
     const useWebSocket = window.useWebSocket;
 
     const NORMAL_LOGIN_RITUAL = {
@@ -115,6 +115,7 @@
         const [authHandoffPending, setAuthHandoffPending] = useState(false);
         const [wsEnabled, setWsEnabled] = useState(false);
         const [localSystemMessages, setLocalSystemMessages] = useState([]);
+        const [activeConversationId, setActiveConversationId] = useState(() => getConversationIdCookie());
         const [messageDraft, setMessageDraft] = useState("");
         const [isHeaderScrolled, setHeaderScrolled] = useState(false);
         const [messageFlight, setMessageFlight] = useState(null);
@@ -130,6 +131,7 @@
         const { messages, connectionState, sendChatMessage } = useWebSocket({
             url: CHAT_URL,
             nickname: authedNickname,
+            conversationId: activeConversationId,
             enabled: shouldKeepSocketEnabled && wsEnabled,
             onAuthFailed: () => {
                 clearRitualTimers();
@@ -139,6 +141,7 @@
                 setWsEnabled(false);
                 setAuthHandoffPending(false);
                 setLocalSystemMessages([]);
+                setActiveConversationId(DEFAULT_CONVERSATION_ID);
                 syncAuthRoute("login", true, { replace: true });
                 setMessageDraft("");
                 setMessageFlight(null);
@@ -187,7 +190,7 @@
                     {
                         id: createId("welcome"),
                         nickname: "__system__",
-                        text: `欢迎 ${resolved}，加入对话`,
+                        text: `${resolved} 加入了 # /chat`,
                         timestamp: Date.now(),
                         isSelf: false,
                         status: "sent",
@@ -266,6 +269,7 @@
                         setAuthedNickname(result.data.nickname.trim());
                         setAuthHandoffPending(false);
                         setLocalSystemMessages([]);
+                        setActiveConversationId(getConversationIdCookie());
                         setWsEnabled(true);
                         setAuthPanelOpen(false);
                         setAppStage("chat");
@@ -387,6 +391,7 @@
             const resolved = nickname.trim();
             setAuthedNickname(resolved);
             setLocalSystemMessages([]);
+            setActiveConversationId(getConversationIdCookie());
             setMessageDraft("");
             setMessageFlight(null);
             setHiddenMessageId(null);
@@ -441,6 +446,7 @@
             setAuthHandoffPending(false);
             setMessageFlight(null);
             setHiddenMessageId(null);
+            setActiveConversationId(DEFAULT_CONVERSATION_ID);
             setAuthPanelOpen(true);
             setSceneTransition({
                 kind: "logout",
@@ -457,6 +463,7 @@
                 setWsEnabled(false);
                 setAuthedNickname("");
                 setLocalSystemMessages([]);
+                setActiveConversationId(DEFAULT_CONVERSATION_ID);
                 setMessageDraft("");
                 setMessageFlight(null);
                 setHiddenMessageId(null);

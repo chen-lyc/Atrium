@@ -43,11 +43,38 @@
         return "";
     }
 
+    function normalizeIncomingUserId(payload) {
+        if (typeof payload.user_id === "number" && Number.isFinite(payload.user_id)) {
+            return String(payload.user_id);
+        }
+
+        if (typeof payload.user_id === "string" && payload.user_id.trim()) {
+            return payload.user_id.trim();
+        }
+
+        return "";
+    }
+
+    function normalizeIncomingConversationId(payload) {
+        const value =
+            payload.conversation_id != null
+                ? payload.conversation_id
+                : payload.conversationId;
+        const numericValue = Number(value);
+
+        return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : 0;
+    }
+
     function normalizeIncomingMessage(payload, currentNickname) {
+        const normalizedUsername =
+            typeof payload.username === "string" && payload.username.trim()
+                ? payload.username.trim()
+                : "";
         const normalizedNickname =
-            typeof payload.nickname === "string" && payload.nickname.trim()
+            normalizedUsername ||
+            (typeof payload.nickname === "string" && payload.nickname.trim()
                 ? payload.nickname.trim()
-                : "匿名用户";
+                : "匿名用户");
 
         return {
             id: payload.id || createId("remote"),
@@ -57,7 +84,10 @@
                     : typeof payload.client_message_id === "string"
                         ? payload.client_message_id
                         : "",
+            userId: normalizeIncomingUserId(payload),
+            username: normalizedUsername,
             nickname: normalizedNickname,
+            conversationId: normalizeIncomingConversationId(payload),
             text: getIncomingText(payload),
             timestamp: payload.timestamp || Date.now(),
             isSelf: Boolean(currentNickname && normalizedNickname === currentNickname),
@@ -156,19 +186,50 @@
     }
 
     function deleteSessionCookie() {
-        document.cookie = "session_id=; Max-Age=0; Path=/";
+        deleteCookie("session_id");
+        deleteCookie("conversation_id");
+    }
+
+    function deleteCookie(name) {
+        document.cookie = `${name}=; Max-Age=0; Path=/`;
+    }
+
+    function getCookieValue(name) {
+        const prefix = `${name}=`;
+        const rawValue = document.cookie
+            .split(";")
+            .map((part) => part.trim())
+            .find((part) => part.startsWith(prefix))
+            ?.slice(prefix.length);
+
+        if (!rawValue) {
+            return "";
+        }
+
+        try {
+            return decodeURIComponent(rawValue);
+        } catch (error) {
+            return rawValue;
+        }
     }
 
     function hasCookie(name) {
-        const prefix = `${name}=`;
-        return document.cookie
-            .split(";")
-            .map((part) => part.trim())
-            .some((part) => part.startsWith(prefix));
+        return Boolean(getCookieValue(name));
     }
 
     function hasSessionCookie() {
         return hasCookie("session_id");
+    }
+
+    function getConversationIdCookie() {
+        const value = getCookieValue("conversation_id");
+        const numericValue = Number(value);
+
+        if (Number.isSafeInteger(numericValue) && numericValue > 0) {
+            return numericValue;
+        }
+
+        return window.AppConstants?.DEFAULT_CONVERSATION_ID || 1;
     }
 
     function getUtf8ByteLength(value) {
@@ -374,8 +435,10 @@
         mergeIncomingMessage,
         decorateMessages,
         deleteSessionCookie,
+        getCookieValue,
         hasCookie,
         hasSessionCookie,
+        getConversationIdCookie,
         getUtf8ByteLength,
         validateAuthNickname,
         validateAuthPassword,

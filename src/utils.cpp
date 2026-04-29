@@ -4,6 +4,7 @@
 #include "redis_pool.h"
 #include <iomanip>
 #include <openssl/rand.h>
+#include <optional>
 #include <sstream>
 using namespace std;
 
@@ -100,35 +101,38 @@ RegisterResult do_register(const string &username, const string &password) {
     static string query = "INSERT INTO users (username, salt, password_hash) VALUES (?, ?, ?)";
     optional<HashedPassword> hashed = hash_password(password);
     if (!hashed.has_value()) {
-        return RegisterResult::ServerError;
+        return {RegisterStatus::ServerError, 0};
     }
+    uint64_t user_id = 0;
     HashedPassword hp = hashed.value();
     MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(
         query, username,
         string(reinterpret_cast<const char *>(hp.salt.data()), hp.salt.size()),
-        string(reinterpret_cast<const char *>(hp.hash.data()), hp.hash.size()));
+        string(reinterpret_cast<const char *>(hp.hash.data()), hp.hash.size()),
+        user_id);
     switch (ret) {
     case MysqlPool::QueryResult::Success:
-        return RegisterResult::Success;
+        return {RegisterStatus::Success, user_id};
     case MysqlPool::QueryResult::AlreadyExists:
-        return RegisterResult::UserExists;
+        return {RegisterStatus::UserExists, 0};
     case MysqlPool::QueryResult::ServerError:
-        return RegisterResult::ServerError;
+        return {RegisterStatus::ServerError, 0};
     case MysqlPool::QueryResult::NotFound:
-        return RegisterResult::ServerError;
+        return {RegisterStatus::ServerError, 0};
     }
-    return RegisterResult::ServerError;
+    return {RegisterStatus::ServerError, 0};
 }
 
 LoginResult do_login(const string &username, const string &password) {
     vector<string> result;
-    static string query = "SELECT salt, password_hash FROM users WHERE username = ?";
-    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(query, username, result);
+    uint64_t user_id = 0;
+    static string query = "SELECT id, salt, password_hash FROM users WHERE username = ?";
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(query, username, result, user_id);
     if (ret == MysqlPool::QueryResult::ServerError) {
-        return LoginResult::ServerError;
+        return {LoginStatus::ServerError, 0};
     }
     if (ret == MysqlPool::QueryResult::NotFound) {
-        return LoginResult::UserNotFound;
+        return {LoginStatus::UserNotFound, 0};
     }
 
     string &salt = result[0];
@@ -141,18 +145,18 @@ LoginResult do_login(const string &username, const string &password) {
             100000,
             EVP_sha256(),
             computed_hash.size(), computed_hash.data()) != 1) {
-        return LoginResult::ServerError;
+        return {LoginStatus::ServerError, 0};
     }
 
     if (password_hash.size() != computed_hash.size()) {
-        return LoginResult::ServerError;
+        return {LoginStatus::ServerError, 0};
     }
 
     if (CRYPTO_memcmp(computed_hash.data(), password_hash.data(), computed_hash.size()) != 0) {
-        return LoginResult::WrongPassword;
+        return {LoginStatus::WrongPassword, 0};
     }
 
-    return LoginResult::Success;
+    return {LoginStatus::Success, user_id};
 }
 
 static std::string bytes_to_hex(const unsigned char *data, size_t len) {
@@ -164,7 +168,7 @@ static std::string bytes_to_hex(const unsigned char *data, size_t len) {
     return oss.str();
 }
 
-SessionResult create_session(const std::string &username, string &token_out) {
+SessionResult create_session(uint64_t user_id, const std::string &username, string &token_out) {
     unsigned char raw[32];
     if (RAND_bytes(raw, sizeof(raw)) != 1) {
         LOG_ERROR("RAND_bytes failed in create_session");
@@ -172,11 +176,21 @@ SessionResult create_session(const std::string &username, string &token_out) {
     }
     std::string token = bytes_to_hex(raw, sizeof(raw));
     std::string key = "session:" + token;
+    string user_id_str = to_string(user_id);
 
     const char *argv[] = {
-        "SET", key.data(), username.data(), "EX", "86400"};
-    size_t argvlen[] = {3, key.size(), username.size(), 2, 5};
-    int ret = RedisPool::getInstance().executeCommand(5, argv, argvlen);
+        "HSET", key.data(),
+        "user_id", user_id_str.data(),
+        "username", username.data()};
+    size_t argvlen[] = {4, key.size(), 7, user_id_str.size(), 8, username.size()};
+    RedisPool::CommandResult ret = RedisPool::getInstance().executeCommand(6, argv, argvlen);
+    if (ret == RedisPool::CommandResult::ServerError) {
+        return SessionResult::ServerError;
+    }
+
+    const char *timeout_argv[] = {"EXPIRE", key.data(), "86400"};
+    size_t timeout_argvlen[] = {6, key.size(), 5};
+    ret = RedisPool::getInstance().executeCommand(3, timeout_argv, timeout_argvlen);
     if (ret == RedisPool::CommandResult::ServerError) {
         return SessionResult::ServerError;
     }
@@ -185,23 +199,57 @@ SessionResult create_session(const std::string &username, string &token_out) {
     return SessionResult::Success;
 }
 
-SessionResult get_session(HttpRequest &req, string &username_out) {
+SessionResult get_session(HttpRequest &req, uint64_t &user_id, string &username) {
     auto it = req.cookies.find("session_id");
     if (it == req.cookies.end()) {
         return SessionResult::InvalidRequest;
     }
     string &token = it->second;
 
+    vector<optional<string>> values;
     std::string key = "session:" + token;
-    const char *argv[] = {"GET", key.data()};
-    size_t argvlen[] = {3, key.size()};
-    RedisPool::CommandResult ret = RedisPool::getInstance().executeCommand(2, argv, argvlen, username_out);
+    const char *argv[] = {"HGETALL", key.data()};
+    size_t argvlen[] = {7, key.size()};
+    RedisPool::CommandResult ret = RedisPool::getInstance().executeCommand(2, argv, argvlen, values);
     switch (ret) {
-    case RedisPool::CommandResult::Success:
-        return SessionResult::Success;
+    case RedisPool::CommandResult::Success: {
+        if (!values.empty() && values.size() % 2) return SessionResult::ServerError;
+
+        bool find_user_id = false, find_username = false;
+        for (size_t i = 0; i < values.size(); i += 2) {
+            if (values[i].value() == "user_id") {
+                if (!values[i + 1].has_value()) return SessionResult::ServerError;
+                try {
+                    user_id = stoull(values[i + 1].value());
+                    find_user_id = true;
+                } catch (const exception &e) {
+                    LOG_WARN("get_session parse user_id failed: value = %s, error = %s",
+                             values[i + 1].value().data(),
+                             e.what());
+                    return SessionResult::ServerError;
+                }
+            } else if (values[i].value() == "username") {
+                if (!values[i + 1].has_value()) return SessionResult::ServerError;
+                username = move(values[i + 1].value());
+                find_username = true;
+            }
+        }
+        if (find_user_id && find_username) return SessionResult::Success;
+
+        return SessionResult::ServerError;
+    }
 
     case RedisPool::CommandResult::NotFound:
         return SessionResult::TokenExpired;
+
+    case RedisPool::CommandResult::CommandError:
+        return SessionResult::ServerError;
+
+    case RedisPool::CommandResult::NetWorkError:
+        return SessionResult::NetWorkError;
+
+    case RedisPool::CommandResult::UnexpectedType:
+        return SessionResult::ServerError;
 
     case RedisPool::CommandResult::ServerError:
         return SessionResult::ServerError;

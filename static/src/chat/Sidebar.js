@@ -47,7 +47,7 @@
                     className="brand"
                     style={{ fontSize: 18, fontWeight: 700, letterSpacing: 0, lineHeight: 1.2 }}
                 >
-                    Signal
+                    Atrium
                 </motion.div>
 
                 <div className="identity">
@@ -66,13 +66,28 @@
                 </div>
 
                 <section>
-                    <div className="sidebar-group">你的房间</div>
-                    <div className="sidebar-title">房间列表</div>
+                    <div className="section-label">群聊</div>
                     <div className="room-list">
                         <div className="room-item is-active">{roomName}</div>
                     </div>
-                    <div className="room-note">更多房间稍后开放</div>
+                    <div className="room-note">更多群聊稍后开放</div>
                 </section>
+
+                <section>
+                    <div className="section-label">好友</div>
+                    <div style={{ padding: '0 12px', fontSize: 13, color: 'var(--text-subtle)' }}>
+                        好友功能开发中
+                    </div>
+                </section>
+
+                <section>
+                    <div className="section-label">在线</div>
+                </section>
+
+                <div style={{ marginTop: 'auto', padding: '8px 12px 4px', fontSize: 12, color: 'var(--text-subtle)', display: 'flex', gap: 14 }}>
+                    <span>通知</span>
+                    <span>外观</span>
+                </div>
             </motion.aside>
         );
     }

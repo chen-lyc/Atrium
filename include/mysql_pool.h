@@ -44,8 +44,8 @@ class MysqlPool {
         return instance;
     }
     ~MysqlPool();
-    QueryResult executeQuery(const std::string &sql, const std::string &username, std::vector<std::string> &result);
-    QueryResult executeQuery(const std::string &sql, const std::string &username, const std::string &salt, const std::string &hash);
+    QueryResult executeQuery(const std::string &sql, const std::string &username, std::vector<std::string> &result, uint64_t &user_id);
+    QueryResult executeQuery(const std::string &sql, const std::string &username, const std::string &salt, const std::string &hash, uint64_t &user_id);
 
   private:
     MysqlPool(int min_connections, int max_connections);

@@ -1,4 +1,5 @@
 #include "sub_reactor.h"
+#include "connection_route.h"
 #include "http.h"
 #include "http_codec.h"
 #include "logger.h"
@@ -22,6 +23,8 @@
 #include <sys/stat.h>
 using namespace std;
 using json = nlohmann::json;
+
+static int conversation_num = 1;
 
 Reactor::Reactor(int index, vector<unique_ptr<Reactor>> &sub_reactors, size_t num_memory) : m_index(index), m_sub_reactors(sub_reactors), m_timer_heap(index), m_conn_pool(num_memory) {
     m_epollfd = epoll_create1(0);
@@ -59,10 +62,10 @@ void Reactor::addConnection(int fd, ProtocolType protocol) {
     conn_notify();
 }
 
-void Reactor::enqueueBroadcast(shared_ptr<const string> frame) {
+void Reactor::enqueueBroadcast(BroadcastTask task) {
     {
         lock_guard<mutex> lock(m_broadcast_mutex);
-        m_broadcast_queue.emplace(frame);
+        m_broadcast_queue.emplace(move(task));
     }
     broadcast_notify();
 }
@@ -122,23 +125,24 @@ void Reactor::loop() {
                 uint64_t val;
                 read(m_broadcast_notifyfd, &val, sizeof(val));
 
-                queue<shared_ptr<const string>> broadcast_queue;
+                queue<BroadcastTask> broadcast_queue;
                 {
                     lock_guard<mutex> lock(m_broadcast_mutex);
                     broadcast_queue.swap(m_broadcast_queue);
                 }
                 LOG_DEBUG("reactor[%d] start to broadcast", m_index);
                 while (!broadcast_queue.empty()) {
-                    const auto &frame = *broadcast_queue.front();
-                    for (auto it = m_conns.begin(); it != m_conns.end();) {
-                        auto current = it++;
-                        if (current->second->protocol != PROTO_WEBSOCKET) continue;
+                    const auto &frame = *broadcast_queue.front().frame;
+                    const vector<int> &fds = broadcast_queue.front().target_fds;
+                    const uint64_t conversation_id = broadcast_queue.front().conversation_id;
+                    for (int fd : fds) {
+                        if (!m_conns.contains(fd) || m_conns[fd]->protocol != PROTO_WEBSOCKET || !m_conns[fd]->conversation_ids.contains(conversation_id)) continue;
                         LOG_DEBUG("reactor[%d] broadcast frame size = %zu to fd = %d",
                                   m_index,
                                   frame.size(),
-                                  current->second->fd);
-                        current->second->outbuf += frame;
-                        trySend(*current->second);
+                                  fd);
+                        m_conns[fd]->outbuf += frame;
+                        trySend(*m_conns[fd]);
                     }
                     broadcast_queue.pop();
                 }
@@ -196,7 +200,9 @@ void Reactor::process(Connection &conn) {
     FrameResult res;
     while ((res = checkFrame(conn)).status == FrameStatus::Complete) {
         bool should_broadcast = false;
+        uint64_t conversation_id = 0;
         string broadcast_frame;
+        unordered_map<int, vector<int>> reactor_to_fds;
 
         LOG_DEBUG("fd = %d send data : %.*s",
                   conn.fd,
@@ -249,10 +255,20 @@ void Reactor::process(Connection &conn) {
                 LOG_DEBUG("websocket accpet size: %zu, accept = %s", accept.size(), accept.c_str());
                 BIO_free_all(b64);
 
-                SessionResult ret = get_session(req, conn.username);
+                SessionResult ret = get_session(req, conn.user_id, conn.username);
                 if (ret == SessionResult::Success) {
                     conn.protocol = PROTO_WEBSOCKET;
                     m_timer_heap.update(conn.fd, 60000);
+
+                    if (!req.cookies.contains("conversation_id")) {
+                        sendError(conn, resp_missing_params, res.end_pos);
+                        continue;
+                    }
+
+                    uint64_t conv_id = stoull(req.cookies["conversation_id"]);
+                    ConnRoute::getInstance().add(conv_id, m_index, conn.fd);
+                    conn.conversation_ids.emplace(conv_id);
+
                     conn.outbuf += "HTTP/1.1 101 Switching Protocols\r\n";
                     conn.outbuf += "Upgrade: websocket\r\n";
                     conn.outbuf += "Connection: Upgrade\r\n";
@@ -264,6 +280,8 @@ void Reactor::process(Connection &conn) {
                 } else if (ret == SessionResult::InvalidRequest) {
                     sendError(conn, resp_bad_request);
                     return;
+                } else if (ret == SessionResult::NetWorkError) {
+                    conn.outbuf += resp_server_error;
                 } else if (ret == SessionResult::ServerError) {
                     conn.outbuf += resp_server_error;
                 }
@@ -273,10 +291,11 @@ void Reactor::process(Connection &conn) {
                 conn.outbuf += "\r\n\r\n";
                 if (req.method == "GET") conn.outbuf += req.body;
             } else if (req.target == "/me" && (req.method == "GET" || req.method == "HEAD")) {
-                SessionResult ret = get_session(req, conn.username);
+                SessionResult ret = get_session(req, conn.user_id, conn.username);
                 if (ret == SessionResult::Success) {
                     json out;
-                    out["nickname"] = conn.username;
+                    out["user_id"] = conn.user_id;
+                    out["username"] = conn.username;
                     string body = out.dump();
                     conn.outbuf += "HTTP/1.1 200 OK\r\n";
                     conn.outbuf += "Content-Type: application/json\r\n";
@@ -289,6 +308,8 @@ void Reactor::process(Connection &conn) {
                 } else if (ret == SessionResult::InvalidRequest) {
                     sendError(conn, resp_bad_request);
                     return;
+                } else if (ret == SessionResult::NetWorkError) {
+                    conn.outbuf += resp_server_error;
                 } else if (ret == SessionResult::ServerError) {
                     conn.outbuf += resp_server_error;
                 }
@@ -390,41 +411,45 @@ void Reactor::process(Connection &conn) {
                     if (req.target == "/register") {
                         RegisterResult ret = do_register(username, password);
 
-                        if (ret == RegisterResult::Success) {
+                        if (ret.state == RegisterStatus::Success) {
                             string token;
-                            SessionResult ret = create_session(username, token);
-                            if (ret == SessionResult::Success) {
+                            SessionResult session_ret = create_session(ret.user_id, username, token);
+                            if (session_ret == SessionResult::Success) {
                                 conn.outbuf += resp_header_register_success;
                                 conn.outbuf += "Set-Cookie: session_id=";
                                 conn.outbuf += token;
+                                conn.outbuf += "\r\nSet-Cookie: conversation_id=";
+                                conn.outbuf += to_string(conversation_num++);
                                 conn.outbuf += "\r\n\r\nregister success";
-                            } else if (ret == SessionResult::ServerError) {
+                            } else if (session_ret == SessionResult::ServerError) {
                                 conn.outbuf += resp_server_error;
                             }
-                        } else if (ret == RegisterResult::ServerError) {
+                        } else if (ret.state == RegisterStatus::ServerError) {
                             conn.outbuf += resp_server_error;
-                        } else if (ret == RegisterResult::UserExists) {
+                        } else if (ret.state == RegisterStatus::UserExists) {
                             conn.outbuf += resp_user_exists;
                         }
                     } else {
                         LoginResult ret = do_login(username, password);
 
-                        if (ret == LoginResult::Success) {
+                        if (ret.state == LoginStatus::Success) {
                             string token;
-                            SessionResult ret = create_session(username, token);
-                            if (ret == SessionResult::Success) {
+                            SessionResult session_ret = create_session(ret.user_id, username, token);
+                            if (session_ret == SessionResult::Success) {
                                 conn.outbuf += resp_header_login_success;
                                 conn.outbuf += "Set-Cookie: session_id=";
                                 conn.outbuf += token;
+                                conn.outbuf += "\r\nSet-Cookie: conversation_id=";
+                                conn.outbuf += to_string(conversation_num++);
                                 conn.outbuf += "\r\n\r\nlogin success";
-                            } else if (ret == SessionResult::ServerError) {
+                            } else if (session_ret == SessionResult::ServerError) {
                                 conn.outbuf += resp_server_error;
                             }
-                        } else if (ret == LoginResult::ServerError) {
+                        } else if (ret.state == LoginStatus::ServerError) {
                             conn.outbuf += resp_server_error;
-                        } else if (ret == LoginResult::UserNotFound) {
+                        } else if (ret.state == LoginStatus::UserNotFound) {
                             conn.outbuf += resp_user_not_found;
-                        } else if (ret == LoginResult::WrongPassword) {
+                        } else if (ret.state == LoginStatus::WrongPassword) {
                             conn.outbuf += resp_wrong_password;
                         }
                     }
@@ -494,14 +519,14 @@ void Reactor::process(Connection &conn) {
                 buildResponse(ERROR, "parse error");
             } else if (ret == MSG_REGISTER_REQ) {
                 RegisterResult ret = do_register(req.username, req.password);
-                if (ret == RegisterResult::Success) {
+                if (ret.state == RegisterStatus::Success) {
                     buildResponse(REGISTER, "register success");
                 } else {
                     buildResponse(ERROR, "register failed");
                 }
             } else if (ret == MSG_LOGIN_REQ) {
                 LoginResult ret = do_login(req.username, req.password);
-                if (ret == LoginResult::Success) {
+                if (ret.state == LoginStatus::Success) {
                     buildResponse(LOGIN, "login success");
                 } else {
                     buildResponse(ERROR, "login failed");
@@ -519,9 +544,19 @@ void Reactor::process(Connection &conn) {
                 if (opcode == WS_TEXT) {
                     try {
                         json in = json::parse(payload_data);
+                        conversation_id = in["conversation_id"];
+                        if (!conn.conversation_ids.contains(conversation_id)) {
+                            return false;
+                        }
+                        reactor_to_fds = ConnRoute::getInstance().query(conversation_id);
+                        if (reactor_to_fds.empty()) {
+                            return false;
+                        }
 
                         json out;
-                        out["nickname"] = conn.username;
+                        out["user_id"] = conn.user_id;
+                        out["username"] = conn.username;
+                        out["conversation_id"] = conversation_id;
                         out["text"] = in["text"];
                         out["timestamp"] = chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count();
 
@@ -529,7 +564,7 @@ void Reactor::process(Connection &conn) {
                         LOG_DEBUG("fd = %d websocket payload: %s", conn.fd, payload_data.c_str());
                     } catch (const json::exception &e) {
                         LOG_WARN("bad json: %s", e.what());
-                        return;
+                        return false;
                     }
                 }
 
@@ -568,6 +603,8 @@ void Reactor::process(Connection &conn) {
                 } else {
                     conn.outbuf += move(response);
                 }
+
+                return true;
             };
 
             if (ret == WS_PROTOCOLERROR) {
@@ -576,7 +613,10 @@ void Reactor::process(Connection &conn) {
                 return;
             } else if (ret == WS_TEXT) {
                 should_broadcast = true;
-                buildResponse(WS_TEXT, move(req.payload_data), should_broadcast);
+                if (buildResponse(WS_TEXT, move(req.payload_data), should_broadcast) == 0) {
+                    sendError(conn, WS_PROTOCOLERROR);
+                    return;
+                }
             } else if (ret == WS_CLOSE) {
                 buildResponse(WS_CLOSE);
                 conn.shouldClose = true;
@@ -587,22 +627,15 @@ void Reactor::process(Connection &conn) {
         conn.inbuf.erase(conn.inbuf.begin(), conn.inbuf.begin() + res.end_pos);
         int conn_fd = conn.fd;
 
-        if (should_broadcast && !broadcast_frame.empty()) {
+        if (should_broadcast && conversation_id && !broadcast_frame.empty()) {
             shared_ptr<const string> frame = make_shared<string>(broadcast_frame);
-            LOG_DEBUG("reactor[%d] push a broadcast frame size = %zu to other sub reactor",
+            LOG_DEBUG("fd = %d, in reactor[%d], push a broadcast frame size = %zu",
+                      conn.fd,
                       m_index,
                       broadcast_frame.size());
-            for (auto &peer : m_sub_reactors) {
-                if (peer.get() == this) continue;
-                peer->enqueueBroadcast(frame);
-            }
 
-            for (auto it = m_conns.begin(); it != m_conns.end();) {
-                LOG_DEBUG("send broadcast to fd = %d", it->second->fd);
-                auto current = it++;
-                if (current->second->protocol != PROTO_WEBSOCKET) continue;
-                current->second->outbuf += broadcast_frame;
-                trySend(*current->second);
+            for (auto it = reactor_to_fds.begin(); it != reactor_to_fds.end(); ++it) {
+                m_sub_reactors[it->first]->enqueueBroadcast({conversation_id, it->second, frame});
             }
         } else {
             trySend(conn);
@@ -772,6 +805,9 @@ void Reactor::closeFile(Connection &conn) {
 }
 
 void Reactor::closeNow(int fd) {
+    for (auto it = m_conns[fd]->conversation_ids.begin(); it != m_conns[fd]->conversation_ids.end(); ++it) {
+        ConnRoute::getInstance().remove(*it, m_index, fd);
+    }
     epoll_ctl(m_epollfd, EPOLL_CTL_DEL, fd, nullptr);
     m_timer_heap.remove(fd);
     close(fd);

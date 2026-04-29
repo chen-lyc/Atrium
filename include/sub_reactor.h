@@ -12,11 +12,14 @@
 #include <unordered_map>
 
 class Reactor {
+  private:
+    struct BroadcastTask;
+
   public:
     Reactor(int index, std::vector<std::unique_ptr<Reactor>> &sub_reactors, size_t num_memory = 100);
     ~Reactor();
     void addConnection(int fd, ProtocolType protocol);
-    void enqueueBroadcast(std::shared_ptr<const std::string> frame);
+    void enqueueBroadcast(BroadcastTask task);
     void shutDown();
 
   private:
@@ -42,7 +45,13 @@ class Reactor {
     std::vector<std::unique_ptr<Reactor>> &m_sub_reactors;
     std::queue<std::pair<int, ProtocolType>> m_conn_queue;
     std::mutex m_queue_mutex;
-    std::queue<std::shared_ptr<const std::string>> m_broadcast_queue;
+
+    struct BroadcastTask {
+        uint64_t conversation_id;
+        std::vector<int> target_fds;
+        std::shared_ptr<const std::string> frame;
+    };
+    std::queue<BroadcastTask> m_broadcast_queue;
     std::mutex m_broadcast_mutex;
     TimerHeap m_timer_heap;
     MemoryPool m_conn_pool;

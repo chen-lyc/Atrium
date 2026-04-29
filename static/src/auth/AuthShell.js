@@ -122,7 +122,7 @@
                     exit={{ opacity: 0, y: -8, transition: { duration: 0.18, ease: EASE } }}
                     transition={{ duration: 0.24, ease: EASE }}
                 >
-                    <div className="auth-brand">Signal</div>
+                    <div className="auth-brand">Atrium</div>
                     <div className="loading-copy">正在验证会话</div>
                 </motion.div>
             </div>
@@ -513,8 +513,8 @@
                 type="button"
                 className="icon-button auth-theme-button focus-ring"
                 onClick={onCycle}
-                aria-label={`切换主题，当前为${mode === "system" ? "跟随系统" : mode === "dark" ? "深色" : "浅色"}`}
-                title={`当前主题：${mode === "system" ? "跟随系统" : mode === "dark" ? "深色" : "浅色"}`}
+                aria-label={`切换外观，当前为${mode === "system" ? "跟随系统" : mode === "dark" ? "深色" : "浅色"}`}
+                title={`当前外观：${mode === "system" ? "跟随系统" : mode === "dark" ? "深色" : "浅色"}`}
             >
                 <span aria-hidden="true">{icon}</span>
             </button>
@@ -557,7 +557,7 @@
                 </button>
 
                 <div className="auth-panel-header">
-                    <div id="auth-panel-title" className="auth-panel-brand">Signal</div>
+                    <div id="auth-panel-title" className="auth-panel-brand">Atrium</div>
 
                     <AnimatePresence initial={false}>
                         <AnimatedSubtitle
@@ -830,7 +830,7 @@
             }
 
             demoState.appendMessage({
-                nickname: "访客",
+                nickname: "游客",
                 text: trimmedValue,
                 isSelf: true,
                 source: "visitor"
@@ -1162,7 +1162,7 @@
                         disabled={isInteractionLocked}
                         aria-label="回到首页"
                     >
-                        Signal
+                        Atrium
                     </button>
 
                     <div className="auth-navbar-actions">
@@ -1206,8 +1206,8 @@
                             transition={taglineMotion.transition}
                         >
                             <div className="auth-tagline-copy">
-                                <div className="auth-tagline-title">从零手写的 C++ WebSocket 聊天室</div>
-                                <div className="auth-tagline-meta">Multi-Reactor · 实时广播 · 零依赖</div>
+                                <div className="auth-tagline-title">与他人,共同思考<span style={{ color: 'var(--accent)' }}>。</span></div>
+                                <div className="auth-tagline-meta">Atrium 是一个把对话和协作放在同一空间里的工具。简洁、实时、为深度讨论而设计。</div>
                             </div>
                         </motion.section>
 
@@ -1292,7 +1292,7 @@
                                                                 onInput={autoTyping.handleInput}
                                                                 onKeyDown={handleComposerKeyDown}
                                                                 placeholder="输入一条消息..."
-                                                                aria-label="访客消息输入框"
+                                                                aria-label="游客消息输入框"
                                                                 rows={1}
                                                                 disabled={!isDemoComposerInteractive}
                                                             />
@@ -1338,7 +1338,7 @@
                                                     </div>
 
                                                     <div className="auth-demo-guide">
-                                                        <span>你还没有身份 · </span>
+                                                        <span>还没有账号 · </span>
                                                         <button
                                                             type="button"
                                                             className="auth-demo-guide-link focus-ring"
@@ -1400,7 +1400,7 @@
                     <button type="button" className="auth-footer-link focus-ring">
                         lyc
                     </button>
-                    <span> · WebServer </span>
+                    <span> · </span>
                     <VersionPopover label="v3.0" className="auth-footer-version" placement="top" />
                     <span> · 2026</span>
                 </motion.footer>
