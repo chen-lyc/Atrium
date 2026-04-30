@@ -1,34 +1,36 @@
-// Defines shared app constants for the zero-build runtime.
-(() => {
-    const EASE = [0.22, 1, 0.36, 1];
+const EASE = [0.22, 1, 0.36, 1];
 
-    window.AppConstants = {
-        CHAT_URL: `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/chat`,
-        CHAT_RUNTIME_SCRIPTS: [
-            "./src/chat/ConnectionStatus.js",
-            "./src/chat/MessageInput.js",
-            "./src/chat/MessageFlight.js",
-            "./src/chat/Sidebar.js",
-            "./src/chat/ChatRoom.js"
-        ],
-        DEFAULT_CONVERSATION_ID: 1,
-        EASE,
-        TAP_TRANSITION: { duration: 0.12, ease: EASE },
-        NORMAL_SEND_FLIGHT: { duration: 0.34, ease: [0.2, 0.82, 0.2, 1] },
-        LOCAL_SEND_SETTLE_DELAY: 900,
-        STATUS_LABEL: {
-            idle: "等待加入",
-            connecting: "连接中",
-            connected: "已连接",
-            reconnecting: "重连中",
-            disconnected: "已断开"
-        },
-        STATUS_COLOR: {
-            idle: "#9B9A97",
-            connecting: "#9B9A97",
-            connected: "#238A52",
-            reconnecting: "#B67A00",
-            disconnected: "#D44C47"
-        }
-    };
-})();
+export const CHAT_URL = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/chat`;
+
+export const CHAT_RUNTIME_MODULES = () => Promise.all([
+  import("./chat/ConnectionStatus.jsx"),
+  import("./chat/MessageInput.jsx"),
+  import("./chat/MessageFlight.jsx"),
+  import("./chat/Sidebar.jsx"),
+  import("./chat/ChatRoom.jsx")
+]);
+
+export const DEFAULT_CONVERSATION_ID = 1;
+export const PERSONAL_ROOM_ID = "personal";
+export const PUBLIC_ROOM_ID = "public";
+export const PUBLIC_CONVERSATION_ID = 1;
+export { EASE };
+export const TAP_TRANSITION = { duration: 0.12, ease: EASE };
+export const NORMAL_SEND_FLIGHT = { duration: 0.34, ease: [0.2, 0.82, 0.2, 1] };
+export const LOCAL_SEND_SETTLE_DELAY = 900;
+
+export const STATUS_LABEL = {
+  idle: "等待加入",
+  connecting: "连接中",
+  connected: "已连接",
+  reconnecting: "重连中",
+  disconnected: "已断开"
+};
+
+export const STATUS_COLOR = {
+  idle: "#9B9A97",
+  connecting: "#9B9A97",
+  connected: "#238A52",
+  reconnecting: "#B67A00",
+  disconnected: "#D44C47"
+};

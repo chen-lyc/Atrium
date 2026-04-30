@@ -2,12 +2,15 @@
 miss_demo.out
 # 编译产物
 build/
+static/dist/
+static/node_modules/
 
 # 运行时日志
 logs/
 
 # 本地笔记 / AI 上下文
 000_READ_BEFORE_EVERY_CHANGE/
+master-mentor/
 
 # 临时截图
 *.png
