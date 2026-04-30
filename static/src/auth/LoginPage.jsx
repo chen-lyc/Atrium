@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { TAP_TRANSITION } from "../constants.js";
-import { buildAuthBody, validateAuthNickname, validateAuthPassword, resolveAuthFailure } from "../utils.js";
+import { buildAuthBody, validateAuthNickname, validateAuthPassword, resolveAuthFailure, readAuthSuccess } from "../utils.js";
 import { InlineError, LoadingDots } from "./AuthShell.jsx";
 
 export default function LoginPage({ onSwitchRegister, onSuccess, disabled }) {
@@ -25,7 +25,7 @@ export default function LoginPage({ onSwitchRegister, onSuccess, disabled }) {
     setFieldErrors({ nickname: "", password: "" }); setNetworkError(""); setIsSubmitting(true);
     try {
       const res = await fetch("/login", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: buildAuthBody(trimmedNickname, password), credentials: "include" });
-      if (res.ok) { onSuccess(trimmedNickname); return; }
+      if (res.ok) { onSuccess(await readAuthSuccess(res, trimmedNickname)); return; }
       const failure = await resolveAuthFailure(res, "login");
       setFieldErrors({ nickname: failure.field === "nickname" ? failure.message : "", password: failure.field === "password" ? failure.message : "" });
       setNetworkError(failure.networkError);

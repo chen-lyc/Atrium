@@ -201,6 +201,19 @@ ParseState parseHttpRequest(string_view raw, HttpRequest &req) {
                 transform(value.begin(), value.end(), value.begin(), ::tolower);
                 req.connection = move(value);
             } else if (key == "content-type") {
+                size_t semi_pos = value.find(';'); // application/json; charset=utf-8
+                if (semi_pos != string::npos) {
+                    value.erase(semi_pos);
+                }
+
+                size_t start = value.find_first_not_of(" \t");
+                size_t end = value.find_last_not_of(" \t");
+                if (start == string::npos) {
+                    req.state = PARSE_ERROR;
+                    return PARSE_ERROR;
+                }
+                value = value.substr(start, end - start + 1);
+                transform(value.begin(), value.end(), value.begin(), ::tolower);
                 req.content_type = move(value);
             } else if (key == "content-length") {
                 try {

@@ -157,11 +157,32 @@ CREATE DATABASE webserver;
 USE webserver;
 CREATE TABLE users (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  username VARCHAR(50) UNIQUE,
+  username VARCHAR(32) UNIQUE NOT NULL,
   password_hash BINARY(32),
   salt BINARY(16),
   PRIMARY KEY (id)
-);
+)engine = InnoDB default charset = utf8mb4;
+
+CREATE TABLE conversations (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name VARCHAR(32) NOT NULL,
+  PRIMARY KEY (id)
+)engine = InnoDB default charset = utf8mb4;
+
+INSERT INTO conversations (id, name) VALUES (1, 'Atrium 大厅');
+
+CREATE TABLE conversation_members (
+  conversation_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+
+  PRIMARY KEY (conversation_id, user_id),
+
+  FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+  on delete cascade,
+
+  FOREIGN KEY (user_id) REFERENCES users(id)
+  on delete cascade
+)engine = InnoDB default charset = utf8mb4;
 ```
 
 ## 编译与运行

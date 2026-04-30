@@ -58,6 +58,29 @@ export function normalizeIncomingConversationId(payload) {
   return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : 0;
 }
 
+export function normalizeAuthConversations(data) {
+  const rawConversations = Array.isArray(data?.conversations) ? data.conversations : [];
+  const seen = new Set();
+  return rawConversations
+    .map((item) => {
+      const id = normalizeIncomingConversationId({
+        conversation_id: item?.id ?? item?.conversation_id ?? item?.conversationId
+      });
+      const name =
+        typeof item?.name === "string" && item.name.trim()
+          ? item.name.trim()
+          : id
+            ? `讨论室 ${id}`
+            : "";
+      return { id, name };
+    })
+    .filter((conversation) => {
+      if (!conversation.id || seen.has(conversation.id)) return false;
+      seen.add(conversation.id);
+      return true;
+    });
+}
+
 export function normalizeIncomingMessage(payload, currentNickname) {
   const normalizedUsername =
     typeof payload.username === "string" && payload.username.trim()
@@ -269,6 +292,20 @@ function normalizeAuthNickname(data) {
   return "";
 }
 
+export function normalizeAuthPayload(data, fallbackNickname = "") {
+  const nickname = normalizeAuthNickname(data) || String(fallbackNickname || "").trim();
+  return {
+    ...(data && typeof data === "object" ? data : {}),
+    nickname,
+    conversations: normalizeAuthConversations(data)
+  };
+}
+
+export async function readAuthSuccess(response, fallbackNickname = "") {
+  const data = await response.json().catch(() => ({}));
+  return normalizeAuthPayload(data, fallbackNickname);
+}
+
 export async function fetchCurrentUser() {
   if (!hasSessionCookie()) {
     return { ok: false, status: 0, data: null };
@@ -281,11 +318,11 @@ export async function fetchCurrentUser() {
     return { ok: false, status: res.status, data: null };
   }
   const data = await res.json().catch(() => ({}));
-  const nickname = normalizeAuthNickname(data);
-  if (!nickname) {
+  const session = normalizeAuthPayload(data);
+  if (!session.nickname) {
     return { ok: false, status: res.status, data: null };
   }
-  return { ok: true, status: res.status, data: { ...data, nickname } };
+  return { ok: true, status: res.status, data: session };
 }
 
 export function buildAuthBody(nickname, password) {

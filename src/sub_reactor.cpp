@@ -24,8 +24,6 @@
 using namespace std;
 using json = nlohmann::json;
 
-static int conversation_num = 1;
-
 Reactor::Reactor(int index, vector<unique_ptr<Reactor>> &sub_reactors, size_t num_memory) : m_index(index), m_sub_reactors(sub_reactors), m_timer_heap(index), m_conn_pool(num_memory) {
     m_epollfd = epoll_create1(0);
     m_conn_notifyfd = eventfd(0, EFD_NONBLOCK);
@@ -257,22 +255,19 @@ void Reactor::process(Connection &conn) {
 
                 SessionResult ret = get_session(req, conn.user_id, conn.username);
                 if (ret == SessionResult::Success) {
+                    MysqlPool::QueryResult get_ret = get_conversation_ids(conn.user_id, conn.conversation_ids);
+                    if (get_ret == MysqlPool::QueryResult::NotFound || get_ret == MysqlPool::QueryResult::ServerError) {
+                        if (sendError(conn, resp_server_error, res.end_pos)) continue;
+                        return;
+                    }
+
                     conn.protocol = PROTO_WEBSOCKET;
                     m_timer_heap.update(conn.fd, 60000);
 
-                    if (!req.cookies.contains("conversation_id")) {
-                        sendError(conn, resp_missing_params, res.end_pos);
-                        continue;
-                    }
-
-                    uint64_t conv_id = stoull(req.cookies["conversation_id"]);
-                    ConnRoute::getInstance().add(conv_id, m_index, conn.fd);
-                    conn.conversation_ids.emplace(conv_id);
-
-                    conn.outbuf += "HTTP/1.1 101 Switching Protocols\r\n";
-                    conn.outbuf += "Upgrade: websocket\r\n";
-                    conn.outbuf += "Connection: Upgrade\r\n";
-                    conn.outbuf += "Sec-WebSocket-Accept: ";
+                    conn.outbuf += "HTTP/1.1 101 Switching Protocols\r\n"
+                                   "Upgrade: websocket\r\n"
+                                   "Connection: Upgrade\r\n"
+                                   "Sec-WebSocket-Accept: ";
                     conn.outbuf += move(accept);
                     conn.outbuf += "\r\n\r\n";
                 } else if (ret == SessionResult::TokenExpired) {
@@ -293,16 +288,24 @@ void Reactor::process(Connection &conn) {
             } else if (req.target == "/me" && (req.method == "GET" || req.method == "HEAD")) {
                 SessionResult ret = get_session(req, conn.user_id, conn.username);
                 if (ret == SessionResult::Success) {
-                    json out;
-                    out["user_id"] = conn.user_id;
-                    out["username"] = conn.username;
-                    string body = out.dump();
-                    conn.outbuf += "HTTP/1.1 200 OK\r\n";
-                    conn.outbuf += "Content-Type: application/json\r\n";
-                    conn.outbuf += "Content-Length: ";
-                    conn.outbuf += to_string(body.size());
-                    conn.outbuf += "\r\n\r\n";
-                    if (req.method == "GET") conn.outbuf += body;
+                    int get_ret = get_conversation_ids(conn.user_id, conn.conversation_ids);
+                    if (get_ret == MysqlPool::QueryResult::Success) {
+                        optional<string> build_ret = buildConversationListJson(conn);
+                        if (!build_ret.has_value()) {
+                            if (sendError(conn, resp_server_error, res.end_pos)) continue;
+                            return;
+                        }
+                        string &body = build_ret.value();
+                        conn.outbuf += "HTTP/1.1 200 OK\r\n";
+                        conn.outbuf += "Content-Type: application/json\r\n";
+                        conn.outbuf += "Content-Length: ";
+                        conn.outbuf += to_string(body.size());
+                        conn.outbuf += "\r\n\r\n";
+                        if (req.method == "GET") conn.outbuf += body;
+                    } else if (get_ret == MysqlPool::QueryResult::NotFound || get_ret == MysqlPool::QueryResult::ServerError) {
+                        if (sendError(conn, resp_server_error, res.end_pos)) continue;
+                        return;
+                    }
                 } else if (ret == SessionResult::TokenExpired) {
                     conn.outbuf += resp_unauthorized;
                 } else if (ret == SessionResult::InvalidRequest) {
@@ -347,111 +350,183 @@ void Reactor::process(Connection &conn) {
             } else if (req.target == "/register" || req.target == "/login") {
                 LOG_DEBUG("fd = %d send HTTP request register or login", conn.fd);
 
-                static constexpr string_view username_key = "username";
-                static constexpr string_view password_key = "password";
+                string username, password;
+                if (req.content_type == "application/x-www-form-urlencoded") {
+                    static constexpr string_view username_key = "username";
+                    static constexpr string_view password_key = "password";
+                    string_view username_value;
+                    string_view password_value;
+                    size_t username_count = 0;
+                    size_t password_count = 0;
 
-                string_view username_value;
-                string_view password_value;
+                    size_t start = 0;
+                    while (start < req.body.size()) {
+                        size_t eq_pos = req.body.find('=', start);
+                        if (eq_pos == string::npos) {
+                            sendError(conn, resp_bad_request);
+                            return;
+                        }
 
-                size_t username_count = 0;
-                size_t password_count = 0;
+                        size_t end = req.body.find('&', eq_pos + 1);
+                        if (end == string::npos) end = req.body.size();
+                        string_view key(req.body.data() + start, eq_pos - start);
+                        start = eq_pos + 1;
+                        string_view value(req.body.data() + start, end - start);
+                        start = end + 1;
+                        if (key == username_key) {
+                            if (++username_count > 1) {
+                                sendError(conn, resp_bad_request);
+                                return;
+                            }
+                            username_value = move(value);
+                        } else if (key == password_key) {
+                            if (++password_count > 1) {
+                                sendError(conn, resp_bad_request);
+                                return;
+                            }
+                            password_value = move(value);
+                        }
+                    }
 
-                size_t start = 0;
-                while (start < req.body.size()) {
-                    size_t eq_pos = req.body.find('=', start);
-                    if (eq_pos == string::npos) {
-                        sendError(conn, resp_bad_request);
+                    if (username_count == 0 || password_count == 0) {
+                        LOG_DEBUG("register request not have username or password");
+                        conn.outbuf += resp_missing_params;
+                        if (sendError(conn, resp_missing_params, res.end_pos)) continue;
                         return;
                     }
 
-                    size_t end = req.body.find('&', eq_pos + 1);
-                    if (end == string::npos) end = req.body.size();
-
-                    string_view key(req.body.data() + start, eq_pos - start);
-                    start = eq_pos + 1;
-                    string_view value(req.body.data() + start, end - start);
-                    start = end + 1;
-
-                    if (key == username_key) {
-                        if (++username_count > 1) {
-                            sendError(conn, resp_bad_request);
-                            return;
-                        }
-                        username_value = move(value);
-                    } else if (key == password_key) {
-                        if (++password_count > 1) {
-                            sendError(conn, resp_bad_request);
-                            return;
-                        }
-                        password_value = move(value);
-                    }
-                }
-
-                if (username_count == 0 || password_count == 0) {
-                    LOG_DEBUG("register request not have username or password");
-                    conn.outbuf += resp_missing_params;
-                } else {
                     optional<string> username_result = url_decode(username_value);
                     optional<string> password_result = url_decode(password_value);
                     if (!username_result.has_value() || !password_result.has_value()) {
                         if (sendError(conn, resp_invalid_encode, res.end_pos)) continue;
-                        else return;
-                    }
-                    if (!is_valid_username(username_result.value())) {
-                        if (sendError(conn, resp_invalid_username, res.end_pos)) continue;
-                        else return;
-                    }
-                    if (!is_valid_password(password_result.value())) {
-                        if (sendError(conn, resp_invalid_password, res.end_pos)) continue;
-                        else return;
+                        return;
                     }
 
-                    string &username = username_result.value();
-                    string &password = password_result.value();
-                    if (req.target == "/register") {
-                        RegisterResult ret = do_register(username, password);
+                    username = move(username_result.value());
+                    password = move(password_result.value());
+                } else if (req.content_type == "application/json") {
+                    try {
+                        json in = json::parse(req.body);
+                        if (!in.contains("username") || !in["username"].is_string() || !in.contains("password") || !in["password"].is_string()) {
+                            sendError(conn, resp_bad_request);
+                            return;
+                        }
+                        username = in["username"].get<string>();
+                        password = in["password"].get<string>();
 
-                        if (ret.state == RegisterStatus::Success) {
-                            string token;
-                            SessionResult session_ret = create_session(ret.user_id, username, token);
-                            if (session_ret == SessionResult::Success) {
-                                conn.outbuf += resp_header_register_success;
+                        if (username.empty() || password.empty()) {
+                            sendError(conn, resp_bad_request);
+                            return;
+                        }
+                    } catch (const exception &e) {
+                        LOG_WARN("json request in login or register error, reason = %s", e.what());
+                        sendError(conn, resp_bad_request);
+                        return;
+                    }
+                } else {
+                    sendError(conn, resp_unsupported_media_type, res.end_pos);
+                    continue;
+                }
+
+                if (!is_valid_username(username)) {
+                    if (sendError(conn, resp_invalid_username, res.end_pos)) continue;
+                    else return;
+                }
+                if (!is_valid_password(password)) {
+                    if (sendError(conn, resp_invalid_password, res.end_pos)) continue;
+                    else return;
+                }
+
+                if (req.target == "/register") {
+                    RegisterResult ret = do_register(username, password);
+
+                    if (ret.state == RegisterStatus::Success) {
+                        string token;
+                        SessionResult session_ret = create_session(ret.user_id, username, token);
+                        if (session_ret == SessionResult::Success) {
+                            conn.user_id = move(ret.user_id);
+                            conn.username = move(username);
+
+                            MysqlPool::QueryResult ret = insert_public_chatroom(conn.user_id);
+                            if (ret != MysqlPool::QueryResult::Success) {
+                                if (sendError(conn, resp_server_error, res.end_pos)) continue;
+                                return;
+                            }
+                            uint64_t personal_room_id = 0;
+                            ret = create_personal_chatroom(personal_room_id, conn.user_id);
+                            if (ret != MysqlPool::QueryResult::Success || personal_room_id == 0) {
+                                if (sendError(conn, resp_server_error, res.end_pos)) continue;
+                                return;
+                            }
+                            conn.conversation_ids.emplace(1);
+                            conn.conversation_ids.emplace(personal_room_id);
+                            ConnRoute::getInstance().add(1, m_index, conn.fd);
+                            ConnRoute::getInstance().add(personal_room_id, m_index, conn.fd);
+
+                            optional<string> build_ret = buildConversationListJson(conn);
+                            if (!build_ret.has_value()) {
+                                if (sendError(conn, resp_server_error, res.end_pos)) continue;
+                                return;
+                            }
+                            string &body = build_ret.value();
+
+                            conn.outbuf += "HTTP/1.1 200 OK\r\n"
+                                           "Content-Type: application/json; charset=utf-8\r\n"
+                                           "Content-Length: ";
+                            conn.outbuf += to_string(body.size());
+                            conn.outbuf += "\r\n";
+                            conn.outbuf += "Set-Cookie: session_id=";
+                            conn.outbuf += token;
+                            conn.outbuf += "\r\n\r\n";
+                            conn.outbuf += body;
+                        } else if (session_ret == SessionResult::ServerError) {
+                            conn.outbuf += resp_server_error;
+                        }
+                    } else if (ret.state == RegisterStatus::ServerError) {
+                        conn.outbuf += resp_server_error;
+                    } else if (ret.state == RegisterStatus::UserExists) {
+                        conn.outbuf += resp_user_exists;
+                    }
+                } else {
+                    LoginResult ret = do_login(username, password);
+
+                    if (ret.state == LoginStatus::Success) {
+                        string token;
+                        SessionResult session_ret = create_session(ret.user_id, username, token);
+                        if (session_ret == SessionResult::Success) {
+                            MysqlPool::QueryResult get_ret = get_conversation_ids(ret.user_id, conn.conversation_ids);
+                            if (get_ret == MysqlPool::QueryResult::Success) {
+                                conn.user_id = move(ret.user_id);
+                                conn.username = move(username);
+                                optional<string> build_ret = buildConversationListJson(conn);
+                                if (!build_ret.has_value()) {
+                                    if (sendError(conn, resp_server_error, res.end_pos)) continue;
+                                    return;
+                                }
+                                string &body = build_ret.value();
+
+                                conn.outbuf += "HTTP/1.1 200 OK\r\n"
+                                               "Content-Type: application/json; charset=utf-8\r\n"
+                                               "Content-Length: ";
+                                conn.outbuf += to_string(body.size());
+                                conn.outbuf += "\r\n";
                                 conn.outbuf += "Set-Cookie: session_id=";
                                 conn.outbuf += token;
-                                conn.outbuf += "\r\nSet-Cookie: conversation_id=";
-                                conn.outbuf += to_string(conversation_num++);
-                                conn.outbuf += "\r\n\r\nregister success";
-                            } else if (session_ret == SessionResult::ServerError) {
-                                conn.outbuf += resp_server_error;
+                                conn.outbuf += "\r\n\r\n";
+                                conn.outbuf += body;
+                            } else if (get_ret == MysqlPool::QueryResult::NotFound || get_ret == MysqlPool::QueryResult::ServerError) {
+                                if (sendError(conn, resp_server_error, res.end_pos)) continue;
+                                return;
                             }
-                        } else if (ret.state == RegisterStatus::ServerError) {
+                        } else if (session_ret == SessionResult::ServerError) {
                             conn.outbuf += resp_server_error;
-                        } else if (ret.state == RegisterStatus::UserExists) {
-                            conn.outbuf += resp_user_exists;
                         }
-                    } else {
-                        LoginResult ret = do_login(username, password);
-
-                        if (ret.state == LoginStatus::Success) {
-                            string token;
-                            SessionResult session_ret = create_session(ret.user_id, username, token);
-                            if (session_ret == SessionResult::Success) {
-                                conn.outbuf += resp_header_login_success;
-                                conn.outbuf += "Set-Cookie: session_id=";
-                                conn.outbuf += token;
-                                conn.outbuf += "\r\nSet-Cookie: conversation_id=";
-                                conn.outbuf += to_string(conversation_num++);
-                                conn.outbuf += "\r\n\r\nlogin success";
-                            } else if (session_ret == SessionResult::ServerError) {
-                                conn.outbuf += resp_server_error;
-                            }
-                        } else if (ret.state == LoginStatus::ServerError) {
-                            conn.outbuf += resp_server_error;
-                        } else if (ret.state == LoginStatus::UserNotFound) {
-                            conn.outbuf += resp_user_not_found;
-                        } else if (ret.state == LoginStatus::WrongPassword) {
-                            conn.outbuf += resp_wrong_password;
-                        }
+                    } else if (ret.state == LoginStatus::ServerError) {
+                        conn.outbuf += resp_server_error;
+                    } else if (ret.state == LoginStatus::UserNotFound) {
+                        conn.outbuf += resp_user_not_found;
+                    } else if (ret.state == LoginStatus::WrongPassword) {
+                        conn.outbuf += resp_wrong_password;
                     }
                 }
             } else {
@@ -649,6 +724,28 @@ void Reactor::process(Connection &conn) {
             return;
         }
     }
+}
+
+std::optional<std::string> Reactor::buildConversationListJson(Connection &conn) {
+    json out;
+    out["user_id"] = conn.user_id;
+    out["username"] = conn.username;
+    json list = json::array();
+    MysqlPool::QueryResult get_name_ret = MysqlPool::QueryResult::ServerError;
+    for (auto it = conn.conversation_ids.begin(); it != conn.conversation_ids.end(); ++it) {
+        json c;
+        string name;
+        get_name_ret = get_conversation_name(*it, name);
+        if (get_name_ret == MysqlPool::QueryResult::ServerError) break;
+        c["id"] = *it;
+        c["name"] = name;
+        list.emplace_back(c);
+    }
+    if (get_name_ret != MysqlPool::QueryResult::Success) {
+        return nullopt;
+    }
+    out["conversations"] = list;
+    return out.dump();
 }
 
 string_view Reactor::getMimeType(const string &file_path) {

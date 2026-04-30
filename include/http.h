@@ -73,17 +73,23 @@ inline constexpr std::string_view resp_invalid_encode =
     "\r\n"
     "invalid_encode";
 
+inline constexpr std::string_view resp_unsupported_media_type =
+    "HTTP/1.1 415 Unsupported Media Type\r\n"
+    "Content-Length: 0\r\n"
+    "Connection: close\r\n"
+    "\r\n";
+
 // 注册
 inline constexpr std::string_view resp_header_register_success =
     "HTTP/1.1 200 OK\r\n"
     "Content-Type: text/plain; charset=utf-8\r\n"
-    "Content-Length: 16\r\n";
+    "Content-Length: 0\r\n";
 
 // 登入
 inline constexpr std::string_view resp_header_login_success =
     "HTTP/1.1 200 OK\r\n"
     "Content-Type: text/plain; charset=utf-8\r\n"
-    "Content-Length: 13\r\n";
+    "Content-Length: 0\r\n";
 
 // 默认响应
 inline constexpr std::string_view default_response =

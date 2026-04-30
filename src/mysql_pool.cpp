@@ -50,7 +50,7 @@ MysqlPool::~MysqlPool() {
     }
 }
 
-MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, const string &username, vector<string> &result, uint64_t &user_id) {
+MysqlPool::QueryResult MysqlPool::executeQuery(const std::string &sql, MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count) {
     MysqlConnGuard guard(*this);
     sql::Connection *conn = guard.get();
     if (conn == nullptr) {
@@ -59,17 +59,30 @@ MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, const string &
 
     try {
         unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement(sql));
-        stmt->setString(1, username);
 
-        unique_ptr<sql::ResultSet> res(stmt->executeQuery());
-        if (!res->next()) {
-            LOG_DEBUG("login: user not found");
-            return MysqlPool::QueryResult::NotFound;
+        for (size_t i = 0; i < params.size(); ++i) {
+            if (holds_alternative<string>(params[i])) {
+                stmt->setString(i + 1, get<string>(params[i]));
+            } else if (holds_alternative<uint64_t>(params[i])) {
+                stmt->setUInt64(i + 1, get<uint64_t>(params[i]));
+            } else if (holds_alternative<Blob>(params[i])) {
+                Blob &blob = get<Blob>(params[i]);
+                istringstream iss(blob.bytes);
+                stmt->setBlob(i + 1, &iss);
+            }
         }
 
-        user_id = res->getUInt64("id");
-        result.emplace_back(res->getString("salt"));
-        result.emplace_back(res->getString("password_hash"));
+        unique_ptr<sql::ResultSet> rs(stmt->executeQuery());
+        if (!rs->next()) {
+            return MysqlPool::QueryResult::NotFound;
+        }
+        do {
+            vector<string> row;
+            for (size_t i = 0; i < col_count; ++i) {
+                row.emplace_back(rs->getString(i + 1));
+            }
+            rows.emplace_back(move(row));
+        } while (rs->next());
         return MysqlPool::QueryResult::Success;
     } catch (const sql::SQLException &e) {
         LOG_WARN("select failed: %s, code = %d, state = %s",
@@ -91,7 +104,7 @@ MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, const string &
     }
 }
 
-MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, const std::string &username, const std::string &salt, const std::string &hash, uint64_t &user_id) {
+MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, MysqlParams &params, uint64_t *id) {
     MysqlConnGuard guard(*this);
     sql::Connection *conn = guard.get();
     if (conn == nullptr) {
@@ -100,22 +113,32 @@ MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, const std::str
 
     try {
         unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement(sql));
-        stmt->setString(1, username);
-        istringstream salt_stream(salt);
-        stmt->setBlob(2, &salt_stream);
-        istringstream hash_stream(hash);
-        stmt->setBlob(3, &hash_stream);
+
+        vector<unique_ptr<istringstream>> blob_stream;
+        for (size_t i = 0; i < params.size(); ++i) {
+            if (holds_alternative<string>(params[i])) {
+                stmt->setString(i + 1, get<string>(params[i]));
+            } else if (holds_alternative<uint64_t>(params[i])) {
+                stmt->setUInt64(i + 1, get<uint64_t>(params[i]));
+            } else if (holds_alternative<Blob>(params[i])) {
+                Blob &blob = get<Blob>(params[i]);
+                blob_stream.emplace_back(make_unique<istringstream>(blob.bytes));
+                stmt->setBlob(i + 1, blob_stream.back().get());
+            }
+        }
 
         stmt->executeUpdate();
 
-        unique_ptr<sql::Statement> id_stmt(conn->createStatement());
-        unique_ptr<sql::ResultSet> rs(
-            id_stmt->executeQuery("SELECT LAST_INSERT_ID()"));
+        if (id != nullptr) {
+            unique_ptr<sql::Statement> id_stmt(conn->createStatement());
+            unique_ptr<sql::ResultSet> rs(
+                id_stmt->executeQuery("SELECT LAST_INSERT_ID()"));
 
-        if (rs->next()) {
-            user_id = rs->getUInt64(1);
-        } else {
-            return MysqlPool::QueryResult::ServerError;
+            if (rs->next()) {
+                *id = rs->getUInt64(1);
+            } else {
+                return MysqlPool::QueryResult::ServerError;
+            }
         }
 
         return MysqlPool::QueryResult::Success;

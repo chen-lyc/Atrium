@@ -103,13 +103,13 @@ RegisterResult do_register(const string &username, const string &password) {
     if (!hashed.has_value()) {
         return {RegisterStatus::ServerError, 0};
     }
+    HashedPassword &hp = hashed.value();
+    MysqlPool::MysqlParams params{
+        username,
+        MysqlPool::Blob{reinterpret_cast<const char *>(hp.salt.data()), hp.salt.size()},
+        MysqlPool::Blob{reinterpret_cast<const char *>(hp.hash.data()), hp.hash.size()}};
     uint64_t user_id = 0;
-    HashedPassword hp = hashed.value();
-    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(
-        query, username,
-        string(reinterpret_cast<const char *>(hp.salt.data()), hp.salt.size()),
-        string(reinterpret_cast<const char *>(hp.hash.data()), hp.hash.size()),
-        user_id);
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(query, params, &user_id);
     switch (ret) {
     case MysqlPool::QueryResult::Success:
         return {RegisterStatus::Success, user_id};
@@ -124,19 +124,28 @@ RegisterResult do_register(const string &username, const string &password) {
 }
 
 LoginResult do_login(const string &username, const string &password) {
-    vector<string> result;
-    uint64_t user_id = 0;
     static string query = "SELECT id, salt, password_hash FROM users WHERE username = ?";
-    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(query, username, result, user_id);
+    MysqlPool::MysqlParams params{username};
+    vector<vector<string>> result;
+    size_t col_count = 3;
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(query, params, result, col_count);
     if (ret == MysqlPool::QueryResult::ServerError) {
         return {LoginStatus::ServerError, 0};
     }
     if (ret == MysqlPool::QueryResult::NotFound) {
+        LOG_DEBUG("login: user not found");
         return {LoginStatus::UserNotFound, 0};
     }
 
-    string &salt = result[0];
-    string &password_hash = result[1];
+    uint64_t user_id;
+    try {
+        user_id = stoull(result[0][0]);
+    } catch (const exception &e) {
+        LOG_WARN("parsee user_id failed: value = %s, reason = %s", result[0][0].data(), e.what());
+        return {LoginStatus::ServerError, 0};
+    }
+    string &salt = result[0][1];
+    string &password_hash = result[0][2];
 
     array<unsigned char, 32> computed_hash;
     if (PKCS5_PBKDF2_HMAC(
@@ -241,20 +250,15 @@ SessionResult get_session(HttpRequest &req, uint64_t &user_id, string &username)
 
     case RedisPool::CommandResult::NotFound:
         return SessionResult::TokenExpired;
-
     case RedisPool::CommandResult::CommandError:
         return SessionResult::ServerError;
-
     case RedisPool::CommandResult::NetWorkError:
         return SessionResult::NetWorkError;
-
     case RedisPool::CommandResult::UnexpectedType:
         return SessionResult::ServerError;
-
     case RedisPool::CommandResult::ServerError:
         return SessionResult::ServerError;
     }
-
     return SessionResult::ServerError;
 }
 
@@ -263,4 +267,61 @@ void destroy_session(const std::string &token) {
     const char *argv[] = {"DEL", key.data()};
     size_t argvlen[] = {3, key.size()};
     RedisPool::getInstance().executeCommand(2, argv, argvlen);
+}
+
+MysqlPool::QueryResult get_conversation_ids(uint64_t user_id, std::unordered_set<uint64_t> &ids) {
+    static string query = "SELECT conversation_id FROM conversation_members where user_id = ?";
+    MysqlPool::MysqlParams params{user_id};
+    vector<vector<string>> result;
+    size_t col_count = 1;
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(query, params, result, col_count);
+    if (ret == MysqlPool::QueryResult::ServerError || ret == MysqlPool::QueryResult::NotFound) {
+        return ret;
+    }
+
+    for (size_t i = 0; i < result.size(); ++i) {
+        try {
+            ids.emplace(stoull(result[i][0]));
+        } catch (const exception &e) {
+            LOG_WARN("parse conversation_id failed: value = %s, reason = %s", result[i][0], e.what());
+            return MysqlPool::QueryResult::ServerError;
+        }
+    }
+    return MysqlPool::QueryResult::Success;
+}
+
+MysqlPool::QueryResult get_conversation_name(uint64_t conversation_id, string &conversatrion_name) {
+    static string query = "SELECT name FROM conversations WHERE id = ?";
+    MysqlPool::MysqlParams params{conversation_id};
+    vector<vector<string>> result;
+    size_t col_count = 1;
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(query, params, result, col_count);
+    if (ret == MysqlPool::QueryResult::ServerError || ret == MysqlPool::QueryResult::NotFound) {
+        return MysqlPool::QueryResult::ServerError;
+    }
+
+    conversatrion_name = move(result[0][0]);
+    return MysqlPool::QueryResult::Success;
+}
+
+MysqlPool::QueryResult create_personal_chatroom(uint64_t &conversation_id, uint64_t user_id) {
+    static string query = "INSERT INTO conversations (name) VALUES (?)";
+    MysqlPool::MysqlParams params{string("我的个人讨论室")};
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(query, params, &conversation_id);
+    if (ret != MysqlPool::QueryResult::Success) {
+        return MysqlPool::QueryResult::ServerError;
+    }
+    static string cm_query = "INSERT INTO conversation_members (conversation_id, user_id) VALUES (?, ?)";
+    params = {conversation_id, user_id};
+    ret = MysqlPool::getInstance().executeQuery(cm_query, params);
+    if (ret != MysqlPool::QueryResult::Success) {
+        return MysqlPool::QueryResult::ServerError;
+    }
+    return MysqlPool::QueryResult::Success;
+}
+
+MysqlPool::QueryResult insert_public_chatroom(uint64_t user_id) {
+    static string query = "INSERT INTO conversation_members (conversation_id, user_id) VALUES (1, ?)";
+    MysqlPool::MysqlParams params{user_id};
+    return MysqlPool::getInstance().executeQuery(query, params);
 }

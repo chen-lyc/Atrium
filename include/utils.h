@@ -1,10 +1,12 @@
 #pragma once
 
 #include "http_codec.h"
+#include "mysql_pool.h"
 #include <array>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 
 extern std::hash<std::string> hasher;
 
@@ -57,3 +59,8 @@ LoginResult do_login(const std::string &username, const std::string &password);
 SessionResult create_session(uint64_t user_id, const std::string &username, std::string &token_out);
 SessionResult get_session(HttpRequest &req, uint64_t &user_id, std::string &username);
 void destroy_session(const std::string &token);
+
+MysqlPool::QueryResult get_conversation_ids(uint64_t user_id, std::unordered_set<uint64_t> &ids);
+MysqlPool::QueryResult get_conversation_name(uint64_t conversation_id, std::string &conversatrion_name);
+MysqlPool::QueryResult create_personal_chatroom(uint64_t &conversation_id, uint64_t user_id);
+MysqlPool::QueryResult insert_public_chatroom(uint64_t user_id);

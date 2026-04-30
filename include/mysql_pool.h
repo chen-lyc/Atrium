@@ -2,12 +2,14 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <mysql_connection.h>
 #include <mysql_driver.h>
 #include <queue>
 #include <string>
+#include <variant>
 #include <vector>
 
 class MysqlPool;
@@ -38,14 +40,20 @@ class MysqlPool {
         AlreadyExists,
         ServerError,
     };
+    struct Blob {
+        std::string bytes;
+        Blob(const char *data, size_t len) : bytes(data, len) {}
+        Blob(std::string s) : bytes(std::move(s)) {}
+    };
+    using MysqlParams = std::vector<std::variant<std::string, uint64_t, Blob>>;
 
     static MysqlPool &getInstance() {
         static MysqlPool instance(2, 8);
         return instance;
     }
     ~MysqlPool();
-    QueryResult executeQuery(const std::string &sql, const std::string &username, std::vector<std::string> &result, uint64_t &user_id);
-    QueryResult executeQuery(const std::string &sql, const std::string &username, const std::string &salt, const std::string &hash, uint64_t &user_id);
+    QueryResult executeQuery(const std::string &sql, MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count);
+    QueryResult executeQuery(const std::string &sql, MysqlParams &params, uint64_t *id = nullptr);
 
   private:
     MysqlPool(int min_connections, int max_connections);
