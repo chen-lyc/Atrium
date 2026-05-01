@@ -98,7 +98,7 @@ optional<HashedPassword> hash_password(const string &password) {
 }
 
 RegisterResult do_register(const string &username, const string &password) {
-    static string query = "INSERT INTO users (username, salt, password_hash) VALUES (?, ?, ?)";
+    static const string sql = "INSERT INTO users (username, salt, password_hash) VALUES (?, ?, ?)";
     optional<HashedPassword> hashed = hash_password(password);
     if (!hashed.has_value()) {
         return {RegisterStatus::ServerError, 0};
@@ -109,26 +109,24 @@ RegisterResult do_register(const string &username, const string &password) {
         MysqlPool::Blob{reinterpret_cast<const char *>(hp.salt.data()), hp.salt.size()},
         MysqlPool::Blob{reinterpret_cast<const char *>(hp.hash.data()), hp.hash.size()}};
     uint64_t user_id = 0;
-    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(query, params, &user_id);
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, &user_id);
     switch (ret) {
     case MysqlPool::QueryResult::Success:
         return {RegisterStatus::Success, user_id};
     case MysqlPool::QueryResult::AlreadyExists:
         return {RegisterStatus::UserExists, 0};
-    case MysqlPool::QueryResult::ServerError:
-        return {RegisterStatus::ServerError, 0};
-    case MysqlPool::QueryResult::NotFound:
+    default:
         return {RegisterStatus::ServerError, 0};
     }
     return {RegisterStatus::ServerError, 0};
 }
 
 LoginResult do_login(const string &username, const string &password) {
-    static string query = "SELECT id, salt, password_hash FROM users WHERE username = ?";
+    static const string sql = "SELECT id, salt, password_hash FROM users WHERE username = ?";
     MysqlPool::MysqlParams params{username};
     vector<vector<string>> result;
     size_t col_count = 3;
-    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(query, params, result, col_count);
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, result, col_count);
     if (ret == MysqlPool::QueryResult::ServerError) {
         return {LoginStatus::ServerError, 0};
     }
@@ -168,7 +166,7 @@ LoginResult do_login(const string &username, const string &password) {
     return {LoginStatus::Success, user_id};
 }
 
-static std::string bytes_to_hex(const unsigned char *data, size_t len) {
+static const std::string bytes_to_hex(const unsigned char *data, size_t len) {
     std::ostringstream oss;
     for (size_t i = 0; i < len; ++i) {
         oss << std::hex << std::setw(2) << std::setfill('0')
@@ -270,11 +268,11 @@ void destroy_session(const std::string &token) {
 }
 
 MysqlPool::QueryResult get_conversation_ids(uint64_t user_id, std::unordered_set<uint64_t> &ids) {
-    static string query = "SELECT conversation_id FROM conversation_members where user_id = ?";
+    static const string sql = "SELECT conversation_id FROM conversation_members where user_id = ?";
     MysqlPool::MysqlParams params{user_id};
     vector<vector<string>> result;
     size_t col_count = 1;
-    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(query, params, result, col_count);
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, result, col_count);
     if (ret == MysqlPool::QueryResult::ServerError || ret == MysqlPool::QueryResult::NotFound) {
         return ret;
     }
@@ -291,11 +289,11 @@ MysqlPool::QueryResult get_conversation_ids(uint64_t user_id, std::unordered_set
 }
 
 MysqlPool::QueryResult get_conversation_name(uint64_t conversation_id, string &conversatrion_name) {
-    static string query = "SELECT name FROM conversations WHERE id = ?";
+    static const string sql = "SELECT name FROM conversations WHERE id = ?";
     MysqlPool::MysqlParams params{conversation_id};
     vector<vector<string>> result;
     size_t col_count = 1;
-    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(query, params, result, col_count);
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, result, col_count);
     if (ret == MysqlPool::QueryResult::ServerError || ret == MysqlPool::QueryResult::NotFound) {
         return MysqlPool::QueryResult::ServerError;
     }
@@ -305,15 +303,15 @@ MysqlPool::QueryResult get_conversation_name(uint64_t conversation_id, string &c
 }
 
 MysqlPool::QueryResult create_personal_chatroom(uint64_t &conversation_id, uint64_t user_id) {
-    static string query = "INSERT INTO conversations (name) VALUES (?)";
+    static const string sql = "INSERT INTO conversations (name) VALUES (?)";
     MysqlPool::MysqlParams params{string("我的个人讨论室")};
-    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(query, params, &conversation_id);
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, &conversation_id);
     if (ret != MysqlPool::QueryResult::Success) {
         return MysqlPool::QueryResult::ServerError;
     }
-    static string cm_query = "INSERT INTO conversation_members (conversation_id, user_id) VALUES (?, ?)";
+    static const string cm_sql = "INSERT INTO conversation_members (conversation_id, user_id) VALUES (?, ?)";
     params = {conversation_id, user_id};
-    ret = MysqlPool::getInstance().executeQuery(cm_query, params);
+    ret = MysqlPool::getInstance().executeQuery(cm_sql, params);
     if (ret != MysqlPool::QueryResult::Success) {
         return MysqlPool::QueryResult::ServerError;
     }
@@ -326,13 +324,53 @@ MysqlPool::QueryResult create_personal_chatroom(uint64_t user_id) {
 }
 
 MysqlPool::QueryResult insert_public_chatroom(uint64_t user_id) {
-    static string query = "INSERT INTO conversation_members (conversation_id, user_id) VALUES (1, ?)";
+    static const string sql = "INSERT INTO conversation_members (conversation_id, user_id) VALUES (1, ?)";
     MysqlPool::MysqlParams params{user_id};
-    return MysqlPool::getInstance().executeQuery(query, params);
+    return MysqlPool::getInstance().executeQuery(sql, params);
+}
+
+MysqlPool::QueryResult verify_conversation_member(uint64_t conversation_id, uint64_t user_id) {
+    static const string sql = "SELECT EXISTS ("
+                              "SELECT 1 FROM conversation_members "
+                              "WHERE  conversation_id = ? AND user_id = ?)";
+
+    MysqlPool::MysqlParams params{conversation_id, user_id};
+    vector<vector<string>> rows;
+    size_t col_count = 1;
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, rows, col_count);
+    if (ret != MysqlPool::QueryResult::Success) {
+        return ret;
+    }
+    if (rows.empty() || rows[0].empty()) {
+        return MysqlPool::QueryResult::ServerError;
+    }
+    if (rows[0][0] != "1") {
+        return MysqlPool::NotFound;
+    }
+    return MysqlPool::QueryResult::Success;
 }
 
 MysqlPool::QueryResult insert_message(chatdb::Message &msg, uint64_t &message_id) {
-    static string query = "INSERT INTO messages (conversation_id, send_id, type, content, send_time_ms, client_message_id) VALUES (?, ?, ?, ?, ?, ?)";
+    static const string sql = "INSERT INTO messages (conversation_id, send_id, type, content, send_time_ms, client_message_id) VALUES (?, ?, ?, ?, ?, ?)";
     MysqlPool::MysqlParams params{msg.conversation_id, msg.send_id, msg.type, msg.content, msg.send_time_ms, msg.client_message_id};
-    return MysqlPool::getInstance().executeQuery(query, params, &message_id);
+    return MysqlPool::getInstance().executeQuery(sql, params, &message_id);
+}
+
+MysqlPool::QueryResult get_recent_messages(uint64_t conversation_id, std::optional<chatdb::Cursor> cursor, int limit, std::vector<std::vector<std::string>> &rows) {
+    static const string first_page_sql = "SELECT id, send_id, type, content, send_time_ms FROM messages "
+                                         "WHERE conversation_id = ? "
+                                         "ORDER BY send_time_ms DESC, id DESC LIMIT ?";
+    static const string before_cursor_sql = "SELECT id, send_id, type, content, send_time_ms FROM messages "
+                                            "WHERE conversation_id = ? AND (send_time_ms, id) < (?, ?) "
+                                            "ORDER BY send_time_ms DESC, id DESC LIMIT ?";
+
+    size_t col_count = 5;
+    if (cursor == nullopt) {
+        MysqlPool::MysqlParams params{conversation_id, limit};
+        return MysqlPool::getInstance().executeQuery(first_page_sql, params, rows, col_count);
+    } else if (cursor.has_value()) {
+        MysqlPool::MysqlParams params{conversation_id, cursor->before_time_ms, cursor->before_message_id, limit};
+        return MysqlPool::getInstance().executeQuery(before_cursor_sql, params, rows, col_count);
+    }
+    return MysqlPool::QueryResult::SqlError;
 }

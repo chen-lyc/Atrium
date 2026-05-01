@@ -2,6 +2,7 @@
 #include "connection_route.h"
 #include "http.h"
 #include "http_codec.h"
+#include "http_route.h"
 #include "logger.h"
 #include "message.pb.h"
 #include "mysql_pool.h"
@@ -354,7 +355,7 @@ void Reactor::process(Connection &conn) {
                             if (sendError(conn, resp_server_error, res.end_pos)) continue;
                             return;
                         }
-                        out["conversations"] = list;
+                        out["conversations"] = move(list);
                         string body = out.dump();
 
                         conn.outbuf += "HTTP/1.1 200 OK\r\n"
@@ -367,6 +368,158 @@ void Reactor::process(Connection &conn) {
                         if (sendError(conn, resp_server_error, res.end_pos)) continue;
                         return;
                     }
+                } else if (ret == SessionResult::TokenExpired) {
+                    conn.outbuf += resp_unauthorized;
+                } else if (ret == SessionResult::InvalidRequest) {
+                    sendError(conn, resp_bad_request);
+                    return;
+                } else if (ret == SessionResult::NetWorkError) {
+                    conn.outbuf += resp_server_error;
+                } else if (ret == SessionResult::ServerError) {
+                    conn.outbuf += resp_server_error;
+                }
+            } else if (req.target.starts_with(api_conversation_prefix) && (req.method == "GET" || req.method == "HEAD")) {
+                uint64_t user_id = 0;
+                string username;
+                SessionResult ret = get_session(req, user_id, username);
+                if (ret == SessionResult::Success) {
+                    // GET /conversations/:id/messages?before_time=...&before_id=...&limit=50
+                    size_t query_pos = req.target.find('?');
+                    if (query_pos == string::npos) {
+                        sendError(conn, resp_bad_request);
+                        return;
+                    }
+                    string rest = req.target.substr(api_conversation_prefix.size() + 1, query_pos);
+                    string query = req.target.substr(query_pos + 1);
+                    size_t slash_pos = rest.find('/');
+                    if (slash_pos == string::npos) {
+                        sendError(conn, resp_bad_request);
+                        return;
+                    }
+                    string id_value = rest.substr(0, slash_pos);
+                    uint64_t conversation_id = 0;
+                    try {
+                        conversation_id = stoull(id_value);
+                    } catch (const exception &e) {
+                        LOG_WARN("parse conversation_id failed in api_conversation, value = %s, reason = %s", id_value.data(), e.what());
+                        sendError(conn, resp_bad_request);
+                        return;
+                    }
+
+                    MysqlPool::QueryResult ret = verify_conversation_member(conversation_id, user_id);
+                    if (ret == MysqlPool::QueryResult::NotFound) {
+                        sendError(conn, resp_bad_request);
+                        return;
+                    }
+                    if (ret != MysqlPool::QueryResult::Success) {
+                        if (sendError(conn, resp_server_error, res.end_pos)) continue;
+                        return;
+                    }
+
+                    // GET /conversations/:id/messages?before_time=...&before_id=...&limit=50
+                    uint64_t before_time_ms = 0, before_message_id = 0;
+                    int limit = 0;
+                    size_t start = 0;
+                    string_view query_view(query);
+                    while (start < query.size()) {
+                        size_t end = query.find('&', start);
+                        if (end == string::npos) {
+                            end = query.size();
+                        }
+                        size_t eq_pos = query.find('=', start);
+                        if (eq_pos == string::npos) {
+                            sendError(conn, resp_bad_request);
+                            return;
+                        }
+
+                        string_view key = query_view.substr(start, eq_pos - start);
+                        start = eq_pos + 1;
+                        string_view value = query_view.substr(start, end - start);
+                        start = end + 1;
+                        if (key == "before_time") {
+                            try {
+                                before_time_ms = stoull(string(value));
+                            } catch (const exception &e) {
+                                LOG_WARN("parse query key = %.*s failed in api_conversation, value = %s, reason = %s",
+                                         key.size(), key.data(),
+                                         id_value.data(), e.what());
+                                sendError(conn, resp_bad_request);
+                                return;
+                            }
+                        } else if (key == "before_id") {
+                            try {
+                                before_message_id = stoull(string(value));
+                            } catch (const exception &e) {
+                                LOG_WARN("parse query key = %.*s failed in api_conversation, value = %s, reason = %s",
+                                         key.size(), key.data(),
+                                         id_value.data(), e.what());
+                                sendError(conn, resp_bad_request);
+                                return;
+                            }
+                        } else if (key == "limit") {
+                            try {
+                                limit = stoull(string(value));
+                            } catch (const exception &e) {
+                                LOG_WARN("parse query key = %.*s failed in api_conversation, value = %s, reason = %s",
+                                         key.size(), key.data(),
+                                         id_value.data(), e.what());
+                                sendError(conn, resp_bad_request);
+                                return;
+                            }
+                        }
+                    }
+                    if (!limit) {
+                        sendError(conn, resp_bad_request);
+                        return;
+                    }
+                    ret = MysqlPool::QueryResult::ServerError;
+                    vector<vector<string>> rows;
+                    if (!before_time_ms && !before_message_id) {
+                        ret = get_recent_messages(conversation_id, nullopt, limit + 1, rows);
+                    } else if (before_time_ms && before_message_id) {
+                        chatdb::Cursor cursor{before_time_ms, before_message_id};
+                        ret = get_recent_messages(conversation_id, cursor, limit + 1, rows);
+                    } else {
+                        sendError(conn, resp_bad_request);
+                        return;
+                    }
+                    if (ret == MysqlPool::QueryResult::ServerError || ret == MysqlPool::QueryResult::SqlError) {
+                        if (sendError(conn, resp_server_error, res.end_pos)) continue;
+                        return;
+                    }
+                    bool has_more = rows.size() > limit;
+                    size_t size = rows.size() - static_cast<size_t>(has_more);
+
+                    string body;
+                    try {
+                        json out;
+                        json list = json::array();
+                        for (size_t i = 0; i < size; ++i) {
+                            json msg;
+                            msg["message_id"] = rows[i][0];
+                            msg["send_id"] = rows[i][1];
+                            msg["type"] = rows[i][2];
+                            msg["content"] = rows[i][3];
+                            msg["send_time_ms"] = rows[i][4];
+                            list.emplace_back(msg);
+                        }
+                        out["messages"] = move(list);
+                        out["has_more"] = has_more;
+                        body = out.dump();
+                    } catch (const exception &e) {
+                        LOG_WARN("json encode failed: %e", e.what());
+                        sendError(conn, resp_bad_request);
+                        return;
+                    }
+
+                    conn.outbuf += "HTTP/1.1 200 OK\r\n"
+                                   "Content-Type: application/json; charset=utf-8\r\n"
+                                   "Content-Length: ";
+                    conn.outbuf += std::to_string(body.size());
+                    conn.outbuf += "\r\n"
+                                   "Connection: keep-alive\r\n"
+                                   "\r\n";
+                    if (req.method == "GET") conn.outbuf += body;
                 } else if (ret == SessionResult::TokenExpired) {
                     conn.outbuf += resp_unauthorized;
                 } else if (ret == SessionResult::InvalidRequest) {

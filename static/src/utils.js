@@ -49,6 +49,12 @@ export function normalizeIncomingUserId(payload) {
   if (typeof payload.user_id === "string" && payload.user_id.trim()) {
     return payload.user_id.trim();
   }
+  if (typeof payload.send_id === "number" && Number.isFinite(payload.send_id)) {
+    return String(payload.send_id);
+  }
+  if (typeof payload.send_id === "string" && payload.send_id.trim()) {
+    return payload.send_id.trim();
+  }
   return "";
 }
 
@@ -65,7 +71,24 @@ export function normalizeIncomingMessageType(payload) {
 }
 
 export function normalizeIncomingTimestamp(payload) {
-  return payload.timestamp ?? payload.send_time_ms ?? payload.sendTimeMs ?? Date.now();
+  const value = payload.timestamp ?? payload.send_time_ms ?? payload.sendTimeMs ?? Date.now();
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const trimmedValue = value.trim();
+    if (/^\d+$/.test(trimmedValue)) {
+      const numericValue = Number(trimmedValue);
+      if (Number.isFinite(numericValue)) return numericValue;
+    }
+    return trimmedValue;
+  }
+  return Date.now();
+}
+
+function normalizeAuthUserId(data) {
+  const value = data?.user_id ?? data?.uesr_id ?? data?.userId ?? data?.id;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return "";
 }
 
 export function normalizeAuthConversations(data) {
@@ -91,16 +114,23 @@ export function normalizeAuthConversations(data) {
     });
 }
 
-export function normalizeIncomingMessage(payload, currentNickname) {
+export function normalizeIncomingMessage(payload, currentNickname, currentUserId = "") {
   const normalizedUsername =
     typeof payload.username === "string" && payload.username.trim()
       ? payload.username.trim()
       : "";
+  const normalizedUserId = normalizeIncomingUserId(payload);
+  const normalizedCurrentUserId = String(currentUserId || "").trim();
+  const isCurrentUser = Boolean(normalizedCurrentUserId && normalizedUserId === normalizedCurrentUserId);
   const normalizedNickname =
     normalizedUsername ||
     (typeof payload.nickname === "string" && payload.nickname.trim()
       ? payload.nickname.trim()
-      : "匿名用户");
+      : isCurrentUser && currentNickname
+        ? currentNickname
+        : normalizedUserId
+          ? `用户 ${normalizedUserId}`
+          : "匿名用户");
 
   return {
     id: payload.id || payload.message_id || payload.messageId || createId("remote"),
@@ -110,14 +140,14 @@ export function normalizeIncomingMessage(payload, currentNickname) {
         : typeof payload.client_message_id === "string"
           ? payload.client_message_id
           : "",
-    userId: normalizeIncomingUserId(payload),
+    userId: normalizedUserId,
     username: normalizedUsername,
     nickname: normalizedNickname,
     conversationId: normalizeIncomingConversationId(payload),
     messageType: normalizeIncomingMessageType(payload),
     text: getIncomingText(payload),
     timestamp: normalizeIncomingTimestamp(payload),
-    isSelf: Boolean(currentNickname && normalizedNickname === currentNickname),
+    isSelf: Boolean(isCurrentUser || (currentNickname && normalizedNickname === currentNickname)),
     status: payload.status || "sent",
     source: "server"
   };
@@ -305,8 +335,10 @@ function normalizeAuthNickname(data) {
 
 export function normalizeAuthPayload(data, fallbackNickname = "") {
   const nickname = normalizeAuthNickname(data) || String(fallbackNickname || "").trim();
+  const userId = normalizeAuthUserId(data);
   return {
     ...(data && typeof data === "object" ? data : {}),
+    userId,
     nickname,
     conversations: normalizeAuthConversations(data)
   };
@@ -356,22 +388,23 @@ export async function readAuthSuccess(response, fallbackNickname = "") {
 }
 
 export async function fetchCurrentUser() {
-  if (!hasSessionCookie()) {
+  try {
+    const res = await fetch("/me", {
+      method: "GET",
+      credentials: "include"
+    });
+    if (!res.ok) {
+      return { ok: false, status: res.status, data: null };
+    }
+    const data = await readJsonOrEmpty(res);
+    const session = normalizeAuthPayload(data);
+    if (!session.nickname) {
+      return { ok: false, status: res.status, data: null };
+    }
+    return { ok: true, status: res.status, data: await attachRoomsToSession(session) };
+  } catch (error) {
     return { ok: false, status: 0, data: null };
   }
-  const res = await fetch("/me", {
-    method: "GET",
-    credentials: "include"
-  });
-  if (!res.ok) {
-    return { ok: false, status: res.status, data: null };
-  }
-  const data = await readJsonOrEmpty(res);
-  const session = normalizeAuthPayload(data);
-  if (!session.nickname) {
-    return { ok: false, status: res.status, data: null };
-  }
-  return { ok: true, status: res.status, data: await attachRoomsToSession(session) };
 }
 
 export function buildAuthBody(nickname, password) {

@@ -65,6 +65,7 @@ MysqlPool::QueryResult get_conversation_name(uint64_t conversation_id, std::stri
 MysqlPool::QueryResult create_personal_chatroom(uint64_t &conversation_id, uint64_t user_id);
 MysqlPool::QueryResult create_personal_chatroom(uint64_t user_id);
 MysqlPool::QueryResult insert_public_chatroom(uint64_t user_id);
+MysqlPool::QueryResult verify_conversation_member(uint64_t conversation_id, uint64_t user_id);
 
 namespace chatdb {
 enum class MessageType {
@@ -82,6 +83,12 @@ struct Message {
     uint64_t send_time_ms;
     std::string client_message_id;
 };
-}
+
+struct Cursor {
+    uint64_t before_time_ms;
+    uint64_t before_message_id;
+};
+} // namespace chatdb
 
 MysqlPool::QueryResult insert_message(chatdb::Message &msg, uint64_t &message_id);
+MysqlPool::QueryResult get_recent_messages(uint64_t conversation_id, std::optional<chatdb::Cursor> cursor, int limit, std::vector<std::vector<std::string>> &rows);

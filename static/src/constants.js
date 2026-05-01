@@ -15,6 +15,7 @@ export const PERSONAL_ROOM_ID = "personal";
 export const PUBLIC_ROOM_ID = "public";
 export const PUBLIC_CONVERSATION_ID = 1;
 export const MESSAGE_CONTENT_MAX_LENGTH = 4000;
+export const MESSAGE_HISTORY_PAGE_SIZE = 50;
 export const MESSAGE_TYPE = Object.freeze({
   TEXT: 1,
   IMAGE: 2,

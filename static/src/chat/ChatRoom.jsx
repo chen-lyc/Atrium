@@ -25,7 +25,9 @@ export default function ChatRoom({
   isFading = false, fadeDuration = 600,
   transitionMode = "idle", transitionConfig = null,
   hideMessageContent = false,
-  onPasteImage, onRemoveAttachment
+  onPasteImage, onRemoveAttachment,
+  hasMoreHistory = false, historyInitialLoading = false, historyLoading = false, historyError = "",
+  onLoadMoreHistory
 }) {
   const hasComposerContent = Boolean(messageDraft.trim() || messageAttachment);
   const composerDisabled = readOnly ? false : !hasComposerContent || connectionState !== "connected";
@@ -246,6 +248,11 @@ export default function ChatRoom({
               </div>
             )}
             onContextMenu={handleMessageContextMenu}
+            hasMoreHistory={hasMoreHistory && !hideMessageContent}
+            historyInitialLoading={historyInitialLoading && !hideMessageContent}
+            historyLoading={historyLoading && !hideMessageContent}
+            historyError={hideMessageContent ? "" : historyError}
+            onLoadMoreHistory={onLoadMoreHistory}
           />
         </motion.div>
 

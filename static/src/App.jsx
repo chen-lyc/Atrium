@@ -7,7 +7,7 @@ import {
 } from "./constants.js";
 import {
   createId, deleteSessionCookie, fetchCurrentUser,
-  getConversationIdCookie, getCookieValue, hasSessionCookie,
+  getConversationIdCookie, getCookieValue,
   setCookieValue, prepareImageAttachment, buildImageMarkdown,
   normalizeAuthPayload
 } from "./utils.js";
@@ -253,6 +253,7 @@ export default function App() {
   const [appStage, setAppStage] = useState("loading");
   const [authPanelOpen, setAuthPanelOpen] = useState(false);
   const [authedNickname, setAuthedNickname] = useState("");
+  const [authedUserId, setAuthedUserId] = useState("");
   const [authHandoffPending, setAuthHandoffPending] = useState(false);
   const [wsEnabled, setWsEnabled] = useState(false);
   const [localSystemMessages, setLocalSystemMessages] = useState([]);
@@ -293,12 +294,15 @@ export default function App() {
   const shouldKeepSocketEnabled =
     Boolean(authedNickname) && (sceneTransition?.kind === "login" || sceneTransition?.kind === "logout" || (appStage === "chat" && sceneTransition?.kind !== "logout"));
 
-  const { messages, connectionState, sendChatMessage, deleteChatMessage } = useWebSocket({
-    url: CHAT_URL, nickname: authedNickname, conversationId: activeConversationId,
+  const {
+    messages, connectionState, historyState, historyHasMore, historyError,
+    loadOlderMessages, sendChatMessage, deleteChatMessage
+  } = useWebSocket({
+    url: CHAT_URL, nickname: authedNickname, userId: authedUserId, conversationId: activeConversationId,
     enabled: shouldKeepSocketEnabled && wsEnabled,
     onAuthFailed: () => {
       clearRitualTimers(); setSceneTransition(null); deleteSessionCookie();
-      setAuthedNickname(""); setWsEnabled(false); setAuthHandoffPending(false);
+      setAuthedNickname(""); setAuthedUserId(""); setWsEnabled(false); setAuthHandoffPending(false);
       setLocalSystemMessages([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID);
       setConversationRecords([]);
       setActiveRoomId(PERSONAL_ROOM_ID);
@@ -364,25 +368,22 @@ export default function App() {
     let cancelled = false;
     const bootstrap = async () => {
       try {
-        const shouldPrepareChatRuntime = hasSessionCookie();
-        const chatRuntimePromise = shouldPrepareChatRuntime
-          ? ensureChatRuntimeLoaded().catch((err) => { console.error("Failed to preload chat runtime:", err); return null; })
-          : Promise.resolve(null);
         const result = await fetchCurrentUser();
         if (cancelled) return;
         if (result.ok && typeof result.data?.nickname === "string" && result.data.nickname.trim()) {
-          const LoadedChatRoom = await chatRuntimePromise;
-          if (!LoadedChatRoom) throw new Error("Chat runtime not ready");
-          if (cancelled) return;
           const { session } = applyAuthSession(result.data);
           setAuthHandoffPending(false); setLocalSystemMessages([]);
           setAuthedNickname(session.nickname.trim());
+          setAuthedUserId(session.userId || "");
           setWsEnabled(true); setAuthPanelOpen(false); setAppStage("chat");
           if (window.location.pathname !== "/chat") window.history.replaceState({ path: "/chat" }, "", "/chat");
+          ensureChatRuntimeLoaded().catch((err) => {
+            console.error("Failed to load chat runtime:", err);
+          });
           return;
         }
         const authRoute = getAuthRoute();
-        setAuthedNickname(""); setWsEnabled(false); setAuthHandoffPending(false); setLocalSystemMessages([]);
+        setAuthedNickname(""); setAuthedUserId(""); setWsEnabled(false); setAuthHandoffPending(false); setLocalSystemMessages([]);
         setConversationRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
         setAppStage(authRoute.mode); setAuthPanelOpen(authRoute.isPanelOpen);
         if (authRoute.path === "/chat" && window.location.pathname !== "/login") {
@@ -391,7 +392,7 @@ export default function App() {
       } catch (error) {
         if (cancelled) return;
         const authRoute = getAuthRoute();
-        setAuthedNickname(""); setWsEnabled(false); setAuthHandoffPending(false); setLocalSystemMessages([]);
+        setAuthedNickname(""); setAuthedUserId(""); setWsEnabled(false); setAuthHandoffPending(false); setLocalSystemMessages([]);
         setConversationRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
         setAppStage(authRoute.mode); setAuthPanelOpen(authRoute.isPanelOpen);
         if (authRoute.path === "/chat" && window.location.pathname !== "/login") {
@@ -428,7 +429,7 @@ export default function App() {
   function beginLoginRitual(authData, config) {
     const { session } = applyAuthSession(authData);
     const resolved = session.nickname.trim();
-    setAuthedNickname(resolved); setLocalSystemMessages([]);
+    setAuthedNickname(resolved); setAuthedUserId(session.userId || ""); setLocalSystemMessages([]);
     clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
     setWsEnabled(true); setAuthPanelOpen(false);
     setSceneTransition({ kind: "login", config });
@@ -461,7 +462,7 @@ export default function App() {
     setSceneTransition({ kind: "logout", authMode: "login", config: logoutRitualConfig });
     if (window.location.pathname !== "/login") window.history.replaceState({ path: "/login" }, "", "/login");
     ritualTimerRef.current = window.setTimeout(() => {
-      setSceneTransition(null); setWsEnabled(false); setAuthedNickname(""); setLocalSystemMessages([]);
+      setSceneTransition(null); setWsEnabled(false); setAuthedNickname(""); setAuthedUserId(""); setLocalSystemMessages([]);
       setConversationRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
       clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
       setAppStage("login"); setAuthPanelOpen(true);
@@ -586,6 +587,10 @@ export default function App() {
           />
         ) : null}
 
+        {showChatStage && !showAuthStage && (!isChatRuntimeReady || !ChatRoomComponent) ? (
+          <LoadingStage key="chat-runtime-loading" />
+        ) : null}
+
         {showChatStage && isChatRuntimeReady && ChatRoomComponent ? (
           <motion.div
             key="chat-stage"
@@ -618,6 +623,11 @@ export default function App() {
                   : isLogoutTransition ? sceneTransition.config.chatExit : null
               }
               hideMessageContent={isLoginTransition} readOnly={isSceneTransitioning}
+              hasMoreHistory={historyHasMore}
+              historyInitialLoading={historyState === "loading"}
+              historyLoading={historyState === "loading-more"}
+              historyError={historyError}
+              onLoadMoreHistory={loadOlderMessages}
             />
           </motion.div>
         ) : null}

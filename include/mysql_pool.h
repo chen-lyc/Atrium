@@ -38,6 +38,7 @@ class MysqlPool {
         Success,
         NotFound,
         AlreadyExists,
+        SqlError,
         ServerError,
     };
     struct Blob {

@@ -28,10 +28,16 @@ export default function MessageList({
   itemAnimationMode = "standard",
   stickToBottom = true, className = "", innerClassName = "",
   viewportRef, renderEmpty,
-  onContextMenu
+  onContextMenu,
+  hasMoreHistory = false,
+  historyInitialLoading = false,
+  historyLoading = false,
+  historyError = "",
+  onLoadMoreHistory
 }) {
   const localViewportRef = useRef(null);
   const stickToBottomRef = useRef(true);
+  const loadingOlderRef = useRef(false);
   const [showNewMsgBtn, setShowNewMsgBtn] = useState(false);
   const decoratedMessages = decorateMessages(messages);
   const resolvedViewportRef = viewportRef || localViewportRef;
@@ -86,6 +92,26 @@ export default function MessageList({
     onScrolled(viewport.scrollTop > 4);
   }
 
+  async function handleLoadMoreHistory() {
+    const viewport = resolvedViewportRef.current;
+    if (!viewport || typeof onLoadMoreHistory !== "function" || historyLoading) return;
+    loadingOlderRef.current = true;
+    const previousScrollHeight = viewport.scrollHeight;
+    const previousScrollTop = viewport.scrollTop;
+    try {
+      await onLoadMoreHistory();
+    } finally {
+      window.requestAnimationFrame(() => {
+        const nextViewport = resolvedViewportRef.current;
+        if (nextViewport) {
+          const heightDelta = nextViewport.scrollHeight - previousScrollHeight;
+          nextViewport.scrollTop = previousScrollTop + Math.max(0, heightDelta);
+        }
+        loadingOlderRef.current = false;
+      });
+    }
+  }
+
   const initialProps = shouldAnimateEntry ? { opacity: 0 } : false;
   const transition = shouldAnimateEntry
     ? { delay: entryDelay, duration: entryDuration, ease: EASE }
@@ -93,6 +119,7 @@ export default function MessageList({
   const viewportClassName = `messages ${className}`.trim();
   const contentClassName = `messages-inner ${innerClassName}`.trim();
   const hasMessages = decoratedMessages.length > 0;
+  const emptyHistoryState = !hasMessages && (historyInitialLoading || historyError);
 
   return (
     <motion.div className={viewportClassName} ref={resolvedViewportRef} onScroll={handleScroll}>
@@ -116,12 +143,31 @@ export default function MessageList({
               exit={{ opacity: 0 }}
               transition={{ duration: isFading ? fadeDuration / 1000 : 0.16, ease: EASE }}
             >
-              {resolveEmpty(renderEmpty)}
+              {emptyHistoryState ? (
+                <div className={`history-empty-state ${historyError ? "is-error" : ""}`}>
+                  {historyError || "正在加载历史消息"}
+                </div>
+              ) : resolveEmpty(renderEmpty)}
             </motion.div>
           ) : null}
         </AnimatePresence>
 
         <ol className="message-list" role="list">
+          {hasMessages && (hasMoreHistory || historyLoading || historyError) ? (
+            <li className="history-load-row">
+              {hasMoreHistory || historyLoading ? (
+                <button
+                  type="button"
+                  className="history-load-btn"
+                  onClick={handleLoadMoreHistory}
+                  disabled={historyLoading || loadingOlderRef.current}
+                >
+                  {historyLoading ? "加载中" : "加载更早消息"}
+                </button>
+              ) : null}
+              {historyError ? <span className="history-load-error">{historyError}</span> : null}
+            </li>
+          ) : null}
           <AnimatePresence initial={false}>
             {decoratedMessages.map((message) => (
               <MessageItem

@@ -36,6 +36,7 @@ export default defineConfig({
       '/register': 'http://localhost:8080',
       '/me': 'http://localhost:8080',
       '/rooms': 'http://localhost:8080',
+      '/api': 'http://localhost:8080',
       '/chat': {
         target: 'ws://localhost:8080',
         ws: true
