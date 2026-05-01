@@ -63,4 +63,25 @@ void destroy_session(const std::string &token);
 MysqlPool::QueryResult get_conversation_ids(uint64_t user_id, std::unordered_set<uint64_t> &ids);
 MysqlPool::QueryResult get_conversation_name(uint64_t conversation_id, std::string &conversatrion_name);
 MysqlPool::QueryResult create_personal_chatroom(uint64_t &conversation_id, uint64_t user_id);
+MysqlPool::QueryResult create_personal_chatroom(uint64_t user_id);
 MysqlPool::QueryResult insert_public_chatroom(uint64_t user_id);
+
+namespace chatdb {
+enum class MessageType {
+    TEXT = 1,
+    IMAGE = 2,
+    FILE = 3,
+    SYSTEM = 4
+};
+
+struct Message {
+    uint64_t conversation_id;
+    uint64_t send_id;
+    int type;
+    std::string content;
+    uint64_t send_time_ms;
+    std::string client_message_id;
+};
+}
+
+MysqlPool::QueryResult insert_message(chatdb::Message &msg, uint64_t &message_id);

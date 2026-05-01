@@ -14,6 +14,13 @@ export const DEFAULT_CONVERSATION_ID = 1;
 export const PERSONAL_ROOM_ID = "personal";
 export const PUBLIC_ROOM_ID = "public";
 export const PUBLIC_CONVERSATION_ID = 1;
+export const MESSAGE_CONTENT_MAX_LENGTH = 4000;
+export const MESSAGE_TYPE = Object.freeze({
+  TEXT: 1,
+  IMAGE: 2,
+  FILE: 3,
+  SYSTEM: 4
+});
 export { EASE };
 export const TAP_TRANSITION = { duration: 0.12, ease: EASE };
 export const NORMAL_SEND_FLIGHT = { duration: 0.34, ease: [0.2, 0.82, 0.2, 1] };

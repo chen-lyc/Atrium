@@ -65,6 +65,8 @@ MysqlPool::QueryResult MysqlPool::executeQuery(const std::string &sql, MysqlPara
                 stmt->setString(i + 1, get<string>(params[i]));
             } else if (holds_alternative<uint64_t>(params[i])) {
                 stmt->setUInt64(i + 1, get<uint64_t>(params[i]));
+            } else if (holds_alternative<int>(params[i])) {
+                stmt->setInt(i + 1, get<int>(params[i]));
             } else if (holds_alternative<Blob>(params[i])) {
                 Blob &blob = get<Blob>(params[i]);
                 istringstream iss(blob.bytes);
@@ -120,6 +122,8 @@ MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, MysqlParams &p
                 stmt->setString(i + 1, get<string>(params[i]));
             } else if (holds_alternative<uint64_t>(params[i])) {
                 stmt->setUInt64(i + 1, get<uint64_t>(params[i]));
+            } else if (holds_alternative<int>(params[i])) {
+                stmt->setInt(i + 1, get<int>(params[i]));
             } else if (holds_alternative<Blob>(params[i])) {
                 Blob &blob = get<Blob>(params[i]);
                 blob_stream.emplace_back(make_unique<istringstream>(blob.bytes));

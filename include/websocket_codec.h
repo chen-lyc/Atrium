@@ -10,7 +10,9 @@ enum WebSocketOpcode {
     WS_CLOSE = 0x8,
     WS_PING = 0x9,
     WS_PONG = 0xA,
-    WS_PROTOCOLERROR = 1002
+
+    WS_PROTOCOLERROR = 1002,
+    WS_SERVERERROR = 1011
 };
 
 struct WebSocketRequest {

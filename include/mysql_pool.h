@@ -45,7 +45,7 @@ class MysqlPool {
         Blob(const char *data, size_t len) : bytes(data, len) {}
         Blob(std::string s) : bytes(std::move(s)) {}
     };
-    using MysqlParams = std::vector<std::variant<std::string, uint64_t, Blob>>;
+    using MysqlParams = std::vector<std::variant<std::string, uint64_t, int, Blob>>;
 
     static MysqlPool &getInstance() {
         static MysqlPool instance(2, 8);

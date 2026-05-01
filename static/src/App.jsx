@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   CHAT_URL, CHAT_RUNTIME_MODULES, DEFAULT_CONVERSATION_ID, EASE,
-  NORMAL_SEND_FLIGHT, PERSONAL_ROOM_ID, PUBLIC_ROOM_ID, PUBLIC_CONVERSATION_ID
+  MESSAGE_CONTENT_MAX_LENGTH, NORMAL_SEND_FLIGHT,
+  PERSONAL_ROOM_ID, PUBLIC_ROOM_ID, PUBLIC_CONVERSATION_ID
 } from "./constants.js";
 import {
   createId, deleteSessionCookie, fetchCurrentUser,
@@ -76,6 +77,10 @@ const REDUCED_LOGOUT_RITUAL = {
 };
 const SEND_FLIGHT_COOLDOWN_MS = 260;
 const MESSAGE_FLIGHT_TARGET_RETRY_FRAMES = 3;
+
+function getCharacterLength(value) {
+  return Array.from(value).length;
+}
 
 function normalizeConversationId(value) {
   const numericValue = Number(value);
@@ -526,6 +531,11 @@ export default function App() {
     const outgoingMessage = [trimmedMessage, imageMarkdown].filter(Boolean).join("\n\n");
     const flightText = trimmedMessage || (draftAttachment ? "图片" : "");
     if (!outgoingMessage) return;
+    if (getCharacterLength(outgoingMessage) > MESSAGE_CONTENT_MAX_LENGTH) {
+      setComposerError(`消息不能超过 ${MESSAGE_CONTENT_MAX_LENGTH} 个字符`);
+      return;
+    }
+    setComposerError("");
     const sentMessage = sendChatMessage(outgoingMessage);
     if (sentMessage) {
       const composerField = composerFieldRef.current;

@@ -320,8 +320,19 @@ MysqlPool::QueryResult create_personal_chatroom(uint64_t &conversation_id, uint6
     return MysqlPool::QueryResult::Success;
 }
 
+MysqlPool::QueryResult create_personal_chatroom(uint64_t user_id) {
+    uint64_t conversation_id = 0;
+    return create_personal_chatroom(conversation_id, user_id);
+}
+
 MysqlPool::QueryResult insert_public_chatroom(uint64_t user_id) {
     static string query = "INSERT INTO conversation_members (conversation_id, user_id) VALUES (1, ?)";
     MysqlPool::MysqlParams params{user_id};
     return MysqlPool::getInstance().executeQuery(query, params);
+}
+
+MysqlPool::QueryResult insert_message(chatdb::Message &msg, uint64_t &message_id) {
+    static string query = "INSERT INTO messages (conversation_id, send_id, type, content, send_time_ms, client_message_id) VALUES (?, ?, ?, ?, ?, ?)";
+    MysqlPool::MysqlParams params{msg.conversation_id, msg.send_id, msg.type, msg.content, msg.send_time_ms, msg.client_message_id};
+    return MysqlPool::getInstance().executeQuery(query, params, &message_id);
 }

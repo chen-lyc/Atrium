@@ -175,13 +175,21 @@ CREATE TABLE conversation_members (
   conversation_id BIGINT UNSIGNED NOT NULL,
   user_id BIGINT UNSIGNED NOT NULL,
 
-  PRIMARY KEY (conversation_id, user_id),
+  PRIMARY KEY (conversation_id, user_id)
+)engine = InnoDB default charset = utf8mb4;
 
-  FOREIGN KEY (conversation_id) REFERENCES conversations(id)
-  on delete cascade,
+CREATE TABLE messages (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  conversation_id BIGINT UNSIGNED NOT NULL,
+  send_id BIGINT UNSIGNED NOT NULL,
+  type TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  content VARCHAR(4000) NOT NULL,
+  send_time_ms BIGINT UNSIGNED NOT NULL,
+  client_message_id VARCHAR(64) NOT NULL,
 
-  FOREIGN KEY (user_id) REFERENCES users(id)
-  on delete cascade
+  PRIMARY KEY (id),
+  UNIQUE KEY (send_id, client_message_id),
+  INDEX index_conv_time (conversation_id, send_time_ms)
 )engine = InnoDB default charset = utf8mb4;
 ```
 

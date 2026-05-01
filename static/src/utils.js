@@ -58,6 +58,16 @@ export function normalizeIncomingConversationId(payload) {
   return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : 0;
 }
 
+export function normalizeIncomingMessageType(payload) {
+  const value = payload.type != null ? payload.type : payload.messageType;
+  const numericValue = Number(value);
+  return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : undefined;
+}
+
+export function normalizeIncomingTimestamp(payload) {
+  return payload.timestamp ?? payload.send_time_ms ?? payload.sendTimeMs ?? Date.now();
+}
+
 export function normalizeAuthConversations(data) {
   const rawConversations = Array.isArray(data?.conversations) ? data.conversations : [];
   const seen = new Set();
@@ -93,7 +103,7 @@ export function normalizeIncomingMessage(payload, currentNickname) {
       : "匿名用户");
 
   return {
-    id: payload.id || createId("remote"),
+    id: payload.id || payload.message_id || payload.messageId || createId("remote"),
     clientMessageId:
       typeof payload.clientMessageId === "string"
         ? payload.clientMessageId
@@ -104,8 +114,9 @@ export function normalizeIncomingMessage(payload, currentNickname) {
     username: normalizedUsername,
     nickname: normalizedNickname,
     conversationId: normalizeIncomingConversationId(payload),
+    messageType: normalizeIncomingMessageType(payload),
     text: getIncomingText(payload),
-    timestamp: payload.timestamp || Date.now(),
+    timestamp: normalizeIncomingTimestamp(payload),
     isSelf: Boolean(currentNickname && normalizedNickname === currentNickname),
     status: payload.status || "sent",
     source: "server"

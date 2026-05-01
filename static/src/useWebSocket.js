@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   DEFAULT_CONVERSATION_ID,
-  LOCAL_SEND_SETTLE_DELAY
+  LOCAL_SEND_SETTLE_DELAY,
+  MESSAGE_TYPE
 } from "./constants.js";
 import {
   createId,
@@ -222,6 +223,7 @@ export default function useWebSocket({ url, nickname, enabled, onAuthFailed, con
       id: createId("local"),
       clientMessageId: createId("client"),
       conversationId: activeConversationId,
+      messageType: MESSAGE_TYPE.TEXT,
       nickname,
       text: content,
       timestamp: Date.now(),
@@ -234,8 +236,10 @@ export default function useWebSocket({ url, nickname, enabled, onAuthFailed, con
 
     try {
       current.send(JSON.stringify({
-        text: content,
-        conversation_id: localMessage.conversationId
+        conversation_id: localMessage.conversationId,
+        type: localMessage.messageType,
+        content,
+        client_message_id: localMessage.clientMessageId
       }));
       schedulePendingResolve(localMessage.id);
       return localMessage;

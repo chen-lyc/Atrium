@@ -321,6 +321,20 @@ void Reactor::process(Connection &conn) {
                 if (ret == SessionResult::Success) {
                     unordered_set<uint64_t> conversation_ids;
                     MysqlPool::QueryResult get_ret = get_conversation_ids(user_id, conversation_ids);
+
+                    if (get_ret == MysqlPool::QueryResult::NotFound) {
+                        MysqlPool::QueryResult ret = insert_public_chatroom(user_id);
+                        if (ret != MysqlPool::QueryResult::Success) {
+                            if (sendError(conn, resp_server_error, res.end_pos)) continue;
+                            return;
+                        }
+                        ret = create_personal_chatroom(user_id);
+                        if (ret != MysqlPool::QueryResult::Success) {
+                            if (sendError(conn, resp_server_error, res.end_pos)) continue;
+                            return;
+                        }
+                    }
+
                     if (get_ret == MysqlPool::QueryResult::Success) {
                         json out;
                         out["user_id"] = user_id;
@@ -349,7 +363,7 @@ void Reactor::process(Connection &conn) {
                         conn.outbuf += to_string(body.size());
                         conn.outbuf += "\r\n\r\n";
                         if (req.method == "GET") conn.outbuf += body;
-                    } else if (get_ret == MysqlPool::QueryResult::NotFound || get_ret == MysqlPool::QueryResult::ServerError) {
+                    } else if (get_ret == MysqlPool::QueryResult::ServerError) {
                         if (sendError(conn, resp_server_error, res.end_pos)) continue;
                         return;
                     }
@@ -633,25 +647,49 @@ void Reactor::process(Connection &conn) {
                     try {
                         json in = json::parse(payload_data);
                         conversation_id = in["conversation_id"];
+
                         if (!conn.conversation_ids.contains(conversation_id)) {
+                            sendError(conn, WS_PROTOCOLERROR);
                             return false;
                         }
                         reactor_to_fds = ConnRoute::getInstance().query(conversation_id);
                         if (reactor_to_fds.empty()) {
+                            sendError(conn, WS_PROTOCOLERROR);
+                            return false;
+                        }
+
+                        chatdb::Message msg{
+                            conversation_id, conn.user_id,
+                            in["type"], in["content"],
+                            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()),
+                            in["client_message_id"]};
+                        if (msg.type >= static_cast<int>(chatdb::MessageType::SYSTEM) || msg.type < static_cast<int>(chatdb::MessageType::TEXT)) {
+                            sendError(conn, WS_PROTOCOLERROR);
+                            return false;
+                        }
+                        uint64_t message_id = 0;
+                        MysqlPool::QueryResult ret = insert_message(msg, message_id);
+                        if (ret == MysqlPool::QueryResult::AlreadyExists) {
+                            return true;
+                        }
+                        if (ret != MysqlPool::QueryResult::Success) {
+                            sendError(conn, WS_SERVERERROR);
                             return false;
                         }
 
                         json out;
+                        out["conversation_id"] = conversation_id;
                         out["user_id"] = conn.user_id;
                         out["username"] = conn.username;
-                        out["conversation_id"] = conversation_id;
-                        out["text"] = in["text"];
-                        out["timestamp"] = chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count();
+                        out["type"] = msg.type;
+                        out["content"] = msg.content;
+                        out["send_time_ms"] = msg.send_time_ms;
 
                         payload_data = out.dump();
                         LOG_DEBUG("fd = %d websocket payload: %s", conn.fd, payload_data.c_str());
                     } catch (const json::exception &e) {
                         LOG_WARN("bad json: %s", e.what());
+                        sendError(conn, WS_PROTOCOLERROR);
                         return false;
                     }
                 }
@@ -702,7 +740,6 @@ void Reactor::process(Connection &conn) {
             } else if (ret == WS_TEXT) {
                 should_broadcast = true;
                 if (buildResponse(WS_TEXT, move(req.payload_data), should_broadcast) == 0) {
-                    sendError(conn, WS_PROTOCOLERROR);
                     return;
                 }
             } else if (ret == WS_CLOSE) {
