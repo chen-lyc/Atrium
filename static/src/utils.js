@@ -301,9 +301,47 @@ export function normalizeAuthPayload(data, fallbackNickname = "") {
   };
 }
 
+async function readJsonOrEmpty(response) {
+  try {
+    return await response.json();
+  } catch (error) {
+    return {};
+  }
+}
+
+async function fetchAuthRooms() {
+  try {
+    const res = await fetch("/rooms", {
+      method: "GET",
+      credentials: "include"
+    });
+    if (!res.ok) {
+      return { ok: false, status: res.status, data: null };
+    }
+    return { ok: true, status: res.status, data: await readJsonOrEmpty(res) };
+  } catch (error) {
+    return { ok: false, status: 0, data: null };
+  }
+}
+
+async function attachRoomsToSession(session) {
+  const roomResult = await fetchAuthRooms();
+  if (!roomResult.ok) return session;
+
+  const roomsSession = normalizeAuthPayload(roomResult.data, session.nickname);
+  return {
+    ...session,
+    ...(roomResult.data && typeof roomResult.data === "object" ? roomResult.data : {}),
+    nickname: roomsSession.nickname || session.nickname,
+    conversations: roomsSession.conversations.length
+      ? roomsSession.conversations
+      : session.conversations
+  };
+}
+
 export async function readAuthSuccess(response, fallbackNickname = "") {
-  const data = await response.json().catch(() => ({}));
-  return normalizeAuthPayload(data, fallbackNickname);
+  const data = await readJsonOrEmpty(response);
+  return attachRoomsToSession(normalizeAuthPayload(data, fallbackNickname));
 }
 
 export async function fetchCurrentUser() {
@@ -317,12 +355,12 @@ export async function fetchCurrentUser() {
   if (!res.ok) {
     return { ok: false, status: res.status, data: null };
   }
-  const data = await res.json().catch(() => ({}));
+  const data = await readJsonOrEmpty(res);
   const session = normalizeAuthPayload(data);
   if (!session.nickname) {
     return { ok: false, status: res.status, data: null };
   }
-  return { ok: true, status: res.status, data: session };
+  return { ok: true, status: res.status, data: await attachRoomsToSession(session) };
 }
 
 export function buildAuthBody(nickname, password) {

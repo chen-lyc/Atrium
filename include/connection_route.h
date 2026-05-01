@@ -12,8 +12,8 @@ class ConnRoute {
         return instance;
     }
     std::unordered_map<int, std::vector<int>> query(uint64_t converstaion_id);
-    void add(int converstaion_id, int reactor_id, int fd);
-    void remove(int converstaion_id, int reactor_id, int fd);
+    void add(uint64_t converstaion_id, int reactor_id, int fd);
+    void remove(uint64_t converstaion_id, int reactor_id, int fd);
 
   private:
     struct ConnRef {

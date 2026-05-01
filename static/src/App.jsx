@@ -88,6 +88,13 @@ function getPublicConversationId() {
   if (cookieValue) return cookieValue;
   return normalizeConversationId(PUBLIC_CONVERSATION_ID);
 }
+function getPublicConversationCandidates() {
+  return [
+    normalizeConversationId(window.__ATRIUM_PUBLIC_CONVERSATION_ID),
+    normalizeConversationId(getCookieValue("public_conversation_id")),
+    normalizeConversationId(PUBLIC_CONVERSATION_ID)
+  ].filter(Boolean);
+}
 function persistPersonalConversationId(conversationId) {
   const normalizedId = normalizeConversationId(conversationId);
   if (normalizedId) setCookieValue("personal_conversation_id", normalizedId);
@@ -171,9 +178,10 @@ function createRoomList(conversations, personalConversationId) {
     : [];
   if (!records.length) return createFallbackRoomList(personalConversationId);
 
-  const publicConversationId = getPublicConversationId();
   const publicRecord =
-    records.find((conversation) => conversation.id === publicConversationId) ||
+    getPublicConversationCandidates()
+      .map((id) => records.find((conversation) => conversation.id === id))
+      .find(Boolean) ||
     records.find((conversation) => conversation.name.includes("大厅"));
   const personalRecord =
     records.find((conversation) => conversation.id !== publicRecord?.id && conversation.name.includes("个人")) ||

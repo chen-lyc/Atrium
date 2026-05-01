@@ -37,7 +37,6 @@ class Reactor {
     std::string_view getMimeType(const std::string &file_path);
     bool sendError(Connection &conn, std::string_view resp, uint64_t end_pos = 0);
     void sendError(Connection &conn, uint16_t close_code);
-    std::optional<std::string> buildConversationListJson(Connection &conn);
 
   private:
     int m_index;

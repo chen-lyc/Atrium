@@ -16,12 +16,12 @@ std::unordered_map<int, std::vector<int>> ConnRoute::query(uint64_t converstaion
     return reactor_to_fds;
 }
 
-void ConnRoute::add(int converstaion_id, int reactor_id, int fd) {
+void ConnRoute::add(uint64_t converstaion_id, int reactor_id, int fd) {
     lock_guard<mutex> lock(m_mutex);
     m_conv_to_conn[converstaion_id].emplace_back(reactor_id, fd);
 }
 
-void ConnRoute::remove(int converstaion_id, int reactor_id, int fd) {
+void ConnRoute::remove(uint64_t converstaion_id, int reactor_id, int fd) {
     lock_guard<mutex> lock(m_mutex);
     vector<ConnRef> &refs = m_conv_to_conn[converstaion_id];
     auto it = find_if(refs.begin(), refs.end(), [&](const ConnRef &ref) {

@@ -29,7 +29,7 @@ export default function LoginPage({ onSwitchRegister, onSuccess, disabled }) {
       const failure = await resolveAuthFailure(res, "login");
       setFieldErrors({ nickname: failure.field === "nickname" ? failure.message : "", password: failure.field === "password" ? failure.message : "" });
       setNetworkError(failure.networkError);
-    } catch (error) { setNetworkError("网络连接失败，请检查网络"); }
+    } catch (error) { setNetworkError(error instanceof Error && error.message ? error.message : "网络连接失败，请检查网络"); }
     finally { setIsSubmitting(false); }
   }
 

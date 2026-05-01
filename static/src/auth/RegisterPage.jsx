@@ -35,7 +35,7 @@ export default function RegisterPage({ onSwitchLogin, onSuccess, disabled }) {
       const failure = await resolveAuthFailure(res, "register");
       setFieldErrors({ nickname: failure.field === "nickname" ? failure.message : "", password: failure.field === "password" ? failure.message : "", confirm: "" });
       setNetworkError(failure.networkError);
-    } catch (error) { setNetworkError("网络连接失败，请检查网络"); }
+    } catch (error) { setNetworkError(error instanceof Error && error.message ? error.message : "网络连接失败，请检查网络"); }
     finally { setIsSubmitting(false); }
   }
 

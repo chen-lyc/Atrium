@@ -83,13 +83,15 @@ inline constexpr std::string_view resp_unsupported_media_type =
 inline constexpr std::string_view resp_header_register_success =
     "HTTP/1.1 200 OK\r\n"
     "Content-Type: text/plain; charset=utf-8\r\n"
-    "Content-Length: 0\r\n";
+    "Content-Length: 0\r\n"
+    "\r\n";
 
 // 登入
 inline constexpr std::string_view resp_header_login_success =
     "HTTP/1.1 200 OK\r\n"
     "Content-Type: text/plain; charset=utf-8\r\n"
-    "Content-Length: 0\r\n";
+    "Content-Length: 0\r\n"
+    "\r\n";
 
 // 默认响应
 inline constexpr std::string_view default_response =

@@ -260,6 +260,9 @@ void Reactor::process(Connection &conn) {
                         if (sendError(conn, resp_server_error, res.end_pos)) continue;
                         return;
                     }
+                    for (auto it = conn.conversation_ids.begin(); it != conn.conversation_ids.end(); ++it) {
+                        ConnRoute::getInstance().add(*it, m_index, conn.fd);
+                    }
 
                     conn.protocol = PROTO_WEBSOCKET;
                     m_timer_heap.update(conn.fd, 60000);
@@ -286,19 +289,63 @@ void Reactor::process(Connection &conn) {
                 conn.outbuf += "\r\n\r\n";
                 if (req.method == "GET") conn.outbuf += req.body;
             } else if (req.target == "/me" && (req.method == "GET" || req.method == "HEAD")) {
-                SessionResult ret = get_session(req, conn.user_id, conn.username);
+                uint64_t user_id = 0;
+                string username;
+                SessionResult ret = get_session(req, user_id, username);
                 if (ret == SessionResult::Success) {
-                    int get_ret = get_conversation_ids(conn.user_id, conn.conversation_ids);
+                    json out;
+                    out["uesr_id"] = user_id;
+                    out["username"] = username;
+
+                    string body = out.dump();
+                    conn.outbuf += "HTTP/1.1 200 OK\r\n";
+                    conn.outbuf += "Content-Type: application/json\r\n";
+                    conn.outbuf += "Content-Length: ";
+                    conn.outbuf += to_string(body.size());
+                    conn.outbuf += "\r\n\r\n";
+                    if (req.method == "GET") conn.outbuf += body;
+                } else if (ret == SessionResult::TokenExpired) {
+                    conn.outbuf += resp_unauthorized;
+                } else if (ret == SessionResult::InvalidRequest) {
+                    sendError(conn, resp_bad_request);
+                    return;
+                } else if (ret == SessionResult::NetWorkError) {
+                    conn.outbuf += resp_server_error;
+                } else if (ret == SessionResult::ServerError) {
+                    conn.outbuf += resp_server_error;
+                }
+            } else if (req.target == "/rooms" && (req.method == "GET" || req.method == "HEAD")) {
+                uint64_t user_id = 0;
+                string username;
+                SessionResult ret = get_session(req, user_id, username);
+                if (ret == SessionResult::Success) {
+                    unordered_set<uint64_t> conversation_ids;
+                    MysqlPool::QueryResult get_ret = get_conversation_ids(user_id, conversation_ids);
                     if (get_ret == MysqlPool::QueryResult::Success) {
-                        optional<string> build_ret = buildConversationListJson(conn);
-                        if (!build_ret.has_value()) {
+                        json out;
+                        out["user_id"] = user_id;
+                        out["username"] = username;
+                        json list = json::array();
+                        MysqlPool::QueryResult get_name_ret = MysqlPool::QueryResult::ServerError;
+                        for (auto it = conversation_ids.begin(); it != conversation_ids.end(); ++it) {
+                            json c;
+                            string name;
+                            get_name_ret = get_conversation_name(*it, name);
+                            if (get_name_ret == MysqlPool::QueryResult::ServerError) break;
+                            c["id"] = *it;
+                            c["name"] = name;
+                            list.emplace_back(c);
+                        }
+                        if (get_name_ret != MysqlPool::QueryResult::Success) {
                             if (sendError(conn, resp_server_error, res.end_pos)) continue;
                             return;
                         }
-                        string &body = build_ret.value();
-                        conn.outbuf += "HTTP/1.1 200 OK\r\n";
-                        conn.outbuf += "Content-Type: application/json\r\n";
-                        conn.outbuf += "Content-Length: ";
+                        out["conversations"] = list;
+                        string body = out.dump();
+
+                        conn.outbuf += "HTTP/1.1 200 OK\r\n"
+                                       "Content-Type: application/json; charset=utf-8\r\n"
+                                       "Content-Length: ";
                         conn.outbuf += to_string(body.size());
                         conn.outbuf += "\r\n\r\n";
                         if (req.method == "GET") conn.outbuf += body;
@@ -444,41 +491,25 @@ void Reactor::process(Connection &conn) {
                         string token;
                         SessionResult session_ret = create_session(ret.user_id, username, token);
                         if (session_ret == SessionResult::Success) {
-                            conn.user_id = move(ret.user_id);
-                            conn.username = move(username);
-
-                            MysqlPool::QueryResult ret = insert_public_chatroom(conn.user_id);
+                            uint64_t user_id = ret.user_id;
+                            MysqlPool::QueryResult ret = insert_public_chatroom(user_id);
                             if (ret != MysqlPool::QueryResult::Success) {
                                 if (sendError(conn, resp_server_error, res.end_pos)) continue;
                                 return;
                             }
                             uint64_t personal_room_id = 0;
-                            ret = create_personal_chatroom(personal_room_id, conn.user_id);
+                            ret = create_personal_chatroom(personal_room_id, user_id);
                             if (ret != MysqlPool::QueryResult::Success || personal_room_id == 0) {
                                 if (sendError(conn, resp_server_error, res.end_pos)) continue;
                                 return;
                             }
-                            conn.conversation_ids.emplace(1);
-                            conn.conversation_ids.emplace(personal_room_id);
-                            ConnRoute::getInstance().add(1, m_index, conn.fd);
-                            ConnRoute::getInstance().add(personal_room_id, m_index, conn.fd);
-
-                            optional<string> build_ret = buildConversationListJson(conn);
-                            if (!build_ret.has_value()) {
-                                if (sendError(conn, resp_server_error, res.end_pos)) continue;
-                                return;
-                            }
-                            string &body = build_ret.value();
 
                             conn.outbuf += "HTTP/1.1 200 OK\r\n"
                                            "Content-Type: application/json; charset=utf-8\r\n"
-                                           "Content-Length: ";
-                            conn.outbuf += to_string(body.size());
-                            conn.outbuf += "\r\n";
-                            conn.outbuf += "Set-Cookie: session_id=";
+                                           "Content-Length: 0\r\n"
+                                           "Set-Cookie: session_id=";
                             conn.outbuf += token;
                             conn.outbuf += "\r\n\r\n";
-                            conn.outbuf += body;
                         } else if (session_ret == SessionResult::ServerError) {
                             conn.outbuf += resp_server_error;
                         }
@@ -494,30 +525,12 @@ void Reactor::process(Connection &conn) {
                         string token;
                         SessionResult session_ret = create_session(ret.user_id, username, token);
                         if (session_ret == SessionResult::Success) {
-                            MysqlPool::QueryResult get_ret = get_conversation_ids(ret.user_id, conn.conversation_ids);
-                            if (get_ret == MysqlPool::QueryResult::Success) {
-                                conn.user_id = move(ret.user_id);
-                                conn.username = move(username);
-                                optional<string> build_ret = buildConversationListJson(conn);
-                                if (!build_ret.has_value()) {
-                                    if (sendError(conn, resp_server_error, res.end_pos)) continue;
-                                    return;
-                                }
-                                string &body = build_ret.value();
-
-                                conn.outbuf += "HTTP/1.1 200 OK\r\n"
-                                               "Content-Type: application/json; charset=utf-8\r\n"
-                                               "Content-Length: ";
-                                conn.outbuf += to_string(body.size());
-                                conn.outbuf += "\r\n";
-                                conn.outbuf += "Set-Cookie: session_id=";
-                                conn.outbuf += token;
-                                conn.outbuf += "\r\n\r\n";
-                                conn.outbuf += body;
-                            } else if (get_ret == MysqlPool::QueryResult::NotFound || get_ret == MysqlPool::QueryResult::ServerError) {
-                                if (sendError(conn, resp_server_error, res.end_pos)) continue;
-                                return;
-                            }
+                            conn.outbuf += "HTTP/1.1 200 OK\r\n"
+                                           "Content-Type: application/json; charset=utf-8\r\n"
+                                           "Content-Length: 0\r\n"
+                                           "Set-Cookie: session_id=";
+                            conn.outbuf += token;
+                            conn.outbuf += "\r\n\r\n";
                         } else if (session_ret == SessionResult::ServerError) {
                             conn.outbuf += resp_server_error;
                         }
@@ -724,28 +737,6 @@ void Reactor::process(Connection &conn) {
             return;
         }
     }
-}
-
-std::optional<std::string> Reactor::buildConversationListJson(Connection &conn) {
-    json out;
-    out["user_id"] = conn.user_id;
-    out["username"] = conn.username;
-    json list = json::array();
-    MysqlPool::QueryResult get_name_ret = MysqlPool::QueryResult::ServerError;
-    for (auto it = conn.conversation_ids.begin(); it != conn.conversation_ids.end(); ++it) {
-        json c;
-        string name;
-        get_name_ret = get_conversation_name(*it, name);
-        if (get_name_ret == MysqlPool::QueryResult::ServerError) break;
-        c["id"] = *it;
-        c["name"] = name;
-        list.emplace_back(c);
-    }
-    if (get_name_ret != MysqlPool::QueryResult::Success) {
-        return nullopt;
-    }
-    out["conversations"] = list;
-    return out.dump();
 }
 
 string_view Reactor::getMimeType(const string &file_path) {
