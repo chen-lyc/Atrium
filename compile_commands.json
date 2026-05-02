@@ -1,0 +1,230 @@
+[
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-std=c++20",
+      "-Wall",
+      "-Wno-sign-compare",
+      "-I",
+      "include",
+      "-I",
+      "third_party",
+      "-c",
+      "-o",
+      "build/server.o",
+      "src/server.cpp"
+    ],
+    "directory": "/home/lyc/桌面/WebServer",
+    "file": "/home/lyc/桌面/WebServer/src/server.cpp",
+    "output": "/home/lyc/桌面/WebServer/build/server.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-std=c++20",
+      "-Wall",
+      "-Wno-sign-compare",
+      "-I",
+      "include",
+      "-I",
+      "third_party",
+      "-c",
+      "-o",
+      "build/message.pb.o",
+      "src/message.pb.cc"
+    ],
+    "directory": "/home/lyc/桌面/WebServer",
+    "file": "/home/lyc/桌面/WebServer/src/message.pb.cc",
+    "output": "/home/lyc/桌面/WebServer/build/message.pb.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-std=c++20",
+      "-Wall",
+      "-Wno-sign-compare",
+      "-I",
+      "include",
+      "-I",
+      "third_party",
+      "-c",
+      "-o",
+      "build/server_utils.o",
+      "src/server_utils.cpp"
+    ],
+    "directory": "/home/lyc/桌面/WebServer",
+    "file": "/home/lyc/桌面/WebServer/src/server_utils.cpp",
+    "output": "/home/lyc/桌面/WebServer/build/server_utils.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-std=c++20",
+      "-Wall",
+      "-Wno-sign-compare",
+      "-I",
+      "include",
+      "-I",
+      "third_party",
+      "-c",
+      "-o",
+      "build/timerheap.o",
+      "src/timerheap.cpp"
+    ],
+    "directory": "/home/lyc/桌面/WebServer",
+    "file": "/home/lyc/桌面/WebServer/src/timerheap.cpp",
+    "output": "/home/lyc/桌面/WebServer/build/timerheap.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-std=c++20",
+      "-Wall",
+      "-Wno-sign-compare",
+      "-I",
+      "include",
+      "-I",
+      "third_party",
+      "-c",
+      "-o",
+      "build/http_codec.o",
+      "src/http_codec.cpp"
+    ],
+    "directory": "/home/lyc/桌面/WebServer",
+    "file": "/home/lyc/桌面/WebServer/src/http_codec.cpp",
+    "output": "/home/lyc/桌面/WebServer/build/http_codec.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-std=c++20",
+      "-Wall",
+      "-Wno-sign-compare",
+      "-I",
+      "include",
+      "-I",
+      "third_party",
+      "-c",
+      "-o",
+      "build/logger.o",
+      "src/logger.cpp"
+    ],
+    "directory": "/home/lyc/桌面/WebServer",
+    "file": "/home/lyc/桌面/WebServer/src/logger.cpp",
+    "output": "/home/lyc/桌面/WebServer/build/logger.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-std=c++20",
+      "-Wall",
+      "-Wno-sign-compare",
+      "-I",
+      "include",
+      "-I",
+      "third_party",
+      "-c",
+      "-o",
+      "build/mysql_pool.o",
+      "src/mysql_pool.cpp"
+    ],
+    "directory": "/home/lyc/桌面/WebServer",
+    "file": "/home/lyc/桌面/WebServer/src/mysql_pool.cpp",
+    "output": "/home/lyc/桌面/WebServer/build/mysql_pool.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-std=c++20",
+      "-Wall",
+      "-Wno-sign-compare",
+      "-I",
+      "include",
+      "-I",
+      "third_party",
+      "-c",
+      "-o",
+      "build/redis_pool.o",
+      "src/redis_pool.cpp"
+    ],
+    "directory": "/home/lyc/桌面/WebServer",
+    "file": "/home/lyc/桌面/WebServer/src/redis_pool.cpp",
+    "output": "/home/lyc/桌面/WebServer/build/redis_pool.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-std=c++20",
+      "-Wall",
+      "-Wno-sign-compare",
+      "-I",
+      "include",
+      "-I",
+      "third_party",
+      "-c",
+      "-o",
+      "build/protobuf_codec.o",
+      "src/protobuf_codec.cpp"
+    ],
+    "directory": "/home/lyc/桌面/WebServer",
+    "file": "/home/lyc/桌面/WebServer/src/protobuf_codec.cpp",
+    "output": "/home/lyc/桌面/WebServer/build/protobuf_codec.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-std=c++20",
+      "-Wall",
+      "-Wno-sign-compare",
+      "-I",
+      "include",
+      "-I",
+      "third_party",
+      "-c",
+      "-o",
+      "build/utils.o",
+      "src/utils.cpp"
+    ],
+    "directory": "/home/lyc/桌面/WebServer",
+    "file": "/home/lyc/桌面/WebServer/src/utils.cpp",
+    "output": "/home/lyc/桌面/WebServer/build/utils.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-std=c++20",
+      "-Wall",
+      "-Wno-sign-compare",
+      "-I",
+      "include",
+      "-I",
+      "third_party",
+      "-c",
+      "-o",
+      "build/connection_route.o",
+      "src/connection_route.cpp"
+    ],
+    "directory": "/home/lyc/桌面/WebServer",
+    "file": "/home/lyc/桌面/WebServer/src/connection_route.cpp",
+    "output": "/home/lyc/桌面/WebServer/build/connection_route.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-std=c++20",
+      "-Wall",
+      "-Wno-sign-compare",
+      "-I",
+      "include",
+      "-I",
+      "third_party",
+      "-c",
+      "-o",
+      "build/sub_reactor.o",
+      "src/sub_reactor.cpp"
+    ],
+    "directory": "/home/lyc/桌面/WebServer",
+    "file": "/home/lyc/桌面/WebServer/src/sub_reactor.cpp",
+    "output": "/home/lyc/桌面/WebServer/build/sub_reactor.o"
+  }
+]

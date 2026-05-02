@@ -354,7 +354,7 @@ async function readJsonOrEmpty(response) {
 
 async function fetchAuthRooms() {
   try {
-    const res = await fetch("/rooms", {
+    const res = await fetch("/api/rooms", {
       method: "GET",
       credentials: "include"
     });
@@ -389,7 +389,7 @@ export async function readAuthSuccess(response, fallbackNickname = "") {
 
 export async function fetchCurrentUser() {
   try {
-    const res = await fetch("/me", {
+    const res = await fetch("/api/me", {
       method: "GET",
       credentials: "include"
     });

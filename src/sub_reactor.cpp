@@ -7,7 +7,6 @@
 #include "message.pb.h"
 #include "mysql_pool.h"
 #include "protobuf_codec.h"
-#include "redis_pool.h"
 #include "utils.h"
 #include "websocket_codec.h"
 #include <fcntl.h>
@@ -64,13 +63,13 @@ void Reactor::addConnection(int fd, ProtocolType protocol) {
 void Reactor::enqueueBroadcast(BroadcastTask task) {
     {
         lock_guard<mutex> lock(m_broadcast_mutex);
-        m_broadcast_queue.emplace(move(task));
+        m_broadcast_queue.emplace(std::move(task));
     }
     broadcast_notify();
 }
 
 void Reactor::loop() {
-    size_t maxevents = 1024;
+    const size_t maxevents = 1024;
     epoll_event events[maxevents];
     while (m_running) {
         int number = epoll_wait(m_epollfd, events, maxevents, m_timer_heap.getNextTimeout());
@@ -116,7 +115,7 @@ void Reactor::loop() {
                     unique_ptr<Connection, ConnDeleter> conn_ptr = m_conn_pool.create();
                     conn_ptr->fd = conn_fd;
                     conn_ptr->protocol = protocol;
-                    m_conns.emplace(conn_fd, move(conn_ptr));
+                    m_conns.emplace(conn_fd, std::move(conn_ptr));
                     addfd(conn_fd);
                     m_timer_heap.add(conn_fd, 6000);
                 }
@@ -137,9 +136,9 @@ void Reactor::loop() {
                     for (int fd : fds) {
                         if (!m_conns.contains(fd) || m_conns[fd]->protocol != PROTO_WEBSOCKET || !m_conns[fd]->conversation_ids.contains(conversation_id)) continue;
                         LOG_DEBUG("reactor[%d] broadcast frame size = %zu to fd = %d",
-                                  m_index,
-                                  frame.size(),
-                                  fd);
+                            m_index,
+                            frame.size(),
+                            fd);
                         m_conns[fd]->outbuf += frame;
                         trySend(*m_conns[fd]);
                     }
@@ -204,9 +203,9 @@ void Reactor::process(Connection &conn) {
         unordered_map<int, vector<int>> reactor_to_fds;
 
         LOG_DEBUG("fd = %d send data : %.*s",
-                  conn.fd,
-                  static_cast<int>(conn.inbuf.size()),
-                  conn.inbuf.c_str());
+            conn.fd,
+            static_cast<int>(conn.inbuf.size()),
+            conn.inbuf.c_str());
 
         if (conn.protocol == PROTO_HTTP) {
             HttpRequest req;
@@ -219,9 +218,9 @@ void Reactor::process(Connection &conn) {
             }
 
             LOG_DEBUG("request is HTTP and method is %s, target is %s, version is %s",
-                      req.method.c_str(),
-                      req.target.c_str(),
-                      req.version.c_str());
+                req.method.c_str(),
+                req.target.c_str(),
+                req.version.c_str());
 
             if (ret == PARSE_ERROR) {
                 LOG_DEBUG("HTTP parse failed, fd = %d", conn.fd);
@@ -235,7 +234,7 @@ void Reactor::process(Connection &conn) {
 
                 string websocket_accept;
                 websocket_accept.reserve(64);
-                websocket_accept = move(req.sec_websocket_key);
+                websocket_accept = std::move(req.sec_websocket_key);
                 websocket_accept += websocket_magic;
 
                 unsigned char hash[SHA_DIGEST_LENGTH];
@@ -268,11 +267,12 @@ void Reactor::process(Connection &conn) {
                     conn.protocol = PROTO_WEBSOCKET;
                     m_timer_heap.update(conn.fd, 60000);
 
-                    conn.outbuf += "HTTP/1.1 101 Switching Protocols\r\n"
-                                   "Upgrade: websocket\r\n"
-                                   "Connection: Upgrade\r\n"
-                                   "Sec-WebSocket-Accept: ";
-                    conn.outbuf += move(accept);
+                    conn.outbuf +=
+                        "HTTP/1.1 101 Switching Protocols\r\n"
+                        "Upgrade: websocket\r\n"
+                        "Connection: Upgrade\r\n"
+                        "Sec-WebSocket-Accept: ";
+                    conn.outbuf += std::move(accept);
                     conn.outbuf += "\r\n\r\n";
                 } else if (ret == SessionResult::TokenExpired) {
                     conn.outbuf += resp_unauthorized;
@@ -289,246 +289,49 @@ void Reactor::process(Connection &conn) {
                 conn.outbuf += to_string(req.body.size());
                 conn.outbuf += "\r\n\r\n";
                 if (req.method == "GET") conn.outbuf += req.body;
-            } else if (req.target == "/me" && (req.method == "GET" || req.method == "HEAD")) {
-                uint64_t user_id = 0;
-                string username;
-                SessionResult ret = get_session(req, user_id, username);
-                if (ret == SessionResult::Success) {
-                    json out;
-                    out["uesr_id"] = user_id;
-                    out["username"] = username;
-
-                    string body = out.dump();
-                    conn.outbuf += "HTTP/1.1 200 OK\r\n";
-                    conn.outbuf += "Content-Type: application/json\r\n";
-                    conn.outbuf += "Content-Length: ";
-                    conn.outbuf += to_string(body.size());
-                    conn.outbuf += "\r\n\r\n";
-                    if (req.method == "GET") conn.outbuf += body;
-                } else if (ret == SessionResult::TokenExpired) {
-                    conn.outbuf += resp_unauthorized;
-                } else if (ret == SessionResult::InvalidRequest) {
-                    sendError(conn, resp_bad_request);
+            } else if (req.target.starts_with("/api")) {
+                string_view api_target(req.target);
+                string_view api_method(req.method);
+                http::RequestLine line = http::parse_request_line(api_method, api_target);
+                http::PathParams params;
+                optional<http::Router::Route> route = m_router.find_route(line, params);
+                if (route == nullopt) {
+                    if (sendError(conn, resp_api_not_found, res.end_pos)) continue;
                     return;
-                } else if (ret == SessionResult::NetWorkError) {
-                    conn.outbuf += resp_server_error;
-                } else if (ret == SessionResult::ServerError) {
-                    conn.outbuf += resp_server_error;
                 }
-            } else if (req.target == "/rooms" && (req.method == "GET" || req.method == "HEAD")) {
+
                 uint64_t user_id = 0;
                 string username;
-                SessionResult ret = get_session(req, user_id, username);
-                if (ret == SessionResult::Success) {
-                    unordered_set<uint64_t> conversation_ids;
-                    MysqlPool::QueryResult get_ret = get_conversation_ids(user_id, conversation_ids);
-
-                    if (get_ret == MysqlPool::QueryResult::NotFound) {
-                        MysqlPool::QueryResult ret = insert_public_chatroom(user_id);
-                        if (ret != MysqlPool::QueryResult::Success) {
-                            if (sendError(conn, resp_server_error, res.end_pos)) continue;
-                            return;
-                        }
-                        ret = create_personal_chatroom(user_id);
-                        if (ret != MysqlPool::QueryResult::Success) {
-                            if (sendError(conn, resp_server_error, res.end_pos)) continue;
-                            return;
-                        }
-                    }
-
-                    if (get_ret == MysqlPool::QueryResult::Success) {
-                        json out;
-                        out["user_id"] = user_id;
-                        out["username"] = username;
-                        json list = json::array();
-                        MysqlPool::QueryResult get_name_ret = MysqlPool::QueryResult::ServerError;
-                        for (auto it = conversation_ids.begin(); it != conversation_ids.end(); ++it) {
-                            json c;
-                            string name;
-                            get_name_ret = get_conversation_name(*it, name);
-                            if (get_name_ret == MysqlPool::QueryResult::ServerError) break;
-                            c["id"] = *it;
-                            c["name"] = name;
-                            list.emplace_back(c);
-                        }
-                        if (get_name_ret != MysqlPool::QueryResult::Success) {
-                            if (sendError(conn, resp_server_error, res.end_pos)) continue;
-                            return;
-                        }
-                        out["conversations"] = move(list);
-                        string body = out.dump();
-
-                        conn.outbuf += "HTTP/1.1 200 OK\r\n"
-                                       "Content-Type: application/json; charset=utf-8\r\n"
-                                       "Content-Length: ";
-                        conn.outbuf += to_string(body.size());
-                        conn.outbuf += "\r\n\r\n";
-                        if (req.method == "GET") conn.outbuf += body;
-                    } else if (get_ret == MysqlPool::QueryResult::ServerError) {
+                if (route->need_auth) {
+                    SessionResult ret = get_session(req, user_id, username);
+                    if (ret == SessionResult::TokenExpired) {
+                        if (sendError(conn, resp_unauthorized, res.end_pos)) continue;
+                        return;
+                    } else if (ret == SessionResult::InvalidRequest) {
+                        sendError(conn, resp_bad_request);
+                        return;
+                    } else if (ret == SessionResult::NetWorkError) {
+                        if (sendError(conn, resp_server_error, res.end_pos)) continue;
+                        return;
+                    } else if (ret == SessionResult::ServerError) {
                         if (sendError(conn, resp_server_error, res.end_pos)) continue;
                         return;
                     }
-                } else if (ret == SessionResult::TokenExpired) {
-                    conn.outbuf += resp_unauthorized;
-                } else if (ret == SessionResult::InvalidRequest) {
-                    sendError(conn, resp_bad_request);
-                    return;
-                } else if (ret == SessionResult::NetWorkError) {
-                    conn.outbuf += resp_server_error;
-                } else if (ret == SessionResult::ServerError) {
-                    conn.outbuf += resp_server_error;
                 }
-            } else if (req.target.starts_with(api_conversation_prefix) && (req.method == "GET" || req.method == "HEAD")) {
-                uint64_t user_id = 0;
-                string username;
-                SessionResult ret = get_session(req, user_id, username);
-                if (ret == SessionResult::Success) {
-                    // GET /conversations/:id/messages?before_time=...&before_id=...&limit=50
-                    size_t query_pos = req.target.find('?');
-                    if (query_pos == string::npos) {
-                        sendError(conn, resp_bad_request);
-                        return;
-                    }
-                    string rest = req.target.substr(api_conversation_prefix.size() + 1, query_pos);
-                    string query = req.target.substr(query_pos + 1);
-                    size_t slash_pos = rest.find('/');
-                    if (slash_pos == string::npos) {
-                        sendError(conn, resp_bad_request);
-                        return;
-                    }
-                    string id_value = rest.substr(0, slash_pos);
-                    uint64_t conversation_id = 0;
-                    try {
-                        conversation_id = stoull(id_value);
-                    } catch (const exception &e) {
-                        LOG_WARN("parse conversation_id failed in api_conversation, value = %s, reason = %s", id_value.data(), e.what());
-                        sendError(conn, resp_bad_request);
-                        return;
-                    }
-
-                    MysqlPool::QueryResult ret = verify_conversation_member(conversation_id, user_id);
-                    if (ret == MysqlPool::QueryResult::NotFound) {
-                        sendError(conn, resp_bad_request);
-                        return;
-                    }
-                    if (ret != MysqlPool::QueryResult::Success) {
-                        if (sendError(conn, resp_server_error, res.end_pos)) continue;
-                        return;
-                    }
-
-                    // GET /conversations/:id/messages?before_time=...&before_id=...&limit=50
-                    uint64_t before_time_ms = 0, before_message_id = 0;
-                    int limit = 0;
-                    size_t start = 0;
-                    string_view query_view(query);
-                    while (start < query.size()) {
-                        size_t end = query.find('&', start);
-                        if (end == string::npos) {
-                            end = query.size();
-                        }
-                        size_t eq_pos = query.find('=', start);
-                        if (eq_pos == string::npos) {
-                            sendError(conn, resp_bad_request);
-                            return;
-                        }
-
-                        string_view key = query_view.substr(start, eq_pos - start);
-                        start = eq_pos + 1;
-                        string_view value = query_view.substr(start, end - start);
-                        start = end + 1;
-                        if (key == "before_time") {
-                            try {
-                                before_time_ms = stoull(string(value));
-                            } catch (const exception &e) {
-                                LOG_WARN("parse query key = %.*s failed in api_conversation, value = %s, reason = %s",
-                                         key.size(), key.data(),
-                                         id_value.data(), e.what());
-                                sendError(conn, resp_bad_request);
-                                return;
-                            }
-                        } else if (key == "before_id") {
-                            try {
-                                before_message_id = stoull(string(value));
-                            } catch (const exception &e) {
-                                LOG_WARN("parse query key = %.*s failed in api_conversation, value = %s, reason = %s",
-                                         key.size(), key.data(),
-                                         id_value.data(), e.what());
-                                sendError(conn, resp_bad_request);
-                                return;
-                            }
-                        } else if (key == "limit") {
-                            try {
-                                limit = stoull(string(value));
-                            } catch (const exception &e) {
-                                LOG_WARN("parse query key = %.*s failed in api_conversation, value = %s, reason = %s",
-                                         key.size(), key.data(),
-                                         id_value.data(), e.what());
-                                sendError(conn, resp_bad_request);
-                                return;
-                            }
-                        }
-                    }
-                    if (!limit) {
-                        sendError(conn, resp_bad_request);
-                        return;
-                    }
-                    ret = MysqlPool::QueryResult::ServerError;
-                    vector<vector<string>> rows;
-                    if (!before_time_ms && !before_message_id) {
-                        ret = get_recent_messages(conversation_id, nullopt, limit + 1, rows);
-                    } else if (before_time_ms && before_message_id) {
-                        chatdb::Cursor cursor{before_time_ms, before_message_id};
-                        ret = get_recent_messages(conversation_id, cursor, limit + 1, rows);
-                    } else {
-                        sendError(conn, resp_bad_request);
-                        return;
-                    }
-                    if (ret == MysqlPool::QueryResult::ServerError || ret == MysqlPool::QueryResult::SqlError) {
-                        if (sendError(conn, resp_server_error, res.end_pos)) continue;
-                        return;
-                    }
-                    bool has_more = rows.size() > limit;
-                    size_t size = rows.size() - static_cast<size_t>(has_more);
-
-                    string body;
-                    try {
-                        json out;
-                        json list = json::array();
-                        for (size_t i = 0; i < size; ++i) {
-                            json msg;
-                            msg["message_id"] = rows[i][0];
-                            msg["send_id"] = rows[i][1];
-                            msg["type"] = rows[i][2];
-                            msg["content"] = rows[i][3];
-                            msg["send_time_ms"] = rows[i][4];
-                            list.emplace_back(msg);
-                        }
-                        out["messages"] = move(list);
-                        out["has_more"] = has_more;
-                        body = out.dump();
-                    } catch (const exception &e) {
-                        LOG_WARN("json encode failed: %e", e.what());
-                        sendError(conn, resp_bad_request);
-                        return;
-                    }
-
-                    conn.outbuf += "HTTP/1.1 200 OK\r\n"
-                                   "Content-Type: application/json; charset=utf-8\r\n"
-                                   "Content-Length: ";
-                    conn.outbuf += std::to_string(body.size());
-                    conn.outbuf += "\r\n"
-                                   "Connection: keep-alive\r\n"
-                                   "\r\n";
-                    if (req.method == "GET") conn.outbuf += body;
-                } else if (ret == SessionResult::TokenExpired) {
-                    conn.outbuf += resp_unauthorized;
-                } else if (ret == SessionResult::InvalidRequest) {
+                http::RequestContext ctx(req, params, conn, user_id, std::move(username));
+                http::RouteResult ret = route->handler(ctx);
+                if (ret == http::RouteResult::BadRequest) {
                     sendError(conn, resp_bad_request);
                     return;
-                } else if (ret == SessionResult::NetWorkError) {
-                    conn.outbuf += resp_server_error;
-                } else if (ret == SessionResult::ServerError) {
-                    conn.outbuf += resp_server_error;
+                } else if (ret == http::RouteResult::Unauthorized) {
+                    if (sendError(conn, resp_unauthorized, res.end_pos)) continue;
+                    return;
+                } else if (ret == http::RouteResult::NotFound) {
+                    if (sendError(conn, resp_not_found, res.end_pos)) continue;
+                    return;
+                } else if (ret == http::RouteResult::ServerError) {
+                    if (sendError(conn, resp_server_error, res.end_pos)) continue;
+                    return;
                 }
             } else if (req.method == "GET" || req.method == "HEAD") {
                 if (req.target.find("..") != string::npos) {
@@ -561,154 +364,6 @@ void Reactor::process(Connection &conn) {
                     conn.outbuf += to_string(file_size);
                     conn.outbuf += "\r\n\r\n";
                 }
-            } else if (req.target == "/register" || req.target == "/login") {
-                LOG_DEBUG("fd = %d send HTTP request register or login", conn.fd);
-
-                string username, password;
-                if (req.content_type == "application/x-www-form-urlencoded") {
-                    static constexpr string_view username_key = "username";
-                    static constexpr string_view password_key = "password";
-                    string_view username_value;
-                    string_view password_value;
-                    size_t username_count = 0;
-                    size_t password_count = 0;
-
-                    size_t start = 0;
-                    while (start < req.body.size()) {
-                        size_t eq_pos = req.body.find('=', start);
-                        if (eq_pos == string::npos) {
-                            sendError(conn, resp_bad_request);
-                            return;
-                        }
-
-                        size_t end = req.body.find('&', eq_pos + 1);
-                        if (end == string::npos) end = req.body.size();
-                        string_view key(req.body.data() + start, eq_pos - start);
-                        start = eq_pos + 1;
-                        string_view value(req.body.data() + start, end - start);
-                        start = end + 1;
-                        if (key == username_key) {
-                            if (++username_count > 1) {
-                                sendError(conn, resp_bad_request);
-                                return;
-                            }
-                            username_value = move(value);
-                        } else if (key == password_key) {
-                            if (++password_count > 1) {
-                                sendError(conn, resp_bad_request);
-                                return;
-                            }
-                            password_value = move(value);
-                        }
-                    }
-
-                    if (username_count == 0 || password_count == 0) {
-                        LOG_DEBUG("register request not have username or password");
-                        conn.outbuf += resp_missing_params;
-                        if (sendError(conn, resp_missing_params, res.end_pos)) continue;
-                        return;
-                    }
-
-                    optional<string> username_result = url_decode(username_value);
-                    optional<string> password_result = url_decode(password_value);
-                    if (!username_result.has_value() || !password_result.has_value()) {
-                        if (sendError(conn, resp_invalid_encode, res.end_pos)) continue;
-                        return;
-                    }
-
-                    username = move(username_result.value());
-                    password = move(password_result.value());
-                } else if (req.content_type == "application/json") {
-                    try {
-                        json in = json::parse(req.body);
-                        if (!in.contains("username") || !in["username"].is_string() || !in.contains("password") || !in["password"].is_string()) {
-                            sendError(conn, resp_bad_request);
-                            return;
-                        }
-                        username = in["username"].get<string>();
-                        password = in["password"].get<string>();
-
-                        if (username.empty() || password.empty()) {
-                            sendError(conn, resp_bad_request);
-                            return;
-                        }
-                    } catch (const exception &e) {
-                        LOG_WARN("json request in login or register error, reason = %s", e.what());
-                        sendError(conn, resp_bad_request);
-                        return;
-                    }
-                } else {
-                    sendError(conn, resp_unsupported_media_type, res.end_pos);
-                    continue;
-                }
-
-                if (!is_valid_username(username)) {
-                    if (sendError(conn, resp_invalid_username, res.end_pos)) continue;
-                    else return;
-                }
-                if (!is_valid_password(password)) {
-                    if (sendError(conn, resp_invalid_password, res.end_pos)) continue;
-                    else return;
-                }
-
-                if (req.target == "/register") {
-                    RegisterResult ret = do_register(username, password);
-
-                    if (ret.state == RegisterStatus::Success) {
-                        string token;
-                        SessionResult session_ret = create_session(ret.user_id, username, token);
-                        if (session_ret == SessionResult::Success) {
-                            uint64_t user_id = ret.user_id;
-                            MysqlPool::QueryResult ret = insert_public_chatroom(user_id);
-                            if (ret != MysqlPool::QueryResult::Success) {
-                                if (sendError(conn, resp_server_error, res.end_pos)) continue;
-                                return;
-                            }
-                            uint64_t personal_room_id = 0;
-                            ret = create_personal_chatroom(personal_room_id, user_id);
-                            if (ret != MysqlPool::QueryResult::Success || personal_room_id == 0) {
-                                if (sendError(conn, resp_server_error, res.end_pos)) continue;
-                                return;
-                            }
-
-                            conn.outbuf += "HTTP/1.1 200 OK\r\n"
-                                           "Content-Type: application/json; charset=utf-8\r\n"
-                                           "Content-Length: 0\r\n"
-                                           "Set-Cookie: session_id=";
-                            conn.outbuf += token;
-                            conn.outbuf += "\r\n\r\n";
-                        } else if (session_ret == SessionResult::ServerError) {
-                            conn.outbuf += resp_server_error;
-                        }
-                    } else if (ret.state == RegisterStatus::ServerError) {
-                        conn.outbuf += resp_server_error;
-                    } else if (ret.state == RegisterStatus::UserExists) {
-                        conn.outbuf += resp_user_exists;
-                    }
-                } else {
-                    LoginResult ret = do_login(username, password);
-
-                    if (ret.state == LoginStatus::Success) {
-                        string token;
-                        SessionResult session_ret = create_session(ret.user_id, username, token);
-                        if (session_ret == SessionResult::Success) {
-                            conn.outbuf += "HTTP/1.1 200 OK\r\n"
-                                           "Content-Type: application/json; charset=utf-8\r\n"
-                                           "Content-Length: 0\r\n"
-                                           "Set-Cookie: session_id=";
-                            conn.outbuf += token;
-                            conn.outbuf += "\r\n\r\n";
-                        } else if (session_ret == SessionResult::ServerError) {
-                            conn.outbuf += resp_server_error;
-                        }
-                    } else if (ret.state == LoginStatus::ServerError) {
-                        conn.outbuf += resp_server_error;
-                    } else if (ret.state == LoginStatus::UserNotFound) {
-                        conn.outbuf += resp_user_not_found;
-                    } else if (ret.state == LoginStatus::WrongPassword) {
-                        conn.outbuf += resp_wrong_password;
-                    }
-                }
             } else {
                 conn.outbuf += default_response;
             }
@@ -722,10 +377,10 @@ void Reactor::process(Connection &conn) {
             conn.outbuf.reserve(conn.outbuf.size() + 256);
 
             LOG_DEBUG("parsed data: %u %u usernamne=%s password=%s",
-                      static_cast<unsigned int>(req.msg_type),
-                      static_cast<unsigned int>(req.msg_length),
-                      req.username.c_str(),
-                      req.password.c_str());
+                static_cast<unsigned int>(req.msg_type),
+                static_cast<unsigned int>(req.msg_length),
+                req.username.c_str(),
+                req.password.c_str());
 
             enum ResponseKind {
                 REGISTER,
@@ -812,8 +467,10 @@ void Reactor::process(Connection &conn) {
                         }
 
                         chatdb::Message msg{
-                            conversation_id, conn.user_id,
-                            in["type"], in["content"],
+                            conversation_id,
+                            conn.user_id,
+                            in["type"],
+                            in["content"],
                             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()),
                             in["client_message_id"]};
                         if (msg.type >= static_cast<int>(chatdb::MessageType::SYSTEM) || msg.type < static_cast<int>(chatdb::MessageType::TEXT)) {
@@ -873,14 +530,14 @@ void Reactor::process(Connection &conn) {
                     uint64_t ext = htobe64(payload_length);
                     response.append(reinterpret_cast<char *>(&ext), 8);
                 }
-                response += move(payload_data);
+                response += std::move(payload_data);
                 LOG_DEBUG("fd = %d build response frame size: %zu", conn.fd, response.size());
 
                 if (broadcast) {
-                    broadcast_frame = move(response);
-                    LOG_DEBUG("fd = %d move response to broadcast frame size: %zu", conn.fd, broadcast_frame.size());
+                    broadcast_frame = std::move(response);
+                    LOG_DEBUG("fd = %d std::move response to broadcast frame size: %zu", conn.fd, broadcast_frame.size());
                 } else {
-                    conn.outbuf += move(response);
+                    conn.outbuf += std::move(response);
                 }
 
                 return true;
@@ -892,14 +549,14 @@ void Reactor::process(Connection &conn) {
                 return;
             } else if (ret == WS_TEXT) {
                 should_broadcast = true;
-                if (buildResponse(WS_TEXT, move(req.payload_data), should_broadcast) == 0) {
+                if (buildResponse(WS_TEXT, std::move(req.payload_data), should_broadcast) == 0) {
                     return;
                 }
             } else if (ret == WS_CLOSE) {
                 buildResponse(WS_CLOSE);
                 conn.shouldClose = true;
             } else if (ret == WS_PING) {
-                buildResponse(WS_PONG, move(req.payload_data));
+                buildResponse(WS_PONG, std::move(req.payload_data));
             }
         }
         conn.inbuf.erase(conn.inbuf.begin(), conn.inbuf.begin() + res.end_pos);
@@ -908,9 +565,9 @@ void Reactor::process(Connection &conn) {
         if (should_broadcast && conversation_id && !broadcast_frame.empty()) {
             shared_ptr<const string> frame = make_shared<string>(broadcast_frame);
             LOG_DEBUG("fd = %d, in reactor[%d], push a broadcast frame size = %zu",
-                      conn.fd,
-                      m_index,
-                      broadcast_frame.size());
+                conn.fd,
+                m_index,
+                broadcast_frame.size());
 
             for (auto it = reactor_to_fds.begin(); it != reactor_to_fds.end(); ++it) {
                 m_sub_reactors[it->first]->enqueueBroadcast({conversation_id, it->second, frame});
@@ -992,10 +649,10 @@ void Reactor::trySend(Connection &conn, bool should_mod) {
     }
 
     LOG_DEBUG("fd = %d, will send packet size: %zu, packet: %.*s",
-              conn.fd,
-              conn.outbuf.size(),
-              static_cast<int>(conn.outbuf.size()),
-              conn.outbuf.c_str());
+        conn.fd,
+        conn.outbuf.size(),
+        static_cast<int>(conn.outbuf.size()),
+        conn.outbuf.c_str());
 
     size_t sent = 0;
     while (sent < conn.outbuf.size()) {

@@ -10,6 +10,21 @@ import MessageFlight from "./MessageFlight.jsx";
 const DEFAULT_ROOM_CUES = ["共同讨论", "AI 参与", "笔记沉淀"];
 const NOTE_TOAST_MS = 2200;
 
+function RoomAtmosphere({ tone }) {
+  return (
+    <div className={`room-atmosphere-layer is-${tone}`} aria-hidden="true">
+      <span className="room-atmosphere-arch is-outer" />
+      <span className="room-atmosphere-arch is-inner" />
+      <span className="room-atmosphere-table" />
+      <span className="room-atmosphere-thread is-left" />
+      <span className="room-atmosphere-thread is-right" />
+      <span className="room-atmosphere-seat is-self" />
+      <span className="room-atmosphere-seat is-ai" />
+      <span className="room-atmosphere-seat is-note" />
+    </div>
+  );
+}
+
 export default function ChatRoom({
   nickname, connectionState, messages,
   isHeaderScrolled, onScrolled,
@@ -155,6 +170,10 @@ export default function ChatRoom({
   const emptyTitle = room?.emptyTitle || (roomTone === "public" ? "大厅正在等待新的讨论" : "这里还很安静");
   const emptyHint = room?.emptyHint || roomHint || "写下一个想法，让讨论从这里开始。";
   const composerPlaceholder = room?.composerPlaceholder || "输入消息，按 Enter 发送";
+  const aiPresenceLabel = roomTone === "public" ? "@AI 可召唤" : "AI 陪同席";
+  const stageInitial = resolvedTransitionMode === "idle" ? { opacity: 0.96, y: 2 } : messagesMotion.initial;
+  const stageAnimate = resolvedTransitionMode === "idle" ? { opacity: 1, y: 0 } : messagesMotion.animate;
+  const stageTransition = resolvedTransitionMode === "idle" ? { duration: 0.22, ease: EASE } : messagesMotion.transition;
 
   return (
     <div className="shell">
@@ -197,17 +216,33 @@ export default function ChatRoom({
               <div className="room-kicker">{roomPlaceLabel}</div>
               <div className="room-name">{roomName}</div>
               {roomHint ? <div className="room-hint">{roomHint}</div> : null}
+              <div className="room-presence-strip" aria-label="房间成员线索">
+                <span className="room-presence-item is-self">
+                  <span className="room-presence-dot" aria-hidden="true" />
+                  你
+                </span>
+                <span className="room-presence-item is-ai">
+                  <span className="room-presence-dot" aria-hidden="true" />
+                  {aiPresenceLabel}
+                </span>
+                <span className="room-presence-item is-note">
+                  <span className="room-presence-dot" aria-hidden="true" />
+                  可摘录
+                </span>
+              </div>
             </div>
             <ConnectionStatus state={connectionState} allowPulse={!suppressConnectionPulse} />
           </div>
         </motion.header>
 
         <motion.div
-          className="messages-stage"
-          initial={messagesMotion.initial}
-          animate={messagesMotion.animate}
-          transition={messagesMotion.transition}
+          key={activeRoomId}
+          className={`messages-stage is-${roomTone}`}
+          initial={stageInitial}
+          animate={stageAnimate}
+          transition={stageTransition}
         >
+          <RoomAtmosphere tone={roomTone} />
           <div className={`room-context-strip is-${roomTone}`} aria-label={`${roomName}空间状态`}>
             <div className="room-context-copy">
               <span className="room-context-mark" aria-hidden="true" />

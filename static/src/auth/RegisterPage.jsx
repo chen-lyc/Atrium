@@ -30,7 +30,7 @@ export default function RegisterPage({ onSwitchLogin, onSuccess, disabled }) {
     if (password !== confirmPassword) { setFieldErrors({ nickname: "", password: "", confirm: "两次输入不一致" }); setNetworkError(""); return; }
     setFieldErrors({ nickname: "", password: "", confirm: "" }); setNetworkError(""); setIsSubmitting(true);
     try {
-      const res = await fetch("/register", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: buildAuthBody(trimmedNickname, password), credentials: "include" });
+      const res = await fetch("/api/register", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: buildAuthBody(trimmedNickname, password), credentials: "include" });
       if (res.ok) { onSuccess(await readAuthSuccess(res, trimmedNickname)); return; }
       const failure = await resolveAuthFailure(res, "register");
       setFieldErrors({ nickname: failure.field === "nickname" ? failure.message : "", password: failure.field === "password" ? failure.message : "", confirm: "" });

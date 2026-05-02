@@ -53,6 +53,7 @@ bool is_valid_username(const std::string &username);
 bool is_valid_password(const std::string &password);
 std::optional<HashedPassword> hash_password(const std::string &password);
 
+bool get_username_and_user_id(const HttpRequest &req, std::string &username, std::string &password, std::string_view &response);
 RegisterResult do_register(const std::string &username, const std::string &password);
 LoginResult do_login(const std::string &username, const std::string &password);
 
@@ -64,6 +65,7 @@ MysqlPool::QueryResult get_conversation_ids(uint64_t user_id, std::unordered_set
 MysqlPool::QueryResult get_conversation_name(uint64_t conversation_id, std::string &conversatrion_name);
 MysqlPool::QueryResult create_personal_chatroom(uint64_t &conversation_id, uint64_t user_id);
 MysqlPool::QueryResult create_personal_chatroom(uint64_t user_id);
+MysqlPool::QueryResult insert_public_chatroom(uint64_t &conversation_id, uint64_t user_id);
 MysqlPool::QueryResult insert_public_chatroom(uint64_t user_id);
 MysqlPool::QueryResult verify_conversation_member(uint64_t conversation_id, uint64_t user_id);
 

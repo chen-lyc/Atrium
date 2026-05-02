@@ -1,4 +1,6 @@
 #include "utils.h"
+#include "http.h"
+#include "json.hpp"
 #include "logger.h"
 #include "mysql_pool.h"
 #include "redis_pool.h"
@@ -7,6 +9,7 @@
 #include <optional>
 #include <sstream>
 using namespace std;
+using json = nlohmann::json;
 
 hash<string> hasher;
 
@@ -85,16 +88,95 @@ optional<HashedPassword> hash_password(const string &password) {
         return nullopt;
     }
 
-    if (PKCS5_PBKDF2_HMAC(
-            password.data(), password.size(),
-            hp.salt.data(), hp.salt.size(),
-            100000,
-            EVP_sha256(),
-            hp.hash.size(), hp.hash.data()) <= 0) {
+    if (PKCS5_PBKDF2_HMAC(password.data(), password.size(), hp.salt.data(), hp.salt.size(), 100000, EVP_sha256(),
+                          hp.hash.size(), hp.hash.data()) <= 0) {
         return nullopt;
     }
 
     return hp;
+}
+
+bool get_username_and_user_id(const HttpRequest &req, string &username, string &password, string_view &response) {
+    response = {};
+    if (req.content_type == "application/x-www-form-urlencoded") {
+        static constexpr string_view username_key = "username";
+        static constexpr string_view password_key = "password";
+        string_view username_value;
+        string_view password_value;
+        size_t username_count = 0;
+        size_t password_count = 0;
+
+        size_t start = 0;
+        while (start < req.body.size()) {
+            size_t eq_pos = req.body.find('=', start);
+            if (eq_pos == string::npos) {
+                return false;
+            }
+
+            size_t end = req.body.find('&', eq_pos + 1);
+            if (end == string::npos) end = req.body.size();
+            string_view key(req.body.data() + start, eq_pos - start);
+            start = eq_pos + 1;
+            string_view value(req.body.data() + start, end - start);
+            start = end + 1;
+            if (key == username_key) {
+                if (++username_count > 1) {
+                    return false;
+                }
+                username_value = value;
+            } else if (key == password_key) {
+                if (++password_count > 1) {
+                    return false;
+                }
+                password_value = value;
+            }
+        }
+
+        if (username_count == 0 || password_count == 0) {
+            LOG_DEBUG("register request not have username or password");
+            response = resp_missing_params;
+            return false;
+        }
+
+        optional<string> username_result = url_decode(username_value);
+        optional<string> password_result = url_decode(password_value);
+        if (!username_result.has_value() || !password_result.has_value()) {
+            response = resp_invalid_encode;
+            return false;
+        }
+
+        username = std::move(username_result.value());
+        password = std::move(password_result.value());
+    } else if (req.content_type == "application/json") {
+        try {
+            json in = json::parse(req.body);
+            if (!in.contains("username") || !in["username"].is_string() || !in.contains("password") || !in["password"].is_string()) {
+                return false;
+            }
+            username = in["username"].get<string>();
+            password = in["password"].get<string>();
+
+            if (username.empty() || password.empty()) {
+                return false;
+            }
+        } catch (const exception &e) {
+            LOG_WARN("json request in login or register error, reason = %s", e.what());
+            return false;
+        }
+    } else {
+        response = resp_unsupported_media_type;
+        return false;
+    }
+
+    if (!is_valid_username(username)) {
+        response = resp_invalid_username;
+        return false;
+    }
+    if (!is_valid_password(password)) {
+        response = resp_invalid_password;
+        return false;
+    }
+    return true;
 }
 
 RegisterResult do_register(const string &username, const string &password) {
@@ -104,10 +186,9 @@ RegisterResult do_register(const string &username, const string &password) {
         return {RegisterStatus::ServerError, 0};
     }
     HashedPassword &hp = hashed.value();
-    MysqlPool::MysqlParams params{
-        username,
-        MysqlPool::Blob{reinterpret_cast<const char *>(hp.salt.data()), hp.salt.size()},
-        MysqlPool::Blob{reinterpret_cast<const char *>(hp.hash.data()), hp.hash.size()}};
+    MysqlPool::MysqlParams params{username,
+                                  MysqlPool::Blob{reinterpret_cast<const char *>(hp.salt.data()), hp.salt.size()},
+                                  MysqlPool::Blob{reinterpret_cast<const char *>(hp.hash.data()), hp.hash.size()}};
     uint64_t user_id = 0;
     MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, &user_id);
     switch (ret) {
@@ -146,12 +227,8 @@ LoginResult do_login(const string &username, const string &password) {
     string &password_hash = result[0][2];
 
     array<unsigned char, 32> computed_hash;
-    if (PKCS5_PBKDF2_HMAC(
-            password.data(), password.size(),
-            reinterpret_cast<const unsigned char *>(salt.data()), salt.size(),
-            100000,
-            EVP_sha256(),
-            computed_hash.size(), computed_hash.data()) != 1) {
+    if (PKCS5_PBKDF2_HMAC(password.data(), password.size(), reinterpret_cast<const unsigned char *>(salt.data()),
+                          salt.size(), 100000, EVP_sha256(), computed_hash.size(), computed_hash.data()) != 1) {
         return {LoginStatus::ServerError, 0};
     }
 
@@ -169,8 +246,7 @@ LoginResult do_login(const string &username, const string &password) {
 static const std::string bytes_to_hex(const unsigned char *data, size_t len) {
     std::ostringstream oss;
     for (size_t i = 0; i < len; ++i) {
-        oss << std::hex << std::setw(2) << std::setfill('0')
-            << static_cast<int>(data[i]);
+        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(data[i]);
     }
     return oss.str();
 }
@@ -202,7 +278,7 @@ SessionResult create_session(uint64_t user_id, const std::string &username, stri
         return SessionResult::ServerError;
     }
 
-    token_out = move(token);
+    token_out = std::move(token);
     return SessionResult::Success;
 }
 
@@ -237,7 +313,7 @@ SessionResult get_session(HttpRequest &req, uint64_t &user_id, string &username)
                 }
             } else if (values[i].value() == "username") {
                 if (!values[i + 1].has_value()) return SessionResult::ServerError;
-                username = move(values[i + 1].value());
+                username = std::move(values[i + 1].value());
                 find_username = true;
             }
         }
@@ -281,7 +357,7 @@ MysqlPool::QueryResult get_conversation_ids(uint64_t user_id, std::unordered_set
         try {
             ids.emplace(stoull(result[i][0]));
         } catch (const exception &e) {
-            LOG_WARN("parse conversation_id failed: value = %s, reason = %s", result[i][0], e.what());
+            LOG_WARN("parse conversation_id failed: value = %s, reason = %s", result[i][0].data(), e.what());
             return MysqlPool::QueryResult::ServerError;
         }
     }
@@ -298,7 +374,7 @@ MysqlPool::QueryResult get_conversation_name(uint64_t conversation_id, string &c
         return MysqlPool::QueryResult::ServerError;
     }
 
-    conversatrion_name = move(result[0][0]);
+    conversatrion_name = std::move(result[0][0]);
     return MysqlPool::QueryResult::Success;
 }
 
@@ -321,6 +397,11 @@ MysqlPool::QueryResult create_personal_chatroom(uint64_t &conversation_id, uint6
 MysqlPool::QueryResult create_personal_chatroom(uint64_t user_id) {
     uint64_t conversation_id = 0;
     return create_personal_chatroom(conversation_id, user_id);
+}
+
+MysqlPool::QueryResult insert_public_chatroom(uint64_t &conversation_id, uint64_t user_id) {
+    conversation_id = 1;
+    return insert_public_chatroom(user_id);
 }
 
 MysqlPool::QueryResult insert_public_chatroom(uint64_t user_id) {
@@ -351,12 +432,15 @@ MysqlPool::QueryResult verify_conversation_member(uint64_t conversation_id, uint
 }
 
 MysqlPool::QueryResult insert_message(chatdb::Message &msg, uint64_t &message_id) {
-    static const string sql = "INSERT INTO messages (conversation_id, send_id, type, content, send_time_ms, client_message_id) VALUES (?, ?, ?, ?, ?, ?)";
-    MysqlPool::MysqlParams params{msg.conversation_id, msg.send_id, msg.type, msg.content, msg.send_time_ms, msg.client_message_id};
+    static const string sql = "INSERT INTO messages (conversation_id, send_id, type, content, send_time_ms, "
+                              "client_message_id) VALUES (?, ?, ?, ?, ?, ?)";
+    MysqlPool::MysqlParams params{msg.conversation_id, msg.send_id,      msg.type,
+                                  msg.content,         msg.send_time_ms, msg.client_message_id};
     return MysqlPool::getInstance().executeQuery(sql, params, &message_id);
 }
 
-MysqlPool::QueryResult get_recent_messages(uint64_t conversation_id, std::optional<chatdb::Cursor> cursor, int limit, std::vector<std::vector<std::string>> &rows) {
+MysqlPool::QueryResult get_recent_messages(uint64_t conversation_id, std::optional<chatdb::Cursor> cursor, int limit,
+                                           std::vector<std::vector<std::string>> &rows) {
     static const string first_page_sql = "SELECT id, send_id, type, content, send_time_ms FROM messages "
                                          "WHERE conversation_id = ? "
                                          "ORDER BY send_time_ms DESC, id DESC LIMIT ?";

@@ -129,6 +129,9 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
   const authFailedRef = useRef(onAuthFailed);
   const activeConversationId = normalizeConversationId(conversationId);
   const normalizedUserId = String(userId || "").trim();
+  const activeConversationIdRef = useRef(activeConversationId);
+  const nicknameRef = useRef(nickname);
+  const messageCacheRef = useRef(new Map());
 
   const [messages, setMessages] = useState([]);
   const [connectionState, setConnectionState] = useState(enabled ? "connecting" : "idle");
@@ -149,6 +152,14 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
     pendingResolveTimersRef.current.clear();
   }
 
+  function commitMessages(updater) {
+    setMessages((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      messageCacheRef.current.set(activeConversationIdRef.current, next);
+      return next;
+    });
+  }
+
   function clearPendingResolveTimer(messageId) {
     const timerId = pendingResolveTimersRef.current.get(messageId);
     if (timerId == null) return;
@@ -160,7 +171,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
     clearPendingResolveTimer(messageId);
     const timerId = window.setTimeout(() => {
       pendingResolveTimersRef.current.delete(messageId);
-      setMessages((prev) =>
+      commitMessages((prev) =>
         prev.map((message) =>
           message.id === messageId && message.status === "pending"
             ? { ...message, status: "sent" }
@@ -173,7 +184,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
 
   function markLocalMessageFailed(messageId) {
     clearPendingResolveTimer(messageId);
-    setMessages((prev) =>
+    commitMessages((prev) =>
       prev.map((message) =>
         message.id === messageId ? { ...message, status: "failed" } : message
       )
@@ -189,8 +200,22 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
   }
 
   useEffect(() => {
+    const previousNickname = nicknameRef.current;
+    const nicknameChanged = previousNickname !== nickname;
+    if (nicknameChanged) {
+      messageCacheRef.current.clear();
+      nicknameRef.current = nickname;
+    }
     clearAllPendingTimers();
-    setMessages([]);
+    setMessages((prev) => {
+      const previousConversationId = activeConversationIdRef.current;
+      if (!nicknameChanged && previousNickname && previousConversationId) {
+        messageCacheRef.current.set(previousConversationId, prev);
+      }
+      activeConversationIdRef.current = activeConversationId;
+      if (!nickname) return [];
+      return messageCacheRef.current.get(activeConversationId) || [];
+    });
     setLastError("");
     setHistoryState(nickname ? "loading" : "idle");
     setHistoryHasMore(false);
@@ -218,7 +243,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
     fetchHistoryPage(activeConversationId, null, controller.signal)
       .then((data) => {
         const historicalMessages = normalizeHistoryMessages(data, activeConversationId, nickname, normalizedUserId);
-        setMessages((prev) => mergeMessageLists(prev, historicalMessages, { prepend: true }));
+        commitMessages((prev) => mergeMessageLists(prev, historicalMessages, { prepend: true }));
         setHistoryHasMore(Boolean(data?.has_more));
         setHistoryState("ready");
       })
@@ -290,7 +315,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
             if (nextMessage.conversationId && nextMessage.conversationId !== activeConversationId) {
               return;
             }
-            setMessages((prev) => {
+            commitMessages((prev) => {
               if (nextMessage.isSelf) {
                 const matchIndex = findPendingLocalMatch(prev, nextMessage);
                 if (matchIndex != null) {
@@ -368,7 +393,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
       source: "local"
     };
 
-    setMessages((prev) => [...prev, localMessage]);
+    commitMessages((prev) => [...prev, localMessage]);
 
     try {
       current.send(JSON.stringify({
@@ -389,7 +414,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
 
   function deleteChatMessage(messageId) {
     clearPendingResolveTimer(messageId);
-    setMessages((prev) => prev.filter((message) => message.id !== messageId));
+    commitMessages((prev) => prev.filter((message) => message.id !== messageId));
   }
 
   async function loadOlderMessages() {
@@ -404,7 +429,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
     try {
       const data = await fetchHistoryPage(activeConversationId, cursor);
       const historicalMessages = normalizeHistoryMessages(data, activeConversationId, nickname, normalizedUserId);
-      setMessages((prev) => mergeMessageLists(prev, historicalMessages, { prepend: true }));
+      commitMessages((prev) => mergeMessageLists(prev, historicalMessages, { prepend: true }));
       setHistoryHasMore(Boolean(data?.has_more));
       setHistoryState("ready");
     } catch (error) {

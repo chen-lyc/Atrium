@@ -24,7 +24,7 @@ export default function LoginPage({ onSwitchRegister, onSuccess, disabled }) {
     if (passwordError) { setFieldErrors({ nickname: "", password: passwordError }); setNetworkError(""); return; }
     setFieldErrors({ nickname: "", password: "" }); setNetworkError(""); setIsSubmitting(true);
     try {
-      const res = await fetch("/login", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: buildAuthBody(trimmedNickname, password), credentials: "include" });
+      const res = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: buildAuthBody(trimmedNickname, password), credentials: "include" });
       if (res.ok) { onSuccess(await readAuthSuccess(res, trimmedNickname)); return; }
       const failure = await resolveAuthFailure(res, "login");
       setFieldErrors({ nickname: failure.field === "nickname" ? failure.message : "", password: failure.field === "password" ? failure.message : "" });

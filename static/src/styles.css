@@ -138,7 +138,10 @@ html.theme-ready .message-block,
 html.theme-ready .composer,
 html.theme-ready .header,
 html.theme-ready .sidebar,
-html.theme-ready .main {
+html.theme-ready .main,
+html.theme-ready .room-context-strip,
+html.theme-ready .room-presence-item,
+html.theme-ready .room-member-dot {
     transition:
         background-color 220ms var(--easing),
         border-color 220ms var(--easing),
@@ -1816,6 +1819,8 @@ button:not(:disabled) {
     position: relative;
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    gap: 10px;
     width: 100%;
     min-height: 32px;
     padding: 0 10px 0 12px;
@@ -1855,9 +1860,36 @@ button:not(:disabled) {
 
 .room-main {
     min-width: 0;
+    flex: 1 1 auto;
     display: flex;
     flex-direction: column;
     gap: 1px;
+}
+
+.room-member-hints {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+    opacity: 0.62;
+}
+
+.room-item.is-active .room-member-hints {
+    opacity: 0.86;
+}
+
+.room-member-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 2px;
+    border: 1px solid color-mix(in srgb, var(--text-subtle) 44%, transparent);
+    background: color-mix(in srgb, var(--bg-main) 72%, transparent);
+}
+
+.room-member-dot.is-ai {
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--text-subtle));
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    transform: rotate(45deg);
 }
 
 .room-label {
@@ -1918,6 +1950,139 @@ button:not(:disabled) {
 
 .messages-stage > .messages {
     flex: 1 1 auto;
+    z-index: 1;
+}
+
+.room-atmosphere-layer {
+    position: absolute;
+    inset: 44px 0 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: 0.9;
+    mask-image: linear-gradient(180deg, transparent 0, #000 42px, #000 78%, transparent 100%);
+    -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 42px, #000 78%, transparent 100%);
+}
+
+.room-atmosphere-layer span {
+    position: absolute;
+    left: 50%;
+    display: block;
+    pointer-events: none;
+}
+
+.room-atmosphere-arch {
+    transform: translateX(-50%);
+    border: 1px solid color-mix(in srgb, var(--text-subtle) 16%, transparent);
+    border-bottom: 0;
+    border-radius: 999px 999px 0 0 / 180px 180px 0 0;
+}
+
+.room-atmosphere-arch.is-outer {
+    top: 34px;
+    width: min(calc(100% - 54px), 840px);
+    height: 190px;
+}
+
+.room-atmosphere-arch.is-inner {
+    top: 82px;
+    width: min(calc(100% - 118px), 590px);
+    height: 116px;
+    opacity: 0.72;
+}
+
+.room-atmosphere-table {
+    top: 168px;
+    width: min(52vw, 380px);
+    height: 1px;
+    transform: translateX(-50%);
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text-subtle) 19%, transparent), transparent);
+}
+
+.room-atmosphere-thread {
+    top: 118px;
+    width: min(28vw, 210px);
+    height: 1px;
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text-subtle) 14%, transparent));
+    opacity: 0.72;
+}
+
+.room-atmosphere-thread.is-left {
+    transform: translateX(calc(-100% - 110px)) rotate(-8deg);
+}
+
+.room-atmosphere-thread.is-right {
+    transform: translateX(110px) rotate(8deg) scaleX(-1);
+}
+
+.room-atmosphere-seat {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--bg-main) 86%, transparent);
+    border: 1px solid color-mix(in srgb, var(--text-subtle) 30%, transparent);
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--bg-hover) 42%, transparent);
+}
+
+.room-atmosphere-seat.is-self {
+    top: 60px;
+    transform: translateX(-50%);
+    border-color: color-mix(in srgb, var(--success) 42%, var(--line));
+}
+
+.room-atmosphere-seat.is-ai {
+    top: 147px;
+    transform: translateX(150px) rotate(45deg);
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+
+.room-atmosphere-seat.is-note {
+    top: 147px;
+    transform: translateX(-158px);
+    border-color: color-mix(in srgb, var(--warning) 42%, var(--line));
+}
+
+.messages-stage.is-personal .room-atmosphere-arch.is-outer {
+    border-color: color-mix(in srgb, var(--success) 16%, var(--line));
+    width: min(calc(100% - 92px), 700px);
+}
+
+.messages-stage.is-personal .room-atmosphere-arch.is-inner {
+    border-color: color-mix(in srgb, var(--success) 14%, var(--line));
+    width: min(calc(100% - 160px), 480px);
+}
+
+.messages-stage.is-personal .room-atmosphere-layer {
+    animation: room-atmosphere-breathe 8s var(--easing) infinite;
+}
+
+.messages-stage.is-public .room-atmosphere-arch.is-outer {
+    width: min(calc(100% - 32px), 920px);
+    border-color: color-mix(in srgb, var(--accent) 15%, var(--line));
+}
+
+.messages-stage.is-public .room-atmosphere-arch.is-inner {
+    width: min(calc(100% - 92px), 650px);
+    border-color: color-mix(in srgb, var(--accent) 13%, var(--line));
+}
+
+.messages-stage.is-public .room-atmosphere-thread {
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 14%, transparent), transparent);
+}
+
+.messages-stage.is-public .room-atmosphere-layer {
+    animation: room-atmosphere-breathe 10s var(--easing) infinite;
+}
+
+@keyframes room-atmosphere-breathe {
+    0%, 100% {
+        opacity: 0.72;
+        transform: translateY(0);
+    }
+    50% {
+        opacity: 0.96;
+        transform: translateY(3px);
+    }
 }
 
 .header {
@@ -1976,7 +2141,49 @@ button:not(:disabled) {
     white-space: nowrap;
 }
 
+.room-presence-strip {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px 10px;
+    margin-top: 2px;
+    min-height: 18px;
+}
+
+.room-presence-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    line-height: 1.2;
+    color: var(--text-subtle);
+    white-space: nowrap;
+}
+
+.room-presence-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--text-subtle) 48%, transparent);
+}
+
+.room-presence-item.is-self .room-presence-dot {
+    background: color-mix(in srgb, var(--success) 58%, transparent);
+}
+
+.room-presence-item.is-ai .room-presence-dot {
+    background: color-mix(in srgb, var(--accent) 48%, transparent);
+    transform: rotate(45deg);
+}
+
+.room-presence-item.is-note .room-presence-dot {
+    border: 1px solid color-mix(in srgb, var(--warning) 56%, transparent);
+    background: transparent;
+}
+
 .room-context-strip {
+    position: relative;
+    z-index: 2;
     width: min(100%, var(--content-max));
     min-height: 44px;
     margin: 0 auto;
@@ -1990,6 +2197,9 @@ button:not(:disabled) {
     line-height: 1.45;
     border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
     border-bottom: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+    background: color-mix(in srgb, var(--bg-main) 82%, transparent);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
 }
 
 .room-context-copy {
@@ -2117,6 +2327,17 @@ button:not(:disabled) {
     background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text-subtle) 18%, transparent), transparent);
     opacity: 0.7;
     z-index: 0;
+}
+
+.messages-stage.is-personal > .messages::before {
+    border-color: color-mix(in srgb, var(--success) 13%, var(--line));
+    border-bottom-color: transparent;
+}
+
+.messages-stage.is-public > .messages::before {
+    width: min(calc(100% - 34px), 900px);
+    border-color: color-mix(in srgb, var(--accent) 13%, var(--line));
+    border-bottom-color: transparent;
 }
 
 .messages-inner {
@@ -3369,6 +3590,10 @@ button:not(:disabled) {
         padding: 0 14px;
     }
 
+    .room-presence-strip {
+        gap: 4px 8px;
+    }
+
     .room-context-cues {
         gap: 10px;
     }
@@ -3423,6 +3648,15 @@ button:not(:disabled) {
         align-items: flex-start;
     }
 
+    .room-presence-strip {
+        max-width: calc(100vw - 112px);
+        overflow: hidden;
+    }
+
+    .room-presence-item {
+        font-size: 10px;
+    }
+
     .room-context-copy {
         align-items: flex-start;
     }
@@ -3437,6 +3671,26 @@ button:not(:disabled) {
 
     .room-context-cues {
         display: none;
+    }
+
+    .room-atmosphere-layer {
+        top: 58px;
+    }
+
+    .room-atmosphere-arch.is-outer {
+        width: calc(100% - 24px);
+    }
+
+    .room-atmosphere-arch.is-inner {
+        width: calc(100% - 78px);
+    }
+
+    .room-atmosphere-seat.is-ai {
+        transform: translateX(104px) rotate(45deg);
+    }
+
+    .room-atmosphere-seat.is-note {
+        transform: translateX(-112px);
     }
 
     .messages {

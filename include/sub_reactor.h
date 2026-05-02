@@ -1,11 +1,11 @@
 #pragma once
 
 #include "connection.h"
+#include "http_route.h"
 #include "memory_pool.h"
 #include "timerheap.h"
 #include <atomic>
 #include <memory>
-#include <optional>
 #include <protocol_frame.h>
 #include <queue>
 #include <sys/eventfd.h>
@@ -59,4 +59,5 @@ class Reactor {
     std::unordered_map<int, std::unique_ptr<Connection, ConnDeleter>> m_conns;
     std::thread m_thread;
     std::atomic<bool> m_running{true};
+    http::Router m_router;
 };

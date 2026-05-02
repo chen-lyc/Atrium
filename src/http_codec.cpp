@@ -196,10 +196,10 @@ ParseState parseHttpRequest(string_view raw, HttpRequest &req) {
                 LOG_DEBUG("headers parse error");
                 req.state = PARSE_ERROR;
             } else if (key == "host") {
-                req.host = move(value);
+                req.host = std::move(value);
             } else if (key == "connection") {
                 transform(value.begin(), value.end(), value.begin(), ::tolower);
-                req.connection = move(value);
+                req.connection = std::move(value);
             } else if (key == "content-type") {
                 size_t semi_pos = value.find(';'); // application/json; charset=utf-8
                 if (semi_pos != string::npos) {
@@ -214,7 +214,7 @@ ParseState parseHttpRequest(string_view raw, HttpRequest &req) {
                 }
                 value = value.substr(start, end - start + 1);
                 transform(value.begin(), value.end(), value.begin(), ::tolower);
-                req.content_type = move(value);
+                req.content_type = std::move(value);
             } else if (key == "content-length") {
                 try {
                     req.content_length = stoull(value);
@@ -224,7 +224,7 @@ ParseState parseHttpRequest(string_view raw, HttpRequest &req) {
                 }
             } else if (key == "upgrade") {
                 transform(value.begin(), value.end(), value.begin(), ::tolower);
-                req.upgrade = move(value);
+                req.upgrade = std::move(value);
             } else if (key == "sec-websocket-version") {
                 size_t end = 0;
                 try {
@@ -241,7 +241,7 @@ ParseState parseHttpRequest(string_view raw, HttpRequest &req) {
                     return PARSE_ERROR;
                 }
             } else if (key == "sec-websocket-key") {
-                req.sec_websocket_key = move(value);
+                req.sec_websocket_key = std::move(value);
             } else if (key == "cookie") {
                 size_t start = 0;
                 while (start < value.size()) {

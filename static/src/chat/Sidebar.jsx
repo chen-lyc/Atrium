@@ -100,6 +100,8 @@ export default function Sidebar({
           {resolvedRooms.map((room) => {
             const isActive = room.id === activeRoomId || (!activeRoomId && room.name === roomName);
             const isDisabled = readOnly || !room.isAvailable;
+            const cues = Array.isArray(room.cues) ? room.cues.join(" ") : "";
+            const showsAiMember = /ai/i.test(cues) || room.note?.includes("AI");
             return (
               <motion.button
                 key={room.id}
@@ -114,6 +116,10 @@ export default function Sidebar({
                 <span className="room-main">
                   <span className="room-label">{room.name}</span>
                   {room.note ? <span className="room-status">{room.note}</span> : null}
+                </span>
+                <span className="room-member-hints" aria-hidden="true" title={showsAiMember ? "AI 可加入" : "讨论成员"}>
+                  <span className="room-member-dot is-self" />
+                  {showsAiMember ? <span className="room-member-dot is-ai" /> : null}
                 </span>
               </motion.button>
             );
