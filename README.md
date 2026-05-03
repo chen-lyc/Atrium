@@ -160,23 +160,43 @@ CREATE TABLE users (
   username VARCHAR(32) UNIQUE NOT NULL,
   password_hash BINARY(32),
   salt BINARY(16),
+
   PRIMARY KEY (id)
+)engine = InnoDB default charset = utf8mb4;
+
+CREATE TABLE rooms (
+    id BIGINT UNSIGNED AUTO_INCREMENT,
+    name VARCHAR(32) NOT NULL,
+    main_conversation_id BIGINT UNSIGNED NOT NULL,
+    owner_id BIGINT UNSIGNED NOT NULL,
+    created_at_ms BIGINT UNSIGNED NOT NULL,
+
+    PRIMARY KEY (id)
+)engine = InnoDB default charset = utf8mb4;
+
+INSERT INTO rooms (id, name, main_conversation_id, owner_id, created_at_ms) VALUES (1, 'Atrium 大厅', 1, 0, 0);
+
+CREATE TABLE room_members (
+  room_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  role TINYINT UNSIGNED NOT NULL,
+  join_at_ms BIGINT UNSIGNED NOT NULL,
+
+  PRIMARY KEY (room_id, user_id)
 )engine = InnoDB default charset = utf8mb4;
 
 CREATE TABLE conversations (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  name VARCHAR(32) NOT NULL,
-  PRIMARY KEY (id)
+  id BIGINT UNSIGNED AUTO_INCREMENT,
+  room_id BIGINT UNSIGNED NOT NULL,
+  title VARCHAR(32) NOT NULL,
+  created_by BIGINT UNSIGNED NOT NULL,
+  created_at_ms BIGINT UNSIGNED NOT NULL,
+
+  PRIMARY KEY (id),
+  KEY idx_room_id (room_id)
 )engine = InnoDB default charset = utf8mb4;
 
-INSERT INTO conversations (id, name) VALUES (1, 'Atrium 大厅');
-
-CREATE TABLE conversation_members (
-  conversation_id BIGINT UNSIGNED NOT NULL,
-  user_id BIGINT UNSIGNED NOT NULL,
-
-  PRIMARY KEY (conversation_id, user_id)
-)engine = InnoDB default charset = utf8mb4;
+INSERT INTO conversations (id, room_id, title, created_by, created_at_ms) VALUES (1, 1,'Atrium 大厅', 0, 0);
 
 CREATE TABLE messages (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

@@ -64,6 +64,12 @@ export function normalizeIncomingConversationId(payload) {
   return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : 0;
 }
 
+export function normalizeIncomingRoomId(payload) {
+  const value = payload.room_id != null ? payload.room_id : payload.roomId;
+  const numericValue = Number(value);
+  return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : 0;
+}
+
 export function normalizeIncomingMessageType(payload) {
   const value = payload.type != null ? payload.type : payload.messageType;
   const numericValue = Number(value);
@@ -100,8 +106,10 @@ export function normalizeAuthConversations(data) {
         conversation_id: item?.id ?? item?.conversation_id ?? item?.conversationId
       });
       const name =
-        typeof item?.name === "string" && item.name.trim()
-          ? item.name.trim()
+        typeof item?.title === "string" && item.title.trim()
+          ? item.title.trim()
+          : typeof item?.name === "string" && item.name.trim()
+            ? item.name.trim()
           : id
             ? `讨论室 ${id}`
             : "";
@@ -110,6 +118,37 @@ export function normalizeAuthConversations(data) {
     .filter((conversation) => {
       if (!conversation.id || seen.has(conversation.id)) return false;
       seen.add(conversation.id);
+      return true;
+    });
+}
+
+export function normalizeAuthRooms(data) {
+  const rawRooms = Array.isArray(data?.rooms) ? data.rooms : [];
+  const seen = new Set();
+  return rawRooms
+    .map((item) => {
+      const roomId = normalizeIncomingRoomId({
+        room_id: item?.room_id ?? item?.roomId ?? item?.id
+      });
+      const mainConversationId = normalizeIncomingConversationId({
+        conversation_id:
+          item?.main_conversation_id ??
+          item?.mainConversationId ??
+          item?.conversation_id ??
+          item?.conversationId
+      });
+      const name =
+        typeof item?.name === "string" && item.name.trim()
+          ? item.name.trim()
+          : roomId
+            ? `房间 ${roomId}`
+            : "";
+      const conversations = normalizeAuthConversations(item);
+      return { roomId, id: roomId, name, mainConversationId, conversations };
+    })
+    .filter((room) => {
+      if (!room.roomId || seen.has(room.roomId)) return false;
+      seen.add(room.roomId);
       return true;
     });
 }
@@ -143,6 +182,7 @@ export function normalizeIncomingMessage(payload, currentNickname, currentUserId
     userId: normalizedUserId,
     username: normalizedUsername,
     nickname: normalizedNickname,
+    roomId: normalizeIncomingRoomId(payload),
     conversationId: normalizeIncomingConversationId(payload),
     messageType: normalizeIncomingMessageType(payload),
     text: getIncomingText(payload),
@@ -223,6 +263,7 @@ export function decorateMessages(messages) {
 
 export function deleteSessionCookie() {
   deleteCookie("session_id");
+  deleteCookie("room_id");
   deleteCookie("conversation_id");
   deleteCookie("personal_conversation_id");
   deleteCookie("public_conversation_id");
@@ -340,6 +381,7 @@ export function normalizeAuthPayload(data, fallbackNickname = "") {
     ...(data && typeof data === "object" ? data : {}),
     userId,
     nickname,
+    rooms: normalizeAuthRooms(data),
     conversations: normalizeAuthConversations(data)
   };
 }
@@ -367,15 +409,39 @@ async function fetchAuthRooms() {
   }
 }
 
+async function fetchRoomConversations(roomId) {
+  if (!roomId) return [];
+  try {
+    const res = await fetch(`/api/rooms/${roomId}/conversations`, {
+      method: "GET",
+      credentials: "include"
+    });
+    if (!res.ok) return [];
+    return normalizeAuthConversations(await readJsonOrEmpty(res));
+  } catch (error) {
+    return [];
+  }
+}
+
 async function attachRoomsToSession(session) {
   const roomResult = await fetchAuthRooms();
   if (!roomResult.ok) return session;
 
   const roomsSession = normalizeAuthPayload(roomResult.data, session.nickname);
+  const hydratedRooms = await Promise.all(
+    roomsSession.rooms.map(async (room) => {
+      const conversations = await fetchRoomConversations(room.roomId);
+      return {
+        ...room,
+        conversations: conversations.length ? conversations : room.conversations
+      };
+    })
+  );
   return {
     ...session,
     ...(roomResult.data && typeof roomResult.data === "object" ? roomResult.data : {}),
     nickname: roomsSession.nickname || session.nickname,
+    rooms: hydratedRooms,
     conversations: roomsSession.conversations.length
       ? roomsSession.conversations
       : session.conversations

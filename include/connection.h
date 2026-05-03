@@ -17,7 +17,7 @@ struct Connection {
     off_t file_offset = 0;
     uint64_t user_id = 0;
     std::string username;
-    std::unordered_set<uint64_t> conversation_ids;
+    std::unordered_set<uint64_t> room_ids;
     std::string inbuf;
     std::string outbuf;
     bool readClosed = false;

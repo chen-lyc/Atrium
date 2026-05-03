@@ -132,9 +132,9 @@ void Reactor::loop() {
                 while (!broadcast_queue.empty()) {
                     const auto &frame = *broadcast_queue.front().frame;
                     const vector<int> &fds = broadcast_queue.front().target_fds;
-                    const uint64_t conversation_id = broadcast_queue.front().conversation_id;
+                    const uint64_t room_id = broadcast_queue.front().room_id;
                     for (int fd : fds) {
-                        if (!m_conns.contains(fd) || m_conns[fd]->protocol != PROTO_WEBSOCKET || !m_conns[fd]->conversation_ids.contains(conversation_id)) continue;
+                        if (!m_conns.contains(fd) || m_conns[fd]->protocol != PROTO_WEBSOCKET || !m_conns[fd]->room_ids.contains(room_id)) continue;
                         LOG_DEBUG("reactor[%d] broadcast frame size = %zu to fd = %d",
                             m_index,
                             frame.size(),
@@ -198,7 +198,7 @@ void Reactor::process(Connection &conn) {
     FrameResult res;
     while ((res = checkFrame(conn)).status == FrameStatus::Complete) {
         bool should_broadcast = false;
-        uint64_t conversation_id = 0;
+        uint64_t room_id = 0;
         string broadcast_frame;
         unordered_map<int, vector<int>> reactor_to_fds;
 
@@ -255,12 +255,12 @@ void Reactor::process(Connection &conn) {
 
                 SessionResult ret = get_session(req, conn.user_id, conn.username);
                 if (ret == SessionResult::Success) {
-                    MysqlPool::QueryResult get_ret = get_conversation_ids(conn.user_id, conn.conversation_ids);
+                    MysqlPool::QueryResult get_ret = get_room_ids(conn.user_id, conn.room_ids);
                     if (get_ret == MysqlPool::QueryResult::NotFound || get_ret == MysqlPool::QueryResult::ServerError) {
                         if (sendError(conn, resp_server_error, res.end_pos)) continue;
                         return;
                     }
-                    for (auto it = conn.conversation_ids.begin(); it != conn.conversation_ids.end(); ++it) {
+                    for (auto it = conn.room_ids.begin(); it != conn.room_ids.end(); ++it) {
                         ConnRoute::getInstance().add(*it, m_index, conn.fd);
                     }
 
@@ -454,13 +454,28 @@ void Reactor::process(Connection &conn) {
                 if (opcode == WS_TEXT) {
                     try {
                         json in = json::parse(payload_data);
-                        conversation_id = in["conversation_id"];
+                        room_id = in["room_id"];
+                        uint64_t conversation_id = in["conversation_id"];
 
-                        if (!conn.conversation_ids.contains(conversation_id)) {
+                        if (!conn.room_ids.contains(room_id)) {
                             sendError(conn, WS_PROTOCOLERROR);
                             return false;
                         }
-                        reactor_to_fds = ConnRoute::getInstance().query(conversation_id);
+                        uint64_t real_room_id = 0;
+                        MysqlPool::QueryResult ret = get_room_from_conversations(real_room_id, conversation_id);
+                        if (ret == MysqlPool::QueryResult::NotFound) {
+                            sendError(conn, WS_PROTOCOLERROR);
+                            return false;
+                        }
+                        if (ret != MysqlPool::QueryResult::Success) {
+                            sendError(conn, WS_SERVERERROR);
+                            return false;
+                        }
+                        if (real_room_id != room_id) {
+                            sendError(conn, WS_PROTOCOLERROR);
+                            return false;
+                        }
+                        reactor_to_fds = ConnRoute::getInstance().query(room_id);
                         if (reactor_to_fds.empty()) {
                             sendError(conn, WS_PROTOCOLERROR);
                             return false;
@@ -478,7 +493,7 @@ void Reactor::process(Connection &conn) {
                             return false;
                         }
                         uint64_t message_id = 0;
-                        MysqlPool::QueryResult ret = insert_message(msg, message_id);
+                        ret = insert_message(msg, message_id);
                         if (ret == MysqlPool::QueryResult::AlreadyExists) {
                             return true;
                         }
@@ -488,6 +503,7 @@ void Reactor::process(Connection &conn) {
                         }
 
                         json out;
+                        out["room_id"] = room_id;
                         out["conversation_id"] = conversation_id;
                         out["user_id"] = conn.user_id;
                         out["username"] = conn.username;
@@ -562,7 +578,7 @@ void Reactor::process(Connection &conn) {
         conn.inbuf.erase(conn.inbuf.begin(), conn.inbuf.begin() + res.end_pos);
         int conn_fd = conn.fd;
 
-        if (should_broadcast && conversation_id && !broadcast_frame.empty()) {
+        if (should_broadcast && room_id && !broadcast_frame.empty()) {
             shared_ptr<const string> frame = make_shared<string>(broadcast_frame);
             LOG_DEBUG("fd = %d, in reactor[%d], push a broadcast frame size = %zu",
                 conn.fd,
@@ -570,7 +586,7 @@ void Reactor::process(Connection &conn) {
                 broadcast_frame.size());
 
             for (auto it = reactor_to_fds.begin(); it != reactor_to_fds.end(); ++it) {
-                m_sub_reactors[it->first]->enqueueBroadcast({conversation_id, it->second, frame});
+                m_sub_reactors[it->first]->enqueueBroadcast({room_id, it->second, frame});
             }
         } else {
             trySend(conn);
@@ -740,7 +756,7 @@ void Reactor::closeFile(Connection &conn) {
 }
 
 void Reactor::closeNow(int fd) {
-    for (auto it = m_conns[fd]->conversation_ids.begin(); it != m_conns[fd]->conversation_ids.end(); ++it) {
+    for (auto it = m_conns[fd]->room_ids.begin(); it != m_conns[fd]->room_ids.end(); ++it) {
         ConnRoute::getInstance().remove(*it, m_index, fd);
     }
     epoll_ctl(m_epollfd, EPOLL_CTL_DEL, fd, nullptr);

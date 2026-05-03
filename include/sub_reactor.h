@@ -48,7 +48,7 @@ class Reactor {
     std::mutex m_queue_mutex;
 
     struct BroadcastTask {
-        uint64_t conversation_id;
+        uint64_t room_id;
         std::vector<int> target_fds;
         std::shared_ptr<const std::string> frame;
     };

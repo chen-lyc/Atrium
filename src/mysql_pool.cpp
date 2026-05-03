@@ -16,7 +16,7 @@ MysqlPool::MysqlPool(int min_connections, int max_connections) : m_min_connectio
             unique_ptr<sql::Connection> conn(driver->connect("tcp://127.0.0.1:3306", "lyc", "lYc@123456"));
             conn->setSchema("webserver");
 
-            m_ready_queue.emplace(move(conn));
+            m_ready_queue.emplace(std::move(conn));
             ++m_connections;
             fail_count = 0;
         } catch (const sql::SQLException &e) {
@@ -83,7 +83,7 @@ MysqlPool::QueryResult MysqlPool::executeQuery(const std::string &sql, MysqlPara
             for (size_t i = 0; i < col_count; ++i) {
                 row.emplace_back(rs->getString(i + 1));
             }
-            rows.emplace_back(move(row));
+            rows.emplace_back(std::move(row));
         } while (rs->next());
         return MysqlPool::QueryResult::Success;
     } catch (const sql::SQLException &e) {
@@ -188,7 +188,7 @@ MysqlConnGuard::MysqlConnGuard(MysqlPool &pool) : m_pool(pool) {
             }
         }
 
-        m_mysql_conn = move(pool.m_ready_queue.front());
+        m_mysql_conn = std::move(pool.m_ready_queue.front());
         pool.m_ready_queue.pop();
     }
 }
@@ -199,7 +199,7 @@ MysqlConnGuard::~MysqlConnGuard() {
     }
     {
         lock_guard<mutex> lock(m_pool.m_mutex);
-        m_pool.m_ready_queue.emplace(move(m_mysql_conn));
+        m_pool.m_ready_queue.emplace(std::move(m_mysql_conn));
         if (m_pool.m_waiters > 0) --m_pool.m_waiters;
     }
     m_pool.m_conn_available_cond.notify_one();
@@ -242,7 +242,7 @@ void MysqlPool::maintainConnections() {
             fail_count = 0;
 
             lock.lock();
-            m_ready_queue.emplace(move(mysql_conn));
+            m_ready_queue.emplace(std::move(mysql_conn));
             ++m_connections;
             if (m_waiters > 0) --m_waiters;
             m_conn_available_cond.notify_one();

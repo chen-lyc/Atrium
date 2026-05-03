@@ -20,7 +20,6 @@ enum class RouteResult {
 struct RequestLine {
     std::string_view method;
     std::vector<std::string_view> segments;
-    std::string_view query;
 };
 RequestLine parse_request_line(std::string_view method, std::string_view target);
 
@@ -56,6 +55,7 @@ class Router {
 RouteResult handle_login(RequestContext &ctx);
 RouteResult handle_register(RequestContext &ctx);
 RouteResult handle_me(RequestContext &ctx);
-RouteResult handle_rooms(RequestContext &ctx);
+RouteResult handle_list_rooms(RequestContext &ctx);
+RouteResult handle_list_room_members(RequestContext &ctx);
 RouteResult handle_conversation_messages(RequestContext &ctx);
 } // namespace http

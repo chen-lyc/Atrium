@@ -61,13 +61,30 @@ SessionResult create_session(uint64_t user_id, const std::string &username, std:
 SessionResult get_session(HttpRequest &req, uint64_t &user_id, std::string &username);
 void destroy_session(const std::string &token);
 
-MysqlPool::QueryResult get_conversation_ids(uint64_t user_id, std::unordered_set<uint64_t> &ids);
-MysqlPool::QueryResult get_conversation_name(uint64_t conversation_id, std::string &conversatrion_name);
-MysqlPool::QueryResult create_personal_chatroom(uint64_t &conversation_id, uint64_t user_id);
+MysqlPool::QueryResult get_room_ids(uint64_t user_id, std::vector<uint64_t> &ids);
+MysqlPool::QueryResult get_room_ids(uint64_t user_id, std::unordered_set<uint64_t> &ids);
+MysqlPool::QueryResult get_room_data(uint64_t room_id, std::string &room_name, uint64_t &main_conversation_id);
+
+enum class RoomRole {
+    Owner = 0,
+    Admin = 1,
+    Member = 2,
+};
+
+MysqlPool::QueryResult create_personal_chatroom(uint64_t &room_id, uint64_t &main_conversation_id, uint64_t user_id);
+MysqlPool::QueryResult create_personal_chatroom(uint64_t &room_id, uint64_t user_id);
 MysqlPool::QueryResult create_personal_chatroom(uint64_t user_id);
-MysqlPool::QueryResult insert_public_chatroom(uint64_t &conversation_id, uint64_t user_id);
+MysqlPool::QueryResult insert_public_chatroom(uint64_t &room_id, uint64_t &main_conversation_id, uint64_t user_id);
+MysqlPool::QueryResult insert_public_chatroom(uint64_t &room_id, uint64_t user_id);
 MysqlPool::QueryResult insert_public_chatroom(uint64_t user_id);
+
+MysqlPool::QueryResult create_conversation(uint64_t room_id, uint64_t created_by, uint64_t &conversation_id);
+
+MysqlPool::QueryResult get_room_from_conversations(uint64_t &room_id, uint64_t conversation_id);
+MysqlPool::QueryResult verify_room_member(uint64_t room_id, uint64_t user_id);
 MysqlPool::QueryResult verify_conversation_member(uint64_t conversation_id, uint64_t user_id);
+
+MysqlPool::QueryResult get_list_conversations_by_room_id(uint64_t room_id, std::vector<uint64_t> &ids, std::vector<std::string> &titles);
 
 namespace chatdb {
 enum class MessageType {

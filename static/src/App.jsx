@@ -86,20 +86,6 @@ function normalizeConversationId(value) {
   const numericValue = Number(value);
   return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : 0;
 }
-function getPublicConversationId() {
-  const bootstrappedValue = normalizeConversationId(window.__ATRIUM_PUBLIC_CONVERSATION_ID);
-  if (bootstrappedValue) return bootstrappedValue;
-  const cookieValue = normalizeConversationId(getCookieValue("public_conversation_id"));
-  if (cookieValue) return cookieValue;
-  return normalizeConversationId(PUBLIC_CONVERSATION_ID);
-}
-function getPublicConversationCandidates() {
-  return [
-    normalizeConversationId(window.__ATRIUM_PUBLIC_CONVERSATION_ID),
-    normalizeConversationId(getCookieValue("public_conversation_id")),
-    normalizeConversationId(PUBLIC_CONVERSATION_ID)
-  ].filter(Boolean);
-}
 function persistPersonalConversationId(conversationId) {
   const normalizedId = normalizeConversationId(conversationId);
   if (normalizedId) setCookieValue("personal_conversation_id", normalizedId);
@@ -110,10 +96,42 @@ function getPersonalConversationId() {
   const storedValue = normalizeConversationId(getCookieValue("personal_conversation_id"));
   return persistPersonalConversationId(storedValue || cookieValue || DEFAULT_CONVERSATION_ID);
 }
-function createPersonalRoom(conversationId, name = "我的讨论室") {
+
+function normalizeRoomRecord(room) {
+  const roomId = normalizeConversationId(room?.roomId ?? room?.room_id ?? room?.id);
+  const conversations = Array.isArray(room?.conversations)
+    ? room.conversations
+        .map((conversation) => ({
+          id: normalizeConversationId(conversation?.id ?? conversation?.conversation_id ?? conversation?.conversationId),
+          name: typeof conversation?.title === "string" && conversation.title.trim()
+            ? conversation.title.trim()
+            : typeof conversation?.name === "string" && conversation.name.trim()
+              ? conversation.name.trim()
+              : ""
+        }))
+        .filter((conversation) => conversation.id)
+    : [];
+  const mainConversationId =
+    normalizeConversationId(room?.mainConversationId ?? room?.main_conversation_id) ||
+    conversations[0]?.id ||
+    normalizeConversationId(room?.conversationId ?? room?.conversation_id);
+  const name = typeof room?.name === "string" && room.name.trim() ? room.name.trim() : "";
+  return { roomId, name, mainConversationId, conversations };
+}
+
+function getRoomConversationId(record, fallbackConversationId = DEFAULT_CONVERSATION_ID) {
+  return normalizeConversationId(record?.mainConversationId) ||
+    normalizeConversationId(record?.conversations?.[0]?.id) ||
+    normalizeConversationId(fallbackConversationId) ||
+    DEFAULT_CONVERSATION_ID;
+}
+
+function createPersonalRoom(record, fallbackConversationId = DEFAULT_CONVERSATION_ID) {
+  const conversationId = getRoomConversationId(record, fallbackConversationId);
   return {
     id: PERSONAL_ROOM_ID,
-    name,
+    roomId: normalizeConversationId(record?.roomId),
+    name: record?.name || "我的讨论室",
     note: "安静的个人空间",
     description: "适合先整理自己的想法，也为未来的个人 + 多 AI 讨论预留位置。",
     placeLabel: "个人空间",
@@ -123,14 +141,17 @@ function createPersonalRoom(conversationId, name = "我的讨论室") {
     emptyHint: "写下一个问题、计划或灵感，个人讨论室会先替你留住它。",
     composerPlaceholder: "在个人房间写下一个想法...",
     tone: "personal",
+    conversations: record?.conversations || [],
     conversationId,
     isAvailable: true
   };
 }
-function createPublicRoom(conversationId, name = "Atrium 大厅") {
+function createPublicRoom(record, fallbackConversationId = PUBLIC_CONVERSATION_ID) {
+  const conversationId = getRoomConversationId(record, fallbackConversationId);
   return {
     id: PUBLIC_ROOM_ID,
-    name,
+    roomId: normalizeConversationId(record?.roomId) || 1,
+    name: record?.name || "Atrium 大厅",
     note: "多人共享讨论",
     description: "和其他人进入同一个空间，把临时对话逐步沉淀成清晰结论。",
     placeLabel: "公共大厅",
@@ -140,14 +161,17 @@ function createPublicRoom(conversationId, name = "Atrium 大厅") {
     emptyHint: "发起一个话题，让这张公共讨论桌开始有声音。",
     composerPlaceholder: "向大厅发起一个话题...",
     tone: "public",
+    conversations: record?.conversations || [],
     conversationId,
     isAvailable: true
   };
 }
-function createGenericRoom(conversation, index) {
-  const name = conversation.name || `讨论室 ${conversation.id}`;
+function createGenericRoom(record, index) {
+  const roomId = normalizeConversationId(record?.roomId);
+  const name = record?.name || `讨论室 ${roomId}`;
   return {
-    id: `conversation-${conversation.id}`,
+    id: `room-${roomId}`,
+    roomId,
     name,
     note: "讨论室",
     description: `${name} 的实时讨论空间。`,
@@ -158,56 +182,49 @@ function createGenericRoom(conversation, index) {
     emptyHint: "发起第一段讨论，让这个房间开始运转。",
     composerPlaceholder: `在${name}写下消息...`,
     tone: index % 2 === 0 ? "personal" : "public",
-    conversationId: conversation.id,
+    conversations: record?.conversations || [],
+    conversationId: getRoomConversationId(record),
     isAvailable: true
   };
 }
 function createFallbackRoomList(personalConversationId) {
   const personalId = normalizeConversationId(personalConversationId) || DEFAULT_CONVERSATION_ID;
-  const publicId = getPublicConversationId();
   return [
-    createPersonalRoom(personalId),
-    createPublicRoom(publicId || DEFAULT_CONVERSATION_ID)
+    createPersonalRoom({ roomId: 0, name: "我的讨论室", mainConversationId: personalId }, personalId),
+    createPublicRoom({ roomId: 1, name: "Atrium 大厅", mainConversationId: PUBLIC_CONVERSATION_ID }, PUBLIC_CONVERSATION_ID)
   ];
 }
-function createRoomList(conversations, personalConversationId) {
-  const records = Array.isArray(conversations)
-    ? conversations
-        .map((conversation) => ({
-          id: normalizeConversationId(conversation?.id),
-          name: typeof conversation?.name === "string" && conversation.name.trim()
-            ? conversation.name.trim()
-            : ""
-        }))
-        .filter((conversation) => conversation.id)
+function createRoomList(roomRecords, personalConversationId) {
+  const records = Array.isArray(roomRecords)
+    ? roomRecords
+        .map(normalizeRoomRecord)
+        .filter((room) => room.roomId && room.mainConversationId)
     : [];
   if (!records.length) return createFallbackRoomList(personalConversationId);
 
   const publicRecord =
-    getPublicConversationCandidates()
-      .map((id) => records.find((conversation) => conversation.id === id))
-      .find(Boolean) ||
-    records.find((conversation) => conversation.name.includes("大厅"));
+    records.find((room) => room.roomId === 1) ||
+    records.find((room) => room.name.includes("大厅"));
   const personalRecord =
-    records.find((conversation) => conversation.id !== publicRecord?.id && conversation.name.includes("个人")) ||
-    records.find((conversation) => conversation.id !== publicRecord?.id);
+    records.find((room) => room.roomId !== publicRecord?.roomId && room.name.includes("个人")) ||
+    records.find((room) => room.roomId !== publicRecord?.roomId);
   const usedIds = new Set();
   const rooms = [];
 
   if (personalRecord) {
-    rooms.push(createPersonalRoom(personalRecord.id, personalRecord.name || "我的讨论室"));
-    usedIds.add(personalRecord.id);
+    rooms.push(createPersonalRoom(personalRecord, personalConversationId));
+    usedIds.add(personalRecord.roomId);
   }
   if (publicRecord) {
-    rooms.push(createPublicRoom(publicRecord.id, publicRecord.name || "Atrium 大厅"));
-    usedIds.add(publicRecord.id);
+    rooms.push(createPublicRoom(publicRecord, PUBLIC_CONVERSATION_ID));
+    usedIds.add(publicRecord.roomId);
   }
 
   records
-    .filter((conversation) => !usedIds.has(conversation.id))
-    .sort((a, b) => a.id - b.id)
-    .forEach((conversation, index) => {
-      rooms.push(createGenericRoom(conversation, index));
+    .filter((room) => !usedIds.has(room.roomId))
+    .sort((a, b) => a.roomId - b.roomId)
+    .forEach((room, index) => {
+      rooms.push(createGenericRoom(room, index));
     });
 
   return rooms.length ? rooms : createFallbackRoomList(personalConversationId);
@@ -224,6 +241,7 @@ function syncRoomCookies(rooms, activeRoomId) {
   const activeRoom = rooms.find((room) => room.id === activeRoomId) || personalRoom || rooms[0];
   if (personalRoom?.conversationId) setCookieValue("personal_conversation_id", personalRoom.conversationId);
   if (publicRoom?.conversationId) setCookieValue("public_conversation_id", publicRoom.conversationId);
+  if (activeRoom?.roomId) setCookieValue("room_id", activeRoom.roomId);
   if (activeRoom?.conversationId) setCookieValue("conversation_id", activeRoom.conversationId);
 }
 function getAuthRoute(pathname = window.location.pathname) {
@@ -258,7 +276,7 @@ export default function App() {
   const [wsEnabled, setWsEnabled] = useState(false);
   const [localSystemMessages, setLocalSystemMessages] = useState([]);
   const [personalConversationId, setPersonalConversationId] = useState(() => getPersonalConversationId());
-  const [conversationRecords, setConversationRecords] = useState([]);
+  const [roomRecords, setRoomRecords] = useState([]);
   const [activeRoomId, setActiveRoomId] = useState(PERSONAL_ROOM_ID);
   const [messageDraft, setMessageDraft] = useState("");
   const [draftAttachment, setDraftAttachment] = useState(null);
@@ -287,10 +305,11 @@ export default function App() {
     return promise;
   }
 
-  const rooms = createRoomList(conversationRecords, personalConversationId);
+  const rooms = createRoomList(roomRecords, personalConversationId);
   const personalRoom = rooms[0];
   const activeRoom = rooms.find((r) => r.id === activeRoomId && r.isAvailable) || personalRoom;
   const activeConversationId = activeRoom.conversationId || personalRoom.conversationId;
+  const activeBackendRoomId = activeRoom.roomId || personalRoom.roomId || 0;
   const shouldKeepSocketEnabled =
     Boolean(authedNickname) && (sceneTransition?.kind === "login" || sceneTransition?.kind === "logout" || (appStage === "chat" && sceneTransition?.kind !== "logout"));
 
@@ -298,13 +317,13 @@ export default function App() {
     messages, connectionState, historyState, historyHasMore, historyError,
     loadOlderMessages, sendChatMessage, deleteChatMessage
   } = useWebSocket({
-    url: CHAT_URL, nickname: authedNickname, userId: authedUserId, conversationId: activeConversationId,
+    url: CHAT_URL, nickname: authedNickname, userId: authedUserId, roomId: activeBackendRoomId, conversationId: activeConversationId,
     enabled: shouldKeepSocketEnabled && wsEnabled,
     onAuthFailed: () => {
       clearRitualTimers(); setSceneTransition(null); deleteSessionCookie();
       setAuthedNickname(""); setAuthedUserId(""); setWsEnabled(false); setAuthHandoffPending(false);
       setLocalSystemMessages([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID);
-      setConversationRecords([]);
+      setRoomRecords([]);
       setActiveRoomId(PERSONAL_ROOM_ID);
       syncAuthRoute("login", true, { replace: true });
       setMessageDraft(""); setDraftAttachment(null); setComposerError(""); setMessageFlight(null); setHiddenMessageId(null);
@@ -353,11 +372,20 @@ export default function App() {
   }
   function applyAuthSession(authData) {
     const session = normalizeAuthPayload(authData);
-    const nextConversationRecords = Array.isArray(session.conversations) ? session.conversations : [];
-    const nextRooms = createRoomList(nextConversationRecords, getPersonalConversationId());
+    const nextRoomRecords = Array.isArray(session.rooms) && session.rooms.length
+      ? session.rooms
+      : Array.isArray(session.conversations)
+        ? session.conversations.map((conversation) => ({
+          roomId: normalizeConversationId(conversation.id),
+          name: conversation.name,
+          mainConversationId: normalizeConversationId(conversation.id),
+          conversations: [conversation]
+        }))
+        : [];
+    const nextRooms = createRoomList(nextRoomRecords, getPersonalConversationId());
     const nextActiveRoomId = getDefaultActiveRoomId(nextRooms);
     const nextPersonalId = getPersonalConversationIdFromRooms(nextRooms);
-    setConversationRecords(nextConversationRecords);
+    setRoomRecords(nextRoomRecords);
     setPersonalConversationId(nextPersonalId);
     setActiveRoomId(nextActiveRoomId);
     syncRoomCookies(nextRooms, nextActiveRoomId);
@@ -384,7 +412,7 @@ export default function App() {
         }
         const authRoute = getAuthRoute();
         setAuthedNickname(""); setAuthedUserId(""); setWsEnabled(false); setAuthHandoffPending(false); setLocalSystemMessages([]);
-        setConversationRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
+        setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
         setAppStage(authRoute.mode); setAuthPanelOpen(authRoute.isPanelOpen);
         if (authRoute.path === "/chat" && window.location.pathname !== "/login") {
           window.history.replaceState({ path: "/login" }, "", "/login"); setAuthPanelOpen(true);
@@ -393,7 +421,7 @@ export default function App() {
         if (cancelled) return;
         const authRoute = getAuthRoute();
         setAuthedNickname(""); setAuthedUserId(""); setWsEnabled(false); setAuthHandoffPending(false); setLocalSystemMessages([]);
-        setConversationRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
+        setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
         setAppStage(authRoute.mode); setAuthPanelOpen(authRoute.isPanelOpen);
         if (authRoute.path === "/chat" && window.location.pathname !== "/login") {
           window.history.replaceState({ path: "/login" }, "", "/login"); setAuthPanelOpen(true);
@@ -457,13 +485,13 @@ export default function App() {
   function handleLogout() {
     clearRitualTimers(); deleteSessionCookie();
     setAuthHandoffPending(false); setMessageFlight(null); setHiddenMessageId(null);
-    setConversationRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
+    setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
     setAuthPanelOpen(true);
     setSceneTransition({ kind: "logout", authMode: "login", config: logoutRitualConfig });
     if (window.location.pathname !== "/login") window.history.replaceState({ path: "/login" }, "", "/login");
     ritualTimerRef.current = window.setTimeout(() => {
       setSceneTransition(null); setWsEnabled(false); setAuthedNickname(""); setAuthedUserId(""); setLocalSystemMessages([]);
-      setConversationRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
+      setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
       clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
       setAppStage("login"); setAuthPanelOpen(true);
     }, logoutRitualConfig.totalMs);
@@ -501,6 +529,7 @@ export default function App() {
   function handleRoomSelect(roomId) {
     const nextRoom = rooms.find((r) => r.id === roomId);
     if (!nextRoom || !nextRoom.isAvailable || nextRoom.id === activeRoom.id) return;
+    if (nextRoom.roomId) setCookieValue("room_id", nextRoom.roomId);
     setCookieValue("conversation_id", nextRoom.conversationId);
     setActiveRoomId(nextRoom.id);
     clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);

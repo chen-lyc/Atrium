@@ -22,6 +22,19 @@ function normalizeConversationId(value) {
   return DEFAULT_CONVERSATION_ID;
 }
 
+function normalizeRoomId(value) {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && value.trim()) {
+    const numericValue = Number(value);
+    if (Number.isSafeInteger(numericValue) && numericValue > 0) return numericValue;
+  }
+  return 0;
+}
+
+function getMessageCacheKey(roomId, conversationId) {
+  return `${roomId || "room"}:${conversationId || DEFAULT_CONVERSATION_ID}`;
+}
+
 function getStableMessageKey(message) {
   const serverId = message.serverId || (message.source === "server" ? message.id : "");
   if (serverId && !String(serverId).startsWith("remote-")) return `server:${serverId}`;
@@ -121,14 +134,16 @@ function normalizeHistoryMessages(data, conversationId, nickname, userId) {
     }, nickname, userId));
 }
 
-export default function useWebSocket({ url, nickname, userId = "", enabled, onAuthFailed, conversationId = DEFAULT_CONVERSATION_ID }) {
+export default function useWebSocket({ url, nickname, userId = "", enabled, onAuthFailed, roomId = 0, conversationId = DEFAULT_CONVERSATION_ID }) {
   const socketRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
   const pendingResolveTimersRef = useRef(new Map());
   const authFailedRef = useRef(onAuthFailed);
+  const activeRoomId = normalizeRoomId(roomId);
   const activeConversationId = normalizeConversationId(conversationId);
   const normalizedUserId = String(userId || "").trim();
+  const activeRoomIdRef = useRef(activeRoomId);
   const activeConversationIdRef = useRef(activeConversationId);
   const nicknameRef = useRef(nickname);
   const messageCacheRef = useRef(new Map());
@@ -155,7 +170,10 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
   function commitMessages(updater) {
     setMessages((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      messageCacheRef.current.set(activeConversationIdRef.current, next);
+      messageCacheRef.current.set(
+        getMessageCacheKey(activeRoomIdRef.current, activeConversationIdRef.current),
+        next
+      );
       return next;
     });
   }
@@ -208,13 +226,15 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
     }
     clearAllPendingTimers();
     setMessages((prev) => {
+      const previousRoomId = activeRoomIdRef.current;
       const previousConversationId = activeConversationIdRef.current;
       if (!nicknameChanged && previousNickname && previousConversationId) {
-        messageCacheRef.current.set(previousConversationId, prev);
+        messageCacheRef.current.set(getMessageCacheKey(previousRoomId, previousConversationId), prev);
       }
+      activeRoomIdRef.current = activeRoomId;
       activeConversationIdRef.current = activeConversationId;
       if (!nickname) return [];
-      return messageCacheRef.current.get(activeConversationId) || [];
+      return messageCacheRef.current.get(getMessageCacheKey(activeRoomId, activeConversationId)) || [];
     });
     setLastError("");
     setHistoryState(nickname ? "loading" : "idle");
@@ -225,7 +245,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
     if (!nickname) {
       setConnectionState("idle");
     }
-  }, [nickname, activeConversationId]);
+  }, [nickname, activeRoomId, activeConversationId]);
 
   useEffect(() => {
     if (!enabled || !nickname || !activeConversationId) {
@@ -258,7 +278,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
       });
 
     return () => controller.abort();
-  }, [enabled, nickname, normalizedUserId, activeConversationId]);
+  }, [enabled, nickname, normalizedUserId, activeRoomId, activeConversationId]);
 
   useEffect(() => {
     if (!enabled || !nickname) {
@@ -312,6 +332,9 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
             if (cancelled) return;
             const payload = JSON.parse(rawData);
             const nextMessage = normalizeIncomingMessage(payload, nickname, normalizedUserId);
+            if (nextMessage.roomId && activeRoomId && nextMessage.roomId !== activeRoomId) {
+              return;
+            }
             if (nextMessage.conversationId && nextMessage.conversationId !== activeConversationId) {
               return;
             }
@@ -370,18 +393,19 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
       clearAllPendingTimers();
       cleanupSocket();
     };
-  }, [url, nickname, normalizedUserId, enabled, activeConversationId]);
+  }, [url, nickname, normalizedUserId, enabled, activeRoomId, activeConversationId]);
 
   function sendChatMessage(text) {
     const content = text.trim();
     const current = socketRef.current;
-    if (!content || !nickname || !current || current.readyState !== WebSocket.OPEN) {
+    if (!content || !nickname || !activeRoomId || !current || current.readyState !== WebSocket.OPEN) {
       return null;
     }
 
     const localMessage = {
       id: createId("local"),
       clientMessageId: createId("client"),
+      roomId: activeRoomId,
       conversationId: activeConversationId,
       messageType: MESSAGE_TYPE.TEXT,
       nickname,
@@ -397,6 +421,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
 
     try {
       current.send(JSON.stringify({
+        room_id: activeRoomId,
         conversation_id: localMessage.conversationId,
         type: localMessage.messageType,
         content,

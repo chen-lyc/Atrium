@@ -9,10 +9,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <vector>
 using namespace std;
-using namespace http;
 using json = nlohmann::json;
 
 namespace http {
@@ -23,11 +21,12 @@ Router::Router() {
         {"POST", {"register"}, false, handle_register},
         {"GET", {"me"}, true, handle_me},
         {"HEAD", {"me"}, true, handle_me},
-        {"GET", {"rooms"}, true, handle_rooms},
-        {"HEAD", {"rooms"}, true, handle_rooms},
+        {"GET", {"rooms"}, true, handle_list_rooms},
+        {"HEAD", {"rooms"}, true, handle_list_rooms},
+        {"GET", {"rooms", ":room_id", "conversations"}, true, handle_list_room_members},
+        {"HEAD", {"rooms", ":room_id", "conversations"}, true, handle_list_room_members},
         {"GET", {"conversations", ":conversation_id", "messages"}, true, handle_conversation_messages},
         {"HEAD", {"conversations", ":conversation_id", "messages"}, true, handle_conversation_messages},
-        
     };
 }
 
@@ -36,9 +35,7 @@ RequestLine parse_request_line(std::string_view method, std::string_view target)
     RequestLine res;
     res.method = method;
     size_t question_pos = target.find('?');
-    if (question_pos != string::npos) {
-        res.query = target.substr(question_pos + 1);
-    } else {
+    if (question_pos == string::npos) {
         question_pos = target.size();
     }
 
@@ -80,6 +77,7 @@ bool Router::match(RequestLine &line, Route &route, PathParams &params) {
     return true;
 }
 
+// 业务逻辑
 RouteResult handle_login(RequestContext &ctx) {
     string username, password;
     string_view response;
@@ -181,44 +179,44 @@ RouteResult handle_me(RequestContext &ctx) {
     if (ctx.req.method == "GET") ctx.conn.outbuf += body;
     return RouteResult::Success;
 }
-RouteResult handle_rooms(RequestContext &ctx) {
-    unordered_set<uint64_t> conversation_ids;
-    MysqlPool::QueryResult get_ret = get_conversation_ids(ctx.user_id, conversation_ids);
+RouteResult handle_list_rooms(RequestContext &ctx) {
+    vector<uint64_t> room_ids;
+    MysqlPool::QueryResult get_ret = get_room_ids(ctx.user_id, room_ids);
 
     if (get_ret == MysqlPool::QueryResult::NotFound) {
-        uint64_t conversation_id = 0;
-        MysqlPool::QueryResult ret = insert_public_chatroom(conversation_id, ctx.user_id);
+        uint64_t room_id = 0;
+        MysqlPool::QueryResult ret = insert_public_chatroom(room_id, ctx.user_id);
         if (ret != MysqlPool::QueryResult::Success) {
             return RouteResult::ServerError;
         }
-        conversation_ids.emplace(conversation_id);
-        ret = create_personal_chatroom(conversation_id, ctx.user_id);
+        room_ids.emplace_back(room_id);
+        ret = create_personal_chatroom(room_id, ctx.user_id);
         if (ret != MysqlPool::QueryResult::Success) {
             return RouteResult::ServerError;
         }
-        conversation_ids.emplace(conversation_id);
+        room_ids.emplace_back(room_id);
         get_ret = MysqlPool::QueryResult::Success;
     }
 
     if (get_ret == MysqlPool::QueryResult::Success) {
         json out;
-        out["user_id"] = ctx.user_id;
-        out["username"] = ctx.username;
         json list = json::array();
         MysqlPool::QueryResult get_name_ret = MysqlPool::QueryResult::ServerError;
-        for (auto it = conversation_ids.begin(); it != conversation_ids.end(); ++it) {
-            json c;
+        for (size_t i = 0; i < room_ids.size(); ++i) {
+            json r;
             string name;
-            get_name_ret = get_conversation_name(*it, name);
+            uint64_t main_conversation_id = 0;
+            get_name_ret = get_room_data(room_ids[i], name, main_conversation_id);
             if (get_name_ret == MysqlPool::QueryResult::ServerError) break;
-            c["id"] = *it;
-            c["name"] = name;
-            list.emplace_back(c);
+            r["id"] = room_ids[i];
+            r["name"] = name;
+            r["main_conversation_id"] = main_conversation_id;
+            list.emplace_back(r);
         }
         if (get_name_ret != MysqlPool::QueryResult::Success) {
             return RouteResult::ServerError;
         }
-        out["conversations"] = std::move(list);
+        out["rooms"] = std::move(list);
         string body = out.dump();
 
         ctx.conn.outbuf +=
@@ -234,19 +232,57 @@ RouteResult handle_rooms(RequestContext &ctx) {
     }
     return RouteResult::ServerError;
 }
+RouteResult handle_list_room_members(RequestContext &ctx) {
+    string id_value(ctx.params["room_id"]);
+    uint64_t room_id = 0;
+    try {
+        room_id = stoull(id_value);
+    } catch (const exception &e) {
+        LOG_WARN("parse conversation_id failed in api_room_members, value = %s, reason = %s", id_value.data(), e.what());
+        return RouteResult::BadRequest;
+    }
+    MysqlPool::QueryResult ret = verify_room_member(room_id, ctx.user_id);
+    if (ret == MysqlPool::QueryResult::NotFound) {
+        return RouteResult::BadRequest;
+    }
+    if (ret != MysqlPool::QueryResult::Success) {
+        return RouteResult::ServerError;
+    }
+
+    vector<uint64_t> conversation_ids;
+    vector<string> titles;
+    ret = get_list_conversations_by_room_id(room_id, conversation_ids, titles);
+    if (ret != MysqlPool::QueryResult::Success) {
+        return RouteResult::ServerError;
+    }
+
+    json out;
+    json list = json::array();
+    for (size_t i = 0; i < conversation_ids.size(); ++i) {
+        json c;
+        c["id"] = conversation_ids[i];
+        c["title"] = titles[i];
+        list.emplace_back(c);
+    }
+    out["conversations"] = list;
+    string body = out.dump();
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Content-Length: ";
+    ctx.conn.outbuf += to_string(body.size());
+    ctx.conn.outbuf += "\r\n\r\n";
+    if (ctx.req.method == "GET") ctx.conn.outbuf += body;
+    return RouteResult::Success;
+}
 RouteResult handle_conversation_messages(RequestContext &ctx) {
     // GET /conversations/:id/messages?before_time=...&before_id=...&limit=50
     size_t query_pos = ctx.req.target.find('?');
     if (query_pos == string::npos) {
         return RouteResult::BadRequest;
     }
-    string rest = ctx.req.target.substr(string_view("/api/conversations").size() + 1, query_pos);
     string query = ctx.req.target.substr(query_pos + 1);
-    size_t slash_pos = rest.find('/');
-    if (slash_pos == string::npos) {
-        return RouteResult::BadRequest;
-    }
-    string id_value = rest.substr(0, slash_pos);
+    string id_value(ctx.params["conversation_id"]);
     uint64_t conversation_id = 0;
     try {
         conversation_id = stoull(id_value);
@@ -369,5 +405,4 @@ RouteResult handle_conversation_messages(RequestContext &ctx) {
     if (ctx.req.method == "GET") ctx.conn.outbuf += body;
     return RouteResult::Success;
 }
-
 } // namespace http
