@@ -12,13 +12,18 @@ enum ParseState {
     PARSE_ERROR
 };
 
+enum class Method {
+    GET = 0,
+    HEAD,
+    POST,
+    PATCH,
+    DELETE,
+};
+
 struct HttpRequest {
     ParseState state = PARSE_REQUEST_LINE;
 
-    std::string method;
-    bool is_get = false;
-    bool is_head = false;
-    bool is_post = false;
+    Method method;
     std::string target;
     std::string version;
 
@@ -34,5 +39,6 @@ struct HttpRequest {
     std::string body;
 };
 
+std::string_view methodToString(Method method);
 FrameResult checkHttpFrame(const std::string &raw, int fd);
 ParseState parseHttpRequest(std::string_view raw, HttpRequest &req);

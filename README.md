@@ -160,6 +160,8 @@ CREATE TABLE users (
   username VARCHAR(32) UNIQUE NOT NULL,
   password_hash BINARY(32),
   salt BINARY(16),
+  nickname VARCHAR(64) NOT NULL DEFAULT '',
+  avatar_url VARCHAR(255) DEFAULT NULL,
 
   PRIMARY KEY (id)
 )engine = InnoDB default charset = utf8mb4;
@@ -206,11 +208,42 @@ CREATE TABLE messages (
   content VARCHAR(4000) NOT NULL,
   send_time_ms BIGINT UNSIGNED NOT NULL,
   client_message_id VARCHAR(64) NOT NULL,
+  deleted_at_ms BIGINT UNSIGNED DEFAULT NULL,
 
   PRIMARY KEY (id),
   UNIQUE KEY (send_id, client_message_id),
   INDEX index_conv_time (conversation_id, send_time_ms)
 )engine = InnoDB default charset = utf8mb4;
+
+CREATE TABLE friendships (
+  user_a_id BIGINT UNSIGNED NOT NULL,
+  user_b_id BIGINT UNSIGNED NOT NULL,
+  created_at_ms BIGINT UNSIGNED NOT NULL,
+
+  PRIMARY KEY (user_a_id, user_b_id),
+  CONSTRAINT chk_friendship_order CHECK (user_a_id < user_b_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE invitations (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    room_id BIGINT UNSIGNED NOT NULL,
+    inviter_id BIGINT UNSIGNED NOT NULL,
+    invitee_id BIGINT UNSIGNED NOT NULL,
+    created_at_ms BIGINT UNSIGNED NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_room_invitee (room_id, invitee_id),
+    KEY idx_invitee (invitee_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE friend_requests (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    from_user_id BIGINT UNSIGNED NOT NULL,
+    to_user_id BIGINT UNSIGNED NOT NULL,
+    created_at_ms BIGINT UNSIGNED NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_from_to (from_user_id, to_user_id),
+    KEY idx_to_user (to_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
 ## 编译与运行

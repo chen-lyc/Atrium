@@ -71,19 +71,58 @@ enum class RoomRole {
     Member = 2,
 };
 
-MysqlPool::QueryResult create_personal_chatroom(uint64_t &room_id, uint64_t &main_conversation_id, uint64_t user_id);
-MysqlPool::QueryResult create_personal_chatroom(uint64_t &room_id, uint64_t user_id);
-MysqlPool::QueryResult create_personal_chatroom(uint64_t user_id);
-MysqlPool::QueryResult insert_public_chatroom(uint64_t &room_id, uint64_t &main_conversation_id, uint64_t user_id);
-MysqlPool::QueryResult insert_public_chatroom(uint64_t &room_id, uint64_t user_id);
-MysqlPool::QueryResult insert_public_chatroom(uint64_t user_id);
+MysqlPool::QueryResult create_room(uint64_t &room_id, uint64_t &main_conversation_id, const std::string &name, const uint64_t user_id);
+MysqlPool::QueryResult create_room(uint64_t &room_id, const std::string &name, const uint64_t user_id);
+MysqlPool::QueryResult create_room(const std::string &name, const uint64_t user_id);
+MysqlPool::QueryResult join_public_room(uint64_t &room_id, uint64_t &main_conversation_id, uint64_t user_id);
+MysqlPool::QueryResult join_public_room(uint64_t &room_id, uint64_t user_id);
+MysqlPool::QueryResult join_public_room(uint64_t user_id);
+
+MysqlPool::QueryResult delete_room(uint64_t room_id);
 
 MysqlPool::QueryResult create_conversation(uint64_t room_id, uint64_t created_by, uint64_t &conversation_id);
+MysqlPool::QueryResult create_conversation_with_title(uint64_t room_id, const std::string &title, uint64_t created_by, uint64_t &conversation_id);
 
 MysqlPool::QueryResult get_room_from_conversations(uint64_t &room_id, uint64_t conversation_id);
 MysqlPool::QueryResult verify_room_member(uint64_t room_id, uint64_t user_id);
 MysqlPool::QueryResult verify_conversation_member(uint64_t conversation_id, uint64_t user_id);
+MysqlPool::QueryResult check_room_owner_id(uint64_t room_id, uint64_t owner_id);
+MysqlPool::QueryResult update_room_name(uint64_t room_id, const std::string &name);
+MysqlPool::QueryResult insert_room_member(uint64_t room_id, uint64_t user_id, int role);
+MysqlPool::QueryResult get_room_member_role(uint64_t room_id, uint64_t user_id, int &role);
+MysqlPool::QueryResult remove_room_member(uint64_t room_id, uint64_t user_id);
+MysqlPool::QueryResult update_room_member_role(uint64_t room_id, uint64_t user_id, int role);
+MysqlPool::QueryResult check_friendship(uint64_t user_a, uint64_t user_b);
+MysqlPool::QueryResult insert_invitation(uint64_t &invitation_id, uint64_t room_id, uint64_t inviter_id, uint64_t invitee_id);
+MysqlPool::QueryResult get_invitation(uint64_t invitation_id, uint64_t &room_id, uint64_t &inviter_id, uint64_t &invitee_id);
+MysqlPool::QueryResult delete_invitation(uint64_t invitation_id);
+MysqlPool::QueryResult get_room_invitations(uint64_t room_id, std::vector<std::vector<std::string>> &rows);
+MysqlPool::QueryResult get_invitations_by_invitee(uint64_t user_id, std::vector<std::vector<std::string>> &rows);
+MysqlPool::QueryResult get_invitations_by_inviter(uint64_t user_id, std::vector<std::vector<std::string>> &rows);
 
+MysqlPool::QueryResult insert_friend_request(uint64_t &request_id, uint64_t from_user_id, uint64_t to_user_id);
+MysqlPool::QueryResult get_friend_request(uint64_t request_id, uint64_t &from_user_id, uint64_t &to_user_id);
+MysqlPool::QueryResult get_friend_request_by_users(uint64_t from_user_id, uint64_t to_user_id, uint64_t &request_id);
+MysqlPool::QueryResult delete_friend_request(uint64_t request_id);
+MysqlPool::QueryResult delete_friend_request_by_users(uint64_t from_user_id, uint64_t to_user_id);
+MysqlPool::QueryResult get_friend_requests_by_to_user(uint64_t user_id, std::vector<std::vector<std::string>> &rows);
+MysqlPool::QueryResult get_friend_requests_by_from_user(uint64_t user_id, std::vector<std::vector<std::string>> &rows);
+MysqlPool::QueryResult insert_friendship(uint64_t user_a, uint64_t user_b);
+MysqlPool::QueryResult delete_friendship(uint64_t user_a, uint64_t user_b);
+
+MysqlPool::QueryResult get_conversation_data(uint64_t conversation_id, uint64_t &room_id, uint64_t &created_by);
+MysqlPool::QueryResult delete_conversation_row(uint64_t conversation_id);
+
+MysqlPool::QueryResult get_message_meta(uint64_t message_id, uint64_t &sender_id, uint64_t &send_time_ms);
+MysqlPool::QueryResult soft_delete_message(uint64_t message_id, uint64_t deleted_at_ms);
+
+MysqlPool::QueryResult get_user_profile(uint64_t user_id, std::string &username, std::string &nickname, std::string &avatar_url);
+MysqlPool::QueryResult update_user_profile(uint64_t user_id, const std::string &nickname, const std::string &avatar_url);
+MysqlPool::QueryResult search_users(const std::string &q, std::vector<std::vector<std::string>> &rows);
+
+MysqlPool::QueryResult get_room_members(uint64_t room_id, std::vector<std::vector<std::string>> &rows);
+MysqlPool::QueryResult get_user_ids_by_room(uint64_t room_id, std::vector<uint64_t> &ids);
+MysqlPool::QueryResult get_friends(uint64_t user_id, std::vector<std::vector<std::string>> &rows);
 MysqlPool::QueryResult get_list_conversations_by_room_id(uint64_t room_id, std::vector<uint64_t> &ids, std::vector<std::string> &titles);
 
 namespace chatdb {

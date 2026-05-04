@@ -15,18 +15,21 @@
 class Reactor {
   private:
     struct BroadcastTask;
+    struct RoomMembershipUpdata;
 
   public:
     Reactor(int index, std::vector<std::unique_ptr<Reactor>> &sub_reactors, size_t num_memory = 100);
     ~Reactor();
     void addConnection(int fd, ProtocolType protocol);
     void enqueueBroadcast(BroadcastTask task);
+    void enqueueRoomMembership(RoomMembershipUpdata updata);
     void shutDown();
 
   private:
     void loop();
     void conn_notify();
     void broadcast_notify();
+    void room_membership_notify();
     void addfd(int fd);
     void modfd(int fd, uint32_t events);
     void trySend(Connection &conn, bool should_mod = true);
@@ -43,6 +46,7 @@ class Reactor {
     int m_epollfd;
     int m_conn_notifyfd;
     int m_broadcast_notifyfd;
+    int m_room_membership_notifyfd;
     std::vector<std::unique_ptr<Reactor>> &m_sub_reactors;
     std::queue<std::pair<int, ProtocolType>> m_conn_queue;
     std::mutex m_queue_mutex;
@@ -54,6 +58,15 @@ class Reactor {
     };
     std::queue<BroadcastTask> m_broadcast_queue;
     std::mutex m_broadcast_mutex;
+
+    struct RoomMembershipUpdata {
+        uint64_t room_id;
+        std::vector<int> target_fds;
+        bool join;
+    };
+    std::queue<RoomMembershipUpdata> m_room_membership_queue;
+    std::mutex m_room_membership_mutex;
+
     TimerHeap m_timer_heap;
     MemoryPool m_conn_pool;
     std::unordered_map<int, std::unique_ptr<Connection, ConnDeleter>> m_conns;

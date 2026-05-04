@@ -13,6 +13,22 @@ static bool keyEqualsLower(string_view key, string_view target_lower) {
     return true;
 }
 
+std::string_view methodToString(Method method) {
+    switch (method) {
+    case Method::GET:
+        return "GET";
+    case Method::HEAD:
+        return "HEAD";
+    case Method::POST:
+        return "POST";
+    case Method::PATCH:
+        return "PATCH";
+    case Method::DELETE:
+        return "DELETE";
+    }
+    return "UNKNOWN";
+}
+
 FrameResult checkHttpFrame(const string &raw, int fd) {
     FrameResult res{FrameStatus::Incomplete};
 
@@ -81,8 +97,8 @@ FrameResult checkHttpFrame(const string &raw, int fd) {
             }
             if (parsed_len != value_str.size()) {
                 LOG_WARN("fd = %d send bad request with trailing characters in content-length, raw = %s",
-                         fd,
-                         value_str.data());
+                    fd,
+                    value_str.data());
                 res.status = FrameStatus::ProtocolError;
                 return res;
             }
@@ -100,9 +116,9 @@ FrameResult checkHttpFrame(const string &raw, int fd) {
     size_t body_size = raw.size() - body_start_pos;
     if (body_size < content_length) {
         LOG_DEBUG("fd = %d HTTP body incomplete, received body size = %zu ,expected = %llu",
-                  fd,
-                  body_size,
-                  static_cast<unsigned long long>(content_length));
+            fd,
+            body_size,
+            static_cast<unsigned long long>(content_length));
         return res;
     } else {
         LOG_DEBUG("fd = %d HTTP received complete", fd);
@@ -131,15 +147,20 @@ ParseState parseHttpRequest(string_view raw, HttpRequest &req) {
                 return PARSE_ERROR;
             }
 
-            req.method = line.substr(start, end - start);
-            if (req.method == "GET") {
-                req.is_get = true;
-            } else if (req.method == "HEAD") {
-                req.is_head = true;
-            } else if (req.method == "POST") {
-                req.is_post = true;
+            string_view line_view(line);
+            string_view method = line_view.substr(start, end - start);
+            if (method == "GET") {
+                req.method = Method::GET;
+            } else if (method == "HEAD") {
+                req.method = Method::HEAD;
+            } else if (method == "POST") {
+                req.method = Method::POST;
+            } else if (method == "PATCH") {
+                req.method = Method::PATCH;
+            } else if (method == "DELETE") {
+                req.method = Method::DELETE;
             } else {
-                LOG_DEBUG("request method error, method is %s", req.method.data());
+                LOG_DEBUG("request method error, method is %s", method.data());
                 req.state = PARSE_ERROR;
                 return PARSE_ERROR;
             }
@@ -152,7 +173,7 @@ ParseState parseHttpRequest(string_view raw, HttpRequest &req) {
             }
             req.target = line.substr(start, end - start);
             req.version = line.substr(end + 1);
-            if (req.method.empty() || req.target.empty() || req.version.empty()) {
+            if (method.empty() || req.target.empty() || req.version.empty()) {
                 LOG_DEBUG("request_line parse error");
                 req.state = PARSE_ERROR;
                 break;

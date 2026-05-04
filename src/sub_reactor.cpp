@@ -28,8 +28,10 @@ Reactor::Reactor(int index, vector<unique_ptr<Reactor>> &sub_reactors, size_t nu
     m_epollfd = epoll_create1(0);
     m_conn_notifyfd = eventfd(0, EFD_NONBLOCK);
     m_broadcast_notifyfd = eventfd(0, EFD_NONBLOCK);
+    m_room_membership_notifyfd = eventfd(0, EFD_NONBLOCK);
     addfd(m_conn_notifyfd);
     addfd(m_broadcast_notifyfd);
+    addfd(m_room_membership_notifyfd);
     m_thread = thread(&Reactor::loop, this);
 }
 
@@ -50,6 +52,8 @@ void Reactor::shutDown() {
     }
     close(m_epollfd);
     close(m_conn_notifyfd);
+    close(m_broadcast_notifyfd);
+    close(m_room_membership_notifyfd);
 }
 
 void Reactor::addConnection(int fd, ProtocolType protocol) {
@@ -66,6 +70,14 @@ void Reactor::enqueueBroadcast(BroadcastTask task) {
         m_broadcast_queue.emplace(std::move(task));
     }
     broadcast_notify();
+}
+
+void Reactor::enqueueRoomMembership(RoomMembershipUpdata updata) {
+    {
+        lock_guard<mutex> lock(m_room_membership_mutex);
+        m_room_membership_queue.emplace(updata);
+    }
+    room_membership_notify();
 }
 
 void Reactor::loop() {
@@ -144,6 +156,29 @@ void Reactor::loop() {
                     }
                     broadcast_queue.pop();
                 }
+            } else if (fd == m_room_membership_notifyfd) {
+                queue<RoomMembershipUpdata> room_membership_queue;
+                {
+                    lock_guard<mutex> lock(m_room_membership_mutex);
+                    room_membership_queue.swap(m_room_membership_queue);
+                }
+                while (!room_membership_queue.empty()) {
+                    const uint64_t room_id = room_membership_queue.front().room_id;
+                    const vector<int> fds = room_membership_queue.front().target_fds;
+                    const bool join = room_membership_queue.front().join;
+                    for (int fd : fds) {
+                        if (!m_conns.contains(fd) || m_conns[fd]->protocol != PROTO_WEBSOCKET) continue;
+                        if (join) {
+                            m_conns[fd]->room_ids.emplace(room_id);
+                            ConnRoute::getInstance().addRoomConn(room_id, m_index, fd);
+                        } else {
+                            if (!m_conns[fd]->room_ids.contains(room_id)) continue;
+                            m_conns[fd]->room_ids.erase(room_id);
+                            ConnRoute::getInstance().removeRoomConn(room_id, m_index, fd);
+                        }
+                    }
+                    room_membership_queue.pop();
+                }
             } else if (events[i].events & EPOLLIN) {
                 if (!m_conns.contains(fd)) continue;
 
@@ -202,6 +237,8 @@ void Reactor::process(Connection &conn) {
         string broadcast_frame;
         unordered_map<int, vector<int>> reactor_to_fds;
 
+        http::MembershipAction membership_action = http::MembershipAction::None;
+
         LOG_DEBUG("fd = %d send data : %.*s",
             conn.fd,
             static_cast<int>(conn.inbuf.size()),
@@ -218,7 +255,7 @@ void Reactor::process(Connection &conn) {
             }
 
             LOG_DEBUG("request is HTTP and method is %s, target is %s, version is %s",
-                req.method.c_str(),
+                methodToString(req.method).data(),
                 req.target.c_str(),
                 req.version.c_str());
 
@@ -227,7 +264,7 @@ void Reactor::process(Connection &conn) {
                 sendError(conn, resp_bad_request);
                 return;
             } else if (req.upgrade == "websocket" && req.connection == "upgrade") {
-                if (req.method != "GET" || req.sec_websocket_version != 13 || !isValidSecWebSocketKey(req.sec_websocket_key)) {
+                if (req.method != Method::GET || req.sec_websocket_version != 13 || !isValidSecWebSocketKey(req.sec_websocket_key)) {
                     sendError(conn, resp_bad_request);
                     return;
                 }
@@ -261,8 +298,9 @@ void Reactor::process(Connection &conn) {
                         return;
                     }
                     for (auto it = conn.room_ids.begin(); it != conn.room_ids.end(); ++it) {
-                        ConnRoute::getInstance().add(*it, m_index, conn.fd);
+                        ConnRoute::getInstance().addRoomConn(*it, m_index, conn.fd);
                     }
+                    ConnRoute::getInstance().addUserConn(conn.user_id, m_index, conn.fd);
 
                     conn.protocol = PROTO_WEBSOCKET;
                     m_timer_heap.update(conn.fd, 60000);
@@ -284,15 +322,14 @@ void Reactor::process(Connection &conn) {
                 } else if (ret == SessionResult::ServerError) {
                     conn.outbuf += resp_server_error;
                 }
-            } else if (req.target == "/echo" && (req.method == "GET" || req.method == "HEAD")) {
+            } else if (req.target == "/echo" && (req.method == Method::GET || req.method == Method::HEAD)) {
                 conn.outbuf += "HTTP/1.1 200 OK\r\nContent-Length: ";
                 conn.outbuf += to_string(req.body.size());
                 conn.outbuf += "\r\n\r\n";
-                if (req.method == "GET") conn.outbuf += req.body;
+                if (req.method == Method::GET) conn.outbuf += req.body;
             } else if (req.target.starts_with("/api")) {
                 string_view api_target(req.target);
-                string_view api_method(req.method);
-                http::RequestLine line = http::parse_request_line(api_method, api_target);
+                http::RequestLine line = http::parse_request_line(req.method, api_target);
                 http::PathParams params;
                 optional<http::Router::Route> route = m_router.find_route(line, params);
                 if (route == nullopt) {
@@ -320,20 +357,28 @@ void Reactor::process(Connection &conn) {
                 }
                 http::RequestContext ctx(req, params, conn, user_id, std::move(username));
                 http::RouteResult ret = route->handler(ctx);
-                if (ret == http::RouteResult::BadRequest) {
+                if (ret.state == http::RouteStatus::BadRequest) {
                     sendError(conn, resp_bad_request);
                     return;
-                } else if (ret == http::RouteResult::Unauthorized) {
+                } else if (ret.state == http::RouteStatus::Unauthorized) {
                     if (sendError(conn, resp_unauthorized, res.end_pos)) continue;
                     return;
-                } else if (ret == http::RouteResult::NotFound) {
+                } else if (ret.state == http::RouteStatus::NotFound) {
                     if (sendError(conn, resp_not_found, res.end_pos)) continue;
                     return;
-                } else if (ret == http::RouteResult::ServerError) {
+                } else if (ret.state == http::RouteStatus::ServerError) {
                     if (sendError(conn, resp_server_error, res.end_pos)) continue;
                     return;
                 }
-            } else if (req.method == "GET" || req.method == "HEAD") {
+
+                if (ret.membership_action != http::MembershipAction::None) {
+                    for (uint64_t user_id : ret.affected_user_ids) {
+                        ConnRoute::getInstance().queryByUser(user_id, reactor_to_fds);
+                    }
+                    room_id = ret.room_id;
+                    membership_action = ret.membership_action;
+                }
+            } else if (req.method == Method::GET || req.method == Method::HEAD) {
                 if (req.target.find("..") != string::npos) {
                     sendError(conn, resp_bad_request);
                     return;
@@ -351,7 +396,7 @@ void Reactor::process(Connection &conn) {
                     struct stat st;
                     fstat(file_fd, &st);
                     size_t file_size = st.st_size;
-                    if (req.method == "GET") {
+                    if (req.method == Method::GET) {
                         conn.file_fd = file_fd;
                         conn.file_size = file_size;
                     } else {
@@ -475,7 +520,7 @@ void Reactor::process(Connection &conn) {
                             sendError(conn, WS_PROTOCOLERROR);
                             return false;
                         }
-                        reactor_to_fds = ConnRoute::getInstance().query(room_id);
+                        reactor_to_fds = ConnRoute::getInstance().queryByRoom(room_id);
                         if (reactor_to_fds.empty()) {
                             sendError(conn, WS_PROTOCOLERROR);
                             return false;
@@ -589,6 +634,11 @@ void Reactor::process(Connection &conn) {
                 m_sub_reactors[it->first]->enqueueBroadcast({room_id, it->second, frame});
             }
         } else {
+            if (membership_action != http::MembershipAction::None) {
+                for (auto it = reactor_to_fds.begin(); it != reactor_to_fds.end(); ++it) {
+                    m_sub_reactors[it->first]->enqueueRoomMembership({room_id, it->second, membership_action == http::MembershipAction::Join});
+                }
+            }
             trySend(conn);
         }
 
@@ -636,6 +686,11 @@ void Reactor::conn_notify() {
 void Reactor::broadcast_notify() {
     uint64_t val = 1;
     write(m_broadcast_notifyfd, &val, sizeof(val));
+}
+
+void Reactor::room_membership_notify() {
+    uint64_t val = 1;
+    write(m_room_membership_notifyfd, &val, sizeof(val));
 }
 
 static void setnonblocking(int fd) {
@@ -757,8 +812,9 @@ void Reactor::closeFile(Connection &conn) {
 
 void Reactor::closeNow(int fd) {
     for (auto it = m_conns[fd]->room_ids.begin(); it != m_conns[fd]->room_ids.end(); ++it) {
-        ConnRoute::getInstance().remove(*it, m_index, fd);
+        ConnRoute::getInstance().removeRoomConn(*it, m_index, fd);
     }
+    ConnRoute::getInstance().removeUserConn(m_conns[fd]->user_id, m_index, fd);
     epoll_ctl(m_epollfd, EPOLL_CTL_DEL, fd, nullptr);
     m_timer_heap.remove(fd);
     close(fd);
