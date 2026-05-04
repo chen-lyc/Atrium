@@ -6,6 +6,7 @@ import ConnectionStatus from "./ConnectionStatus.jsx";
 import MessageList from "./MessageList.jsx";
 import MessageInput from "./MessageInput.jsx";
 import MessageFlight from "./MessageFlight.jsx";
+import WorkspacePanel from "./WorkspacePanel.jsx";
 
 const DEFAULT_ROOM_CUES = ["共同讨论", "AI 参与", "笔记沉淀"];
 const NOTE_TOAST_MS = 2200;
@@ -34,8 +35,11 @@ export default function ChatRoom({
   hiddenMessageId, messageFlight, onMessageFlightComplete,
   onLogout, onDeleteMessage = () => {},
   rooms = null, activeRoomId = "", onRoomSelect = () => {},
+  currentUserId = "", onRoomsChanged = async () => {},
   roomName = "我的讨论室", roomHint = "",
   room = null,
+  activeConversationId = 0, roomConversations = [],
+  onConversationSelect = () => {}, onDeleteConversation = () => {},
   readOnly = false, suppressConnectionPulse = false,
   isFading = false, fadeDuration = 600,
   transitionMode = "idle", transitionConfig = null,
@@ -52,6 +56,7 @@ export default function ChatRoom({
 
   const [contextMenu, setContextMenu] = useState(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
   const [noteToast, setNoteToast] = useState(null);
   const noteToastTimerRef = useRef(null);
 
@@ -231,12 +236,72 @@ export default function ChatRoom({
                 </span>
               </div>
             </div>
-            <ConnectionStatus state={connectionState} allowPulse={!suppressConnectionPulse} />
+            <div className="header-actions">
+              <button
+                type="button"
+                className="header-icon-button focus-ring"
+                onClick={() => setWorkspacePanelOpen(true)}
+                disabled={readOnly}
+                aria-label="打开空间面板"
+                title="空间面板"
+              >
+                <svg width="17" height="17" viewBox="0 0 17 17" fill="none" stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M3.2 4.8h10.6M3.2 8.5h10.6M3.2 12.2h10.6" />
+                  <path d="M5.1 3v3.6M11.9 6.7v3.6M7.6 10.4V14" />
+                </svg>
+              </button>
+              <ConnectionStatus state={connectionState} allowPulse={!suppressConnectionPulse} />
+            </div>
           </div>
         </motion.header>
 
+        {roomConversations.length > 0 ? (
+          <div className="conversation-bar" aria-label="对话切换">
+            <div className="conversation-bar-inner">
+              <div className="conversation-bar-label">对话</div>
+              <div className="conversation-track">
+                {roomConversations.map((conversation) => {
+                  const isActive = conversation.id === activeConversationId;
+                  return (
+                    <div key={conversation.id} className={`conversation-tab ${isActive ? "is-active" : ""}`}>
+                      <button type="button" className="conversation-tab-btn focus-ring" onClick={() => onConversationSelect(conversation.id)}>
+                        {conversation.name || `对话 ${conversation.id}`}
+                      </button>
+                      {conversation.id !== room?.mainConversationId ? (
+                        <button
+                          type="button"
+                          className="conversation-tab-close focus-ring"
+                          onClick={() => onDeleteConversation(conversation.id)}
+                          aria-label={`删除对话 ${conversation.name || conversation.id}`}
+                          title="删除对话"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+                            <path d="M3 3l6 6M9 3l-6 6" />
+                          </svg>
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                className="conversation-add-btn focus-ring"
+                onClick={() => setWorkspacePanelOpen(true)}
+                disabled={readOnly}
+                aria-label="新建对话"
+                title="新建对话"
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                  <path d="M7 2.5v9M2.5 7h9" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         <motion.div
-          key={activeRoomId}
+          key={`${activeRoomId}-${activeConversationId || "main"}`}
           className={`messages-stage is-${roomTone}`}
           initial={stageInitial}
           animate={stageAnimate}
@@ -312,6 +377,21 @@ export default function ChatRoom({
       {readOnly ? null : (
         <MessageFlight flight={messageFlight} onComplete={onMessageFlightComplete} />
       )}
+
+      <WorkspacePanel
+        isOpen={workspacePanelOpen && !readOnly}
+        onClose={() => setWorkspacePanelOpen(false)}
+        currentUserId={currentUserId}
+        room={room}
+        rooms={rooms || []}
+        readOnly={readOnly}
+        onRoomsChanged={onRoomsChanged}
+        onConversationSelect={onConversationSelect}
+        onRoomSelect={(id) => {
+          onRoomSelect(id);
+          setWorkspacePanelOpen(false);
+        }}
+      />
 
       <AnimatePresence>
         {noteToast ? (

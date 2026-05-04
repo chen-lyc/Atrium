@@ -7,7 +7,9 @@ import {
 } from "./constants.js";
 import {
   createId, deleteSessionCookie, fetchCurrentUser,
+  getApiErrorMessage,
   getConversationIdCookie, getCookieValue,
+  loadSessionRooms, deleteConversation,
   setCookieValue, prepareImageAttachment, buildImageMarkdown,
   normalizeAuthPayload
 } from "./utils.js";
@@ -142,6 +144,7 @@ function createPersonalRoom(record, fallbackConversationId = DEFAULT_CONVERSATIO
     composerPlaceholder: "在个人房间写下一个想法...",
     tone: "personal",
     conversations: record?.conversations || [],
+    mainConversationId: normalizeConversationId(record?.mainConversationId) || conversationId,
     conversationId,
     isAvailable: true
   };
@@ -162,6 +165,7 @@ function createPublicRoom(record, fallbackConversationId = PUBLIC_CONVERSATION_I
     composerPlaceholder: "向大厅发起一个话题...",
     tone: "public",
     conversations: record?.conversations || [],
+    mainConversationId: normalizeConversationId(record?.mainConversationId) || conversationId,
     conversationId,
     isAvailable: true
   };
@@ -183,6 +187,7 @@ function createGenericRoom(record, index) {
     composerPlaceholder: `在${name}写下消息...`,
     tone: index % 2 === 0 ? "personal" : "public",
     conversations: record?.conversations || [],
+    mainConversationId: normalizeConversationId(record?.mainConversationId) || getRoomConversationId(record),
     conversationId: getRoomConversationId(record),
     isAvailable: true
   };
@@ -278,6 +283,7 @@ export default function App() {
   const [personalConversationId, setPersonalConversationId] = useState(() => getPersonalConversationId());
   const [roomRecords, setRoomRecords] = useState([]);
   const [activeRoomId, setActiveRoomId] = useState(PERSONAL_ROOM_ID);
+  const [conversationOverride, setConversationOverride] = useState(null);
   const [messageDraft, setMessageDraft] = useState("");
   const [draftAttachment, setDraftAttachment] = useState(null);
   const [composerError, setComposerError] = useState("");
@@ -300,7 +306,7 @@ export default function App() {
       return mod.default;
     })().finally(() => {
       chatRuntimePromiseRef.current = null;
-    })();
+    });
     chatRuntimePromiseRef.current = promise;
     return promise;
   }
@@ -308,7 +314,10 @@ export default function App() {
   const rooms = createRoomList(roomRecords, personalConversationId);
   const personalRoom = rooms[0];
   const activeRoom = rooms.find((r) => r.id === activeRoomId && r.isAvailable) || personalRoom;
-  const activeConversationId = activeRoom.conversationId || personalRoom.conversationId;
+  const activeConversationId =
+    (conversationOverride && conversationOverride.roomId === activeRoom.id ? conversationOverride.conversationId : null) ||
+    activeRoom.conversationId || personalRoom.conversationId;
+  const activeRoomConversations = activeRoom.conversations || [];
   const activeBackendRoomId = activeRoom.roomId || personalRoom.roomId || 0;
   const shouldKeepSocketEnabled =
     Boolean(authedNickname) && (sceneTransition?.kind === "login" || sceneTransition?.kind === "logout" || (appStage === "chat" && sceneTransition?.kind !== "logout"));
@@ -390,6 +399,25 @@ export default function App() {
     setActiveRoomId(nextActiveRoomId);
     syncRoomCookies(nextRooms, nextActiveRoomId);
     return { session, rooms: nextRooms, activeRoomId: nextActiveRoomId, personalId: nextPersonalId };
+  }
+
+  async function refreshRooms(preferredBackendRoomId = activeBackendRoomId) {
+    const result = await loadSessionRooms(authedNickname);
+    if (!result.ok) return null;
+    const nextRoomRecords = result.rooms;
+    const nextRooms = createRoomList(nextRoomRecords, personalConversationId);
+    const preferredRoom =
+      nextRooms.find((room) => room.roomId === preferredBackendRoomId) ||
+      nextRooms.find((room) => room.id === activeRoomId && room.isAvailable) ||
+      nextRooms.find((room) => room.id === PERSONAL_ROOM_ID) ||
+      nextRooms[0];
+    const nextActiveRoomId = preferredRoom?.id || getDefaultActiveRoomId(nextRooms);
+    const nextPersonalId = getPersonalConversationIdFromRooms(nextRooms);
+    setRoomRecords(nextRoomRecords);
+    setPersonalConversationId(nextPersonalId);
+    setActiveRoomId(nextActiveRoomId);
+    syncRoomCookies(nextRooms, nextActiveRoomId);
+    return preferredRoom || null;
   }
 
   useEffect(() => {
@@ -532,7 +560,26 @@ export default function App() {
     if (nextRoom.roomId) setCookieValue("room_id", nextRoom.roomId);
     setCookieValue("conversation_id", nextRoom.conversationId);
     setActiveRoomId(nextRoom.id);
+    setConversationOverride(null);
     clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
+  }
+
+  async function handleConversationSelect(conversationId) {
+    if (!conversationId || conversationId === activeConversationId) return;
+    setCookieValue("conversation_id", conversationId);
+    setConversationOverride({ roomId: activeRoom.id, conversationId });
+    clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
+  }
+
+  async function handleDeleteConversation(conversationId) {
+    if (!conversationId) return;
+    try {
+      await deleteConversation(conversationId);
+      if (conversationOverride?.conversationId === conversationId) setConversationOverride(null);
+      await refreshRooms(activeBackendRoomId);
+    } catch (error) {
+      console.warn("Failed to delete conversation:", error);
+    }
   }
 
   async function handlePasteImage(file) {
@@ -546,13 +593,17 @@ export default function App() {
     }
   }
 
-  function handleDeleteMessage(message) {
+  async function handleDeleteMessage(message) {
     if (!message?.id) return;
     if (message.source === "local-welcome") {
       setLocalSystemMessages((current) => current.filter((item) => item.id !== message.id));
       return;
     }
-    deleteChatMessage(message.id);
+    try {
+      await deleteChatMessage(message);
+    } catch (error) {
+      setComposerError(getApiErrorMessage(error, "消息删除失败"));
+    }
   }
 
   function handleSend() {
@@ -646,6 +697,12 @@ export default function App() {
               roomName={activeRoom.name}
               roomHint={activeRoom.description}
               room={activeRoom}
+              activeConversationId={activeConversationId}
+              roomConversations={activeRoomConversations}
+              onConversationSelect={handleConversationSelect}
+              onDeleteConversation={handleDeleteConversation}
+              currentUserId={authedUserId}
+              onRoomsChanged={refreshRooms}
               transitionMode={chatTransitionMode}
               transitionConfig={
                 isLoginTransition ? sceneTransition.config.chatEnter

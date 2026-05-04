@@ -550,6 +550,7 @@ void Reactor::process(Connection &conn) {
                         json out;
                         out["room_id"] = room_id;
                         out["conversation_id"] = conversation_id;
+                        out["message_id"] = message_id;
                         out["user_id"] = conn.user_id;
                         out["username"] = conn.username;
                         out["type"] = msg.type;

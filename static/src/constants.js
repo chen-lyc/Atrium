@@ -7,6 +7,7 @@ export const CHAT_RUNTIME_MODULES = () => Promise.all([
   import("./chat/MessageInput.jsx"),
   import("./chat/MessageFlight.jsx"),
   import("./chat/Sidebar.jsx"),
+  import("./chat/WorkspacePanel.jsx"),
   import("./chat/ChatRoom.jsx")
 ]);
 

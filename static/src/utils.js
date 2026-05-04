@@ -194,9 +194,11 @@ export function normalizeIncomingMessage(payload, currentNickname, currentUserId
 }
 
 export function findPendingLocalMatch(prevMessages, incomingMessage) {
+  const incomingMessageId = Number(incomingMessage.id);
+  const hasIncomingServerId = Number.isSafeInteger(incomingMessageId) && incomingMessageId > 0;
+
   const exactIdMatch = [...prevMessages]
     .map((message, index) => ({ message, index }))
-    .reverse()
     .find(({ message }) => {
       if (!message.isSelf || message.source !== "local") return false;
       if (!message.clientMessageId || !incomingMessage.clientMessageId) return false;
@@ -207,9 +209,9 @@ export function findPendingLocalMatch(prevMessages, incomingMessage) {
 
   return [...prevMessages]
     .map((message, index) => ({ message, index }))
-    .reverse()
     .find(({ message }) => {
       if (!message.isSelf || message.source !== "local") return false;
+      if (hasIncomingServerId && message.status !== "pending") return false;
       if (message.nickname !== incomingMessage.nickname || message.text !== incomingMessage.text) return false;
       const timeGap = Math.abs(
         getTimestampValue(incomingMessage.timestamp) - getTimestampValue(message.timestamp)
@@ -394,7 +396,44 @@ async function readJsonOrEmpty(response) {
   }
 }
 
-async function fetchAuthRooms() {
+async function apiRequest(path, options = {}) {
+  const {
+    method = "GET",
+    body,
+    signal,
+    parseJson = true,
+    headers = {}
+  } = options;
+  const init = {
+    method,
+    credentials: "include",
+    headers: { ...headers },
+    signal
+  };
+  if (body !== undefined) {
+    init.headers["Content-Type"] = "application/json; charset=utf-8";
+    init.body = JSON.stringify(body);
+  }
+  const response = await fetch(path, init);
+  if (!response.ok) {
+    const error = new Error("api request failed");
+    error.status = response.status;
+    error.body = await readResponseText(response);
+    throw error;
+  }
+  if (!parseJson || response.status === 204) return {};
+  return readJsonOrEmpty(response);
+}
+
+export function getApiErrorMessage(error, fallback = "操作失败，请稍后重试") {
+  if (error?.status === 401) return "登录状态已失效，请重新登录";
+  if (error?.status === 400) return "当前操作不符合后端规则";
+  if (error?.status === 409) return "这项内容已经存在";
+  if (error?.status >= 500) return "服务器暂时没有接住这个操作";
+  return fallback;
+}
+
+export async function fetchAuthRooms() {
   try {
     const res = await fetch("/api/rooms", {
       method: "GET",
@@ -409,7 +448,7 @@ async function fetchAuthRooms() {
   }
 }
 
-async function fetchRoomConversations(roomId) {
+export async function fetchRoomConversations(roomId) {
   if (!roomId) return [];
   try {
     const res = await fetch(`/api/rooms/${roomId}/conversations`, {
@@ -423,11 +462,11 @@ async function fetchRoomConversations(roomId) {
   }
 }
 
-async function attachRoomsToSession(session) {
+export async function loadSessionRooms(fallbackNickname = "") {
   const roomResult = await fetchAuthRooms();
-  if (!roomResult.ok) return session;
+  if (!roomResult.ok) return { ok: false, status: roomResult.status, rooms: [], conversations: [] };
 
-  const roomsSession = normalizeAuthPayload(roomResult.data, session.nickname);
+  const roomsSession = normalizeAuthPayload(roomResult.data, fallbackNickname);
   const hydratedRooms = await Promise.all(
     roomsSession.rooms.map(async (room) => {
       const conversations = await fetchRoomConversations(room.roomId);
@@ -438,12 +477,23 @@ async function attachRoomsToSession(session) {
     })
   );
   return {
-    ...session,
-    ...(roomResult.data && typeof roomResult.data === "object" ? roomResult.data : {}),
-    nickname: roomsSession.nickname || session.nickname,
+    ok: true,
+    status: roomResult.status,
     rooms: hydratedRooms,
-    conversations: roomsSession.conversations.length
-      ? roomsSession.conversations
+    conversations: roomsSession.conversations,
+    raw: roomResult.data
+  };
+}
+
+async function attachRoomsToSession(session) {
+  const roomResult = await loadSessionRooms(session.nickname);
+  if (!roomResult.ok) return session;
+  return {
+    ...session,
+    ...(roomResult.raw && typeof roomResult.raw === "object" ? roomResult.raw : {}),
+    rooms: roomResult.rooms,
+    conversations: roomResult.conversations.length
+      ? roomResult.conversations
       : session.conversations
   };
 }
@@ -478,6 +528,204 @@ export function buildAuthBody(nickname, password) {
   body.append("username", nickname);
   body.append("password", password);
   return body.toString();
+}
+
+function normalizeNumericId(value) {
+  const numericValue = Number(value);
+  return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : 0;
+}
+
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+}
+
+function normalizeUserProfile(item) {
+  const userId = normalizeNumericId(item?.user_id ?? item?.userId ?? item?.id);
+  const username = normalizeText(item?.username);
+  const nickname = normalizeText(item?.nickname) || username || (userId ? `用户 ${userId}` : "未命名用户");
+  return {
+    userId,
+    username,
+    nickname,
+    avatarUrl: normalizeText(item?.avatar_url ?? item?.avatarUrl)
+  };
+}
+
+function normalizeRoomMember(item) {
+  return {
+    ...normalizeUserProfile(item),
+    role: normalizeNumericId(item?.role),
+    joinedAt: normalizeNumericId(item?.join_at_ms ?? item?.joinAtMs)
+  };
+}
+
+function normalizeFriend(item) {
+  return {
+    ...normalizeUserProfile(item),
+    createdAt: normalizeNumericId(item?.created_at_ms ?? item?.createdAtMs)
+  };
+}
+
+function normalizeFriendRequest(item, direction) {
+  const fromUserId = normalizeNumericId(item?.from_user_id ?? item?.fromUserId);
+  const toUserId = normalizeNumericId(item?.to_user_id ?? item?.toUserId);
+  const peerNickname = direction === "sent"
+    ? normalizeText(item?.to_nickname ?? item?.nickname)
+    : normalizeText(item?.from_nickname ?? item?.nickname);
+  return {
+    requestId: normalizeNumericId(item?.request_id ?? item?.requestId ?? item?.id),
+    fromUserId,
+    toUserId,
+    peerUserId: direction === "sent" ? toUserId : fromUserId,
+    peerNickname: peerNickname || `用户 ${direction === "sent" ? toUserId : fromUserId}`,
+    createdAt: normalizeNumericId(item?.created_at_ms ?? item?.createdAtMs)
+  };
+}
+
+function normalizeRoomInvitation(item, direction = "received") {
+  return {
+    invitationId: normalizeNumericId(item?.invitation_id ?? item?.invitationId ?? item?.id),
+    roomId: normalizeNumericId(item?.room_id ?? item?.roomId),
+    roomName: normalizeText(item?.room_name ?? item?.roomName),
+    inviterId: normalizeNumericId(item?.inviter_id ?? item?.inviterId),
+    inviteeId: normalizeNumericId(item?.invitee_id ?? item?.inviteeId),
+    inviteeNickname: normalizeText(item?.invitee_nickname ?? item?.inviteeNickname),
+    direction,
+    createdAt: normalizeNumericId(item?.created_at_ms ?? item?.createdAtMs)
+  };
+}
+
+export async function createRoom(roomName) {
+  const data = await apiRequest("/api/rooms", {
+    method: "POST",
+    body: { room_name: roomName }
+  });
+  return {
+    roomId: normalizeNumericId(data?.room_id ?? data?.roomId),
+    mainConversationId: normalizeNumericId(data?.main_conversation_id ?? data?.mainConversationId)
+  };
+}
+
+export async function createConversation(roomId, title) {
+  const data = await apiRequest(`/api/rooms/${roomId}/conversations`, {
+    method: "POST",
+    body: { title }
+  });
+  return { conversationId: normalizeNumericId(data?.conversation_id ?? data?.conversationId) };
+}
+
+export async function renameRoom(roomId, name) {
+  await apiRequest(`/api/rooms/${roomId}`, {
+    method: "PATCH",
+    body: { name },
+    parseJson: false
+  });
+}
+
+export async function deleteConversation(conversationId) {
+  await apiRequest(`/api/conversations/${conversationId}`, { method: "DELETE", parseJson: false });
+}
+
+export async function deleteRoom(roomId) {
+  await apiRequest(`/api/rooms/${roomId}`, { method: "DELETE", parseJson: false });
+}
+
+export async function fetchRoomMembers(roomId, signal) {
+  const data = await apiRequest(`/api/rooms/${roomId}/members`, { signal });
+  return Array.isArray(data) ? data.map(normalizeRoomMember).filter((member) => member.userId) : [];
+}
+
+export async function removeRoomMember(roomId, userId) {
+  await apiRequest(`/api/rooms/${roomId}/members/${userId}`, { method: "DELETE", parseJson: false });
+}
+
+export async function updateRoomMemberRole(roomId, userId, role) {
+  await apiRequest(`/api/rooms/${roomId}/members/${userId}`, {
+    method: "PATCH",
+    body: { role },
+    parseJson: false
+  });
+}
+
+export async function fetchRoomInvitations(roomId, signal) {
+  const data = await apiRequest(`/api/rooms/${roomId}/invitations`, { signal });
+  return Array.isArray(data) ? data.map((item) => normalizeRoomInvitation(item, "room")).filter((inv) => inv.invitationId) : [];
+}
+
+export async function createRoomInvitation(roomId, inviteeId) {
+  const data = await apiRequest(`/api/rooms/${roomId}/invitations`, {
+    method: "POST",
+    body: { invitee_id: inviteeId }
+  });
+  return normalizeRoomInvitation(data, "room");
+}
+
+export async function fetchMyRoomInvitations(direction = "received", signal) {
+  const data = await apiRequest(`/api/invitations?direction=${encodeURIComponent(direction)}`, { signal });
+  return Array.isArray(data) ? data.map((item) => normalizeRoomInvitation(item, direction)).filter((inv) => inv.invitationId) : [];
+}
+
+export async function respondRoomInvitation(invitationId, status) {
+  await apiRequest(`/api/invitations/${invitationId}`, {
+    method: "PATCH",
+    body: { status },
+    parseJson: false
+  });
+}
+
+export async function cancelRoomInvitation(invitationId) {
+  await apiRequest(`/api/invitations/${invitationId}`, { method: "DELETE", parseJson: false });
+}
+
+export async function searchUsers(query, signal) {
+  const data = await apiRequest(`/api/users/search?q=${encodeURIComponent(query)}`, { signal });
+  return Array.isArray(data) ? data.map(normalizeUserProfile).filter((user) => user.userId) : [];
+}
+
+export async function fetchFriends(signal) {
+  const data = await apiRequest("/api/friends", { signal });
+  return Array.isArray(data) ? data.map(normalizeFriend).filter((friend) => friend.userId) : [];
+}
+
+export async function deleteFriend(userId) {
+  await apiRequest(`/api/friends/${userId}`, { method: "DELETE", parseJson: false });
+}
+
+export async function createFriendRequest(toUserId) {
+  const data = await apiRequest("/api/friend-requests", {
+    method: "POST",
+    body: { to_user_id: toUserId }
+  });
+  return { requestId: normalizeNumericId(data?.request_id ?? data?.requestId ?? data?.id) };
+}
+
+export async function fetchFriendRequests(direction = "received", signal) {
+  const data = await apiRequest(`/api/friend-requests?direction=${encodeURIComponent(direction)}`, { signal });
+  return Array.isArray(data) ? data.map((item) => normalizeFriendRequest(item, direction)).filter((request) => request.requestId) : [];
+}
+
+export async function respondFriendRequest(requestId, status) {
+  await apiRequest(`/api/friend-requests/${requestId}`, {
+    method: "PATCH",
+    body: { status },
+    parseJson: false
+  });
+}
+
+export async function cancelFriendRequest(requestId) {
+  await apiRequest(`/api/friend-requests/${requestId}`, { method: "DELETE", parseJson: false });
+}
+
+export async function updateCurrentUserProfile(profile) {
+  await apiRequest("/api/me", {
+    method: "PATCH",
+    body: profile,
+    parseJson: false
+  });
+}
+
+export async function deleteStoredMessage(messageId) {
+  await apiRequest(`/api/messages/${messageId}`, { method: "DELETE", parseJson: false });
 }
 
 export function formatFileSize(bytes) {

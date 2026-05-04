@@ -7,6 +7,7 @@ import {
 } from "./constants.js";
 import {
   createId,
+  deleteStoredMessage,
   fetchCurrentUser,
   normalizeIncomingMessage,
   findPendingLocalMatch,
@@ -45,6 +46,12 @@ function getStableMessageKey(message) {
 function hasDurableServerId(message) {
   const serverId = message.serverId || (message.source === "server" ? message.id : "");
   return Boolean(serverId && !String(serverId).startsWith("remote-"));
+}
+
+function getDurableServerId(message) {
+  const serverId = message?.serverId || (message?.source === "server" ? message?.id : "");
+  const numericValue = Number(serverId);
+  return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : 0;
 }
 
 function getComparableSender(message) {
@@ -335,7 +342,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
             if (nextMessage.roomId && activeRoomId && nextMessage.roomId !== activeRoomId) {
               return;
             }
-            if (nextMessage.conversationId && nextMessage.conversationId !== activeConversationId) {
+            if (nextMessage.conversationId && nextMessage.conversationId !== activeConversationIdRef.current) {
               return;
             }
             commitMessages((prev) => {
@@ -393,7 +400,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
       clearAllPendingTimers();
       cleanupSocket();
     };
-  }, [url, nickname, normalizedUserId, enabled, activeRoomId, activeConversationId]);
+  }, [url, nickname, normalizedUserId, enabled, activeRoomId]);
 
   function sendChatMessage(text) {
     const content = text.trim();
@@ -437,9 +444,15 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
     }
   }
 
-  function deleteChatMessage(messageId) {
-    clearPendingResolveTimer(messageId);
-    commitMessages((prev) => prev.filter((message) => message.id !== messageId));
+  async function deleteChatMessage(message) {
+    if (!message?.id) return false;
+    const serverMessageId = getDurableServerId(message);
+    if (serverMessageId) {
+      await deleteStoredMessage(serverMessageId);
+    }
+    clearPendingResolveTimer(message.id);
+    commitMessages((prev) => prev.filter((item) => item.id !== message.id));
+    return true;
   }
 
   async function loadOlderMessages() {
