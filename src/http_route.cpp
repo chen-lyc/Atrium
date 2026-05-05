@@ -172,7 +172,8 @@ RouteResult handle_register(RequestContext &ctx) {
             }
             uint64_t personal_room_id = 0;
             static string personal_room_name = "个人讨论室";
-            ret = create_room(personal_room_id, personal_room_name, user_id);
+            uint64_t main_conv_id = 0;
+            ret = create_room(personal_room_id, main_conv_id, personal_room_name, user_id, RoomType::Personal);
             if (ret != MysqlPool::QueryResult::Success || personal_room_id == 0) {
                 return {RouteStatus::ServerError};
             }
@@ -332,7 +333,8 @@ RouteResult handle_list_rooms(RequestContext &ctx) {
         }
         room_ids.emplace_back(room_id);
         static string personal_room_name = "个人讨论室";
-        ret = create_room(room_id, personal_room_name, ctx.user_id);
+        uint64_t main_conv_id = 0;
+        ret = create_room(room_id, main_conv_id, personal_room_name, ctx.user_id, RoomType::Personal);
         if (ret != MysqlPool::QueryResult::Success) {
             return {RouteStatus::ServerError};
         }
@@ -342,21 +344,41 @@ RouteResult handle_list_rooms(RequestContext &ctx) {
 
     if (get_ret == MysqlPool::QueryResult::Success) {
         json out;
-        json list = json::array();
-        MysqlPool::QueryResult get_name_ret = MysqlPool::QueryResult::ServerError;
+        struct RoomEntry {
+            uint64_t id;
+            string name;
+            uint64_t main_conversation_id;
+            int type;
+            bool operator<(const RoomEntry &other) const { return type < other.type; }
+        };
+        bool any_server_error = false;
+        vector<RoomEntry> room_list;
         for (size_t i = 0; i < room_ids.size(); ++i) {
-            json r;
             string name;
             uint64_t main_conversation_id = 0;
-            get_name_ret = get_room_data(room_ids[i], name, main_conversation_id);
-            if (get_name_ret == MysqlPool::QueryResult::ServerError) break;
-            r["id"] = room_ids[i];
-            r["name"] = name;
-            r["main_conversation_id"] = main_conversation_id;
-            list.emplace_back(r);
+            int type = 0;
+            MysqlPool::QueryResult get_name_ret = get_room_data(room_ids[i], name, main_conversation_id, type);
+            if (get_name_ret == MysqlPool::QueryResult::ServerError) {
+                any_server_error = true;
+                continue;
+            }
+            if (get_name_ret != MysqlPool::QueryResult::Success) continue;
+            room_list.push_back({room_ids[i], std::move(name), main_conversation_id, type});
         }
-        if (get_name_ret != MysqlPool::QueryResult::Success) {
+        sort(room_list.begin(), room_list.end());
+
+        if (room_list.empty() && any_server_error) {
             return {RouteStatus::ServerError};
+        }
+
+        json list = json::array();
+        for (auto &entry : room_list) {
+            json r;
+            r["id"] = entry.id;
+            r["name"] = std::move(entry.name);
+            r["main_conversation_id"] = entry.main_conversation_id;
+            r["type"] = entry.type;
+            list.emplace_back(r);
         }
         out["rooms"] = std::move(list);
         string body = out.dump();
@@ -400,8 +422,9 @@ RouteResult handle_list_room_conversations(RequestContext &ctx) {
 
     string room_name;
     uint64_t main_conversation_id = 0;
-    ret = get_room_data(room_id, room_name, main_conversation_id);
-    if (ret != MysqlPool::QueryResult::Success) {
+    int room_type = 0;
+    ret = get_room_data(room_id, room_name, main_conversation_id, room_type);
+    if (ret == MysqlPool::QueryResult::ServerError) {
         return {RouteStatus::ServerError};
     }
 
@@ -530,9 +553,10 @@ RouteResult handle_conversation_messages(RequestContext &ctx) {
             json msg;
             msg["message_id"] = rows[i][0];
             msg["send_id"] = rows[i][1];
-            msg["type"] = rows[i][2];
-            msg["content"] = rows[i][3];
-            msg["send_time_ms"] = rows[i][4];
+            msg["username"] = rows[i][2];
+            msg["type"] = rows[i][3];
+            msg["content"] = rows[i][4];
+            msg["send_time_ms"] = rows[i][5];
             list.emplace_back(msg);
         }
         out["messages"] = std::move(list);
@@ -610,6 +634,17 @@ RouteResult handle_delete_room(RequestContext &ctx) {
     }
     if (ret == MysqlPool::QueryResult::ServerError) {
         return {RouteStatus::ServerError};
+    }
+
+    string room_name;
+    uint64_t main_conv_id = 0;
+    int room_type = 0;
+    ret = get_room_data(room_id, room_name, main_conv_id, room_type);
+    if (ret != MysqlPool::QueryResult::Success) {
+        return {RouteStatus::ServerError};
+    }
+    if (static_cast<RoomType>(room_type) != RoomType::Normal) {
+        return {RouteStatus::BadRequest};
     }
 
     vector<uint64_t> member_ids;
@@ -702,6 +737,19 @@ RouteResult handle_kick_or_leave_room(RequestContext &ctx) {
 
     if (target_user_id == ctx.user_id && target_role == static_cast<int>(RoomRole::Owner)) {
         return {RouteStatus::BadRequest};
+    }
+
+    if (target_user_id == ctx.user_id) {
+        string room_name;
+        uint64_t main_conv_id = 0;
+        int room_type = 0;
+        ret = get_room_data(room_id, room_name, main_conv_id, room_type);
+        if (ret != MysqlPool::QueryResult::Success) {
+            return {RouteStatus::ServerError};
+        }
+        if (static_cast<RoomType>(room_type) != RoomType::Normal) {
+            return {RouteStatus::BadRequest};
+        }
     }
 
     if (target_user_id != ctx.user_id) {
@@ -963,11 +1011,7 @@ RouteResult handle_respond_room_invitation(RequestContext &ctx) {
     }
 
     if (status == "accepted") {
-        ret = insert_room_member(room_id, ctx.user_id, 2);
-        if (ret != MysqlPool::QueryResult::Success) {
-            return {RouteStatus::ServerError};
-        }
-        ret = delete_invitation(invitation_id);
+        ret = accept_room_invitation(room_id, ctx.user_id, invitation_id);
         if (ret != MysqlPool::QueryResult::Success) {
             return {RouteStatus::ServerError};
         }
@@ -1174,12 +1218,13 @@ RouteResult handle_create_friend_request(RequestContext &ctx) {
     uint64_t reverse_request_id = 0;
     ret = get_friend_request_by_users(to_user_id, ctx.user_id, reverse_request_id);
     if (ret == MysqlPool::QueryResult::Success) {
-        ret = insert_friendship(to_user_id, ctx.user_id);
-        if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::AlreadyExists) {
-            return {RouteStatus::ServerError};
-        }
-        ret = delete_friend_request(reverse_request_id);
-        if (ret != MysqlPool::QueryResult::Success) {
+        ret = accept_friend_request_transaction(to_user_id, ctx.user_id, reverse_request_id);
+        if (ret == MysqlPool::QueryResult::AlreadyExists) {
+            ret = delete_friend_request(reverse_request_id);
+            if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::NotFound) {
+                return {RouteStatus::ServerError};
+            }
+        } else if (ret != MysqlPool::QueryResult::Success) {
             return {RouteStatus::ServerError};
         }
         ctx.conn.outbuf +=
@@ -1253,12 +1298,13 @@ RouteResult handle_respond_friend_request(RequestContext &ctx) {
     }
 
     if (status == "accepted") {
-        ret = insert_friendship(from_user_id, to_user_id);
-        if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::AlreadyExists) {
-            return {RouteStatus::ServerError};
-        }
-        ret = delete_friend_request(request_id);
-        if (ret != MysqlPool::QueryResult::Success) {
+        ret = accept_friend_request_transaction(from_user_id, to_user_id, request_id);
+        if (ret == MysqlPool::QueryResult::AlreadyExists) {
+            ret = delete_friend_request(request_id);
+            if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::NotFound) {
+                return {RouteStatus::ServerError};
+            }
+        } else if (ret != MysqlPool::QueryResult::Success) {
             return {RouteStatus::ServerError};
         }
         delete_friend_request_by_users(to_user_id, from_user_id);
@@ -1450,6 +1496,17 @@ RouteResult handle_create_conversation(RequestContext &ctx) {
         return {RouteStatus::ServerError};
     }
 
+    string room_name;
+    uint64_t main_conv_id = 0;
+    int room_type = 0;
+    ret = get_room_data(room_id, room_name, main_conv_id, room_type);
+    if (ret != MysqlPool::QueryResult::Success) {
+        return {RouteStatus::ServerError};
+    }
+    if (static_cast<RoomType>(room_type) == RoomType::Atrium) {
+        return {RouteStatus::BadRequest};
+    }
+
     string title;
     try {
         json in = json::parse(ctx.req.body);
@@ -1509,7 +1566,8 @@ RouteResult handle_delete_conversation(RequestContext &ctx) {
 
     string room_name;
     uint64_t main_conversation_id = 0;
-    ret = get_room_data(room_id, room_name, main_conversation_id);
+    int room_type = 0;
+    ret = get_room_data(room_id, room_name, main_conversation_id, room_type);
     if (ret != MysqlPool::QueryResult::Success) {
         return {RouteStatus::ServerError};
     }

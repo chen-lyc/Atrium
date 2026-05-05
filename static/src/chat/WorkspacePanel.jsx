@@ -370,7 +370,7 @@ export default function WorkspacePanel({
                     </div>
                   </section>
 
-                  {roomId ? (
+                  {roomId && room?.type !== 0 ? (
                     <section className="workspace-section">
                       <div className="workspace-section-title">新对话</div>
                       <div className="workspace-inline-form">

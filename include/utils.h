@@ -63,7 +63,7 @@ void destroy_session(const std::string &token);
 
 MysqlPool::QueryResult get_room_ids(uint64_t user_id, std::vector<uint64_t> &ids);
 MysqlPool::QueryResult get_room_ids(uint64_t user_id, std::unordered_set<uint64_t> &ids);
-MysqlPool::QueryResult get_room_data(uint64_t room_id, std::string &room_name, uint64_t &main_conversation_id);
+MysqlPool::QueryResult get_room_data(uint64_t room_id, std::string &room_name, uint64_t &main_conversation_id, int &type);
 
 enum class RoomRole {
     Owner = 0,
@@ -71,9 +71,13 @@ enum class RoomRole {
     Member = 2,
 };
 
-MysqlPool::QueryResult create_room(uint64_t &room_id, uint64_t &main_conversation_id, const std::string &name, const uint64_t user_id);
-MysqlPool::QueryResult create_room(uint64_t &room_id, const std::string &name, const uint64_t user_id);
-MysqlPool::QueryResult create_room(const std::string &name, const uint64_t user_id);
+enum class RoomType {
+    Atrium = 0,
+    Personal = 1,
+    Normal = 2,
+};
+
+MysqlPool::QueryResult create_room(uint64_t &room_id, uint64_t &main_conversation_id, const std::string &name, const uint64_t user_id, RoomType type = RoomType::Normal);
 MysqlPool::QueryResult join_public_room(uint64_t &room_id, uint64_t &main_conversation_id, uint64_t user_id);
 MysqlPool::QueryResult join_public_room(uint64_t &room_id, uint64_t user_id);
 MysqlPool::QueryResult join_public_room(uint64_t user_id);
@@ -96,6 +100,7 @@ MysqlPool::QueryResult check_friendship(uint64_t user_a, uint64_t user_b);
 MysqlPool::QueryResult insert_invitation(uint64_t &invitation_id, uint64_t room_id, uint64_t inviter_id, uint64_t invitee_id);
 MysqlPool::QueryResult get_invitation(uint64_t invitation_id, uint64_t &room_id, uint64_t &inviter_id, uint64_t &invitee_id);
 MysqlPool::QueryResult delete_invitation(uint64_t invitation_id);
+MysqlPool::QueryResult accept_room_invitation(uint64_t room_id, uint64_t user_id, uint64_t invitation_id);
 MysqlPool::QueryResult get_room_invitations(uint64_t room_id, std::vector<std::vector<std::string>> &rows);
 MysqlPool::QueryResult get_invitations_by_invitee(uint64_t user_id, std::vector<std::vector<std::string>> &rows);
 MysqlPool::QueryResult get_invitations_by_inviter(uint64_t user_id, std::vector<std::vector<std::string>> &rows);
@@ -108,6 +113,7 @@ MysqlPool::QueryResult delete_friend_request_by_users(uint64_t from_user_id, uin
 MysqlPool::QueryResult get_friend_requests_by_to_user(uint64_t user_id, std::vector<std::vector<std::string>> &rows);
 MysqlPool::QueryResult get_friend_requests_by_from_user(uint64_t user_id, std::vector<std::vector<std::string>> &rows);
 MysqlPool::QueryResult insert_friendship(uint64_t user_a, uint64_t user_b);
+MysqlPool::QueryResult accept_friend_request_transaction(uint64_t from_user_id, uint64_t to_user_id, uint64_t request_id);
 MysqlPool::QueryResult delete_friendship(uint64_t user_a, uint64_t user_b);
 
 MysqlPool::QueryResult get_conversation_data(uint64_t conversation_id, uint64_t &room_id, uint64_t &created_by);

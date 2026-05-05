@@ -118,7 +118,8 @@ function normalizeRoomRecord(room) {
     conversations[0]?.id ||
     normalizeConversationId(room?.conversationId ?? room?.conversation_id);
   const name = typeof room?.name === "string" && room.name.trim() ? room.name.trim() : "";
-  return { roomId, name, mainConversationId, conversations };
+  const type = typeof room?.type === "number" ? room.type : 2;
+  return { roomId, name, mainConversationId, conversations, type };
 }
 
 function getRoomConversationId(record, fallbackConversationId = DEFAULT_CONVERSATION_ID) {
@@ -146,6 +147,7 @@ function createPersonalRoom(record, fallbackConversationId = DEFAULT_CONVERSATIO
     conversations: record?.conversations || [],
     mainConversationId: normalizeConversationId(record?.mainConversationId) || conversationId,
     conversationId,
+    type: 1,
     isAvailable: true
   };
 }
@@ -167,6 +169,7 @@ function createPublicRoom(record, fallbackConversationId = PUBLIC_CONVERSATION_I
     conversations: record?.conversations || [],
     mainConversationId: normalizeConversationId(record?.mainConversationId) || conversationId,
     conversationId,
+    type: 0,
     isAvailable: true
   };
 }
@@ -189,6 +192,7 @@ function createGenericRoom(record, index) {
     conversations: record?.conversations || [],
     mainConversationId: normalizeConversationId(record?.mainConversationId) || getRoomConversationId(record),
     conversationId: getRoomConversationId(record),
+    type: 2,
     isAvailable: true
   };
 }
@@ -207,12 +211,8 @@ function createRoomList(roomRecords, personalConversationId) {
     : [];
   if (!records.length) return createFallbackRoomList(personalConversationId);
 
-  const publicRecord =
-    records.find((room) => room.roomId === 1) ||
-    records.find((room) => room.name.includes("大厅"));
-  const personalRecord =
-    records.find((room) => room.roomId !== publicRecord?.roomId && room.name.includes("个人")) ||
-    records.find((room) => room.roomId !== publicRecord?.roomId);
+  const personalRecord = records.find((room) => room.type === 1);
+  const atriumRecord = records.find((room) => room.type === 0);
   const usedIds = new Set();
   const rooms = [];
 
@@ -220,9 +220,9 @@ function createRoomList(roomRecords, personalConversationId) {
     rooms.push(createPersonalRoom(personalRecord, personalConversationId));
     usedIds.add(personalRecord.roomId);
   }
-  if (publicRecord) {
-    rooms.push(createPublicRoom(publicRecord, PUBLIC_CONVERSATION_ID));
-    usedIds.add(publicRecord.roomId);
+  if (atriumRecord) {
+    rooms.push(createPublicRoom(atriumRecord, PUBLIC_CONVERSATION_ID));
+    usedIds.add(atriumRecord.roomId);
   }
 
   records

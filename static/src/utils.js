@@ -144,7 +144,8 @@ export function normalizeAuthRooms(data) {
             ? `房间 ${roomId}`
             : "";
       const conversations = normalizeAuthConversations(item);
-      return { roomId, id: roomId, name, mainConversationId, conversations };
+      const type = typeof item?.type === "number" ? item.type : 2;
+      return { roomId, id: roomId, name, mainConversationId, conversations, type };
     })
     .filter((room) => {
       if (!room.roomId || seen.has(room.roomId)) return false;

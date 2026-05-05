@@ -155,6 +155,7 @@ Connection 结构体通过 `protocol` 字段（`PROTO_HTTP` / `PROTO_BINARY` / `
 mysql -u root -p
 CREATE DATABASE webserver;
 USE webserver;
+
 CREATE TABLE users (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   username VARCHAR(32) UNIQUE NOT NULL,
@@ -172,11 +173,12 @@ CREATE TABLE rooms (
     main_conversation_id BIGINT UNSIGNED NOT NULL,
     owner_id BIGINT UNSIGNED NOT NULL,
     created_at_ms BIGINT UNSIGNED NOT NULL,
+    type TINYINT UNSIGNED NOT NULL DEFAULT 2,
 
     PRIMARY KEY (id)
 )engine = InnoDB default charset = utf8mb4;
 
-INSERT INTO rooms (id, name, main_conversation_id, owner_id, created_at_ms) VALUES (1, 'Atrium 大厅', 1, 0, 0);
+INSERT INTO rooms (id, name, main_conversation_id, owner_id, created_at_ms, type) VALUES (1, 'Atrium 大厅', 1, 0, 0, 0);
 
 CREATE TABLE room_members (
   room_id BIGINT UNSIGNED NOT NULL,

@@ -21,9 +21,9 @@ MysqlPool::MysqlPool(int min_connections, int max_connections) : m_min_connectio
             fail_count = 0;
         } catch (const sql::SQLException &e) {
             LOG_ERROR("mysql init failed: %s, code = %d, state = %s",
-                      e.what(),
-                      e.getErrorCode(),
-                      e.getSQLState().c_str());
+                e.what(),
+                e.getErrorCode(),
+                e.getSQLState().c_str());
             if (++fail_count > m_max_fail_count) {
                 LOG_ERROR("mysql connect failed too much");
                 m_init_all_fail = true;
@@ -50,13 +50,7 @@ MysqlPool::~MysqlPool() {
     }
 }
 
-MysqlPool::QueryResult MysqlPool::executeQuery(const std::string &sql, MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count) {
-    MysqlConnGuard guard(*this);
-    sql::Connection *conn = guard.get();
-    if (conn == nullptr) {
-        return MysqlPool::QueryResult::ServerError;
-    }
-
+MysqlPool::QueryResult MysqlPool::executeRaw(sql::Connection *conn, const std::string &sql, MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count) {
     try {
         unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement(sql));
 
@@ -88,31 +82,31 @@ MysqlPool::QueryResult MysqlPool::executeQuery(const std::string &sql, MysqlPara
         return MysqlPool::QueryResult::Success;
     } catch (const sql::SQLException &e) {
         LOG_WARN("select failed: %s, code = %d, state = %s",
-                 e.what(),
-                 e.getErrorCode(),
-                 e.getSQLState().c_str());
+            e.what(),
+            e.getErrorCode(),
+            e.getSQLState().c_str());
         if (isBadMysqlConnection(e)) {
-            guard.discardConnection();
-
-            {
-                {
-                    lock_guard<mutex> lock(m_mutex);
-                    --m_connections;
-                }
-            }
-            m_need_refill_cond.notify_one();
+            notifyConnectionLost();
+            return BadConn;
         }
         return MysqlPool::QueryResult::ServerError;
     }
 }
 
-MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, MysqlParams &params, uint64_t *id) {
+MysqlPool::QueryResult MysqlPool::executeQuery(const std::string &sql, MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count) {
     MysqlConnGuard guard(*this);
     sql::Connection *conn = guard.get();
-    if (conn == nullptr) {
-        return MysqlPool::QueryResult::ServerError;
-    }
+    if (conn == nullptr) return ServerError;
 
+    MysqlPool::QueryResult ret = executeRaw(conn, sql, params, rows, col_count);
+    if (ret == BadConn) {
+        guard.discardConnection();
+        return ServerError;
+    }
+    return ret;
+}
+
+MysqlPool::QueryResult MysqlPool::executeRaw(sql::Connection *conn, const std::string &sql, MysqlParams &params, uint64_t *id) {
     try {
         unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement(sql));
 
@@ -151,24 +145,128 @@ MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, MysqlParams &p
             return MysqlPool::QueryResult::AlreadyExists;
         }
         LOG_WARN("insert failed: %s, code = %d, state = %s",
-                 e.what(),
-                 e.getErrorCode(),
-                 e.getSQLState().c_str());
+            e.what(),
+            e.getErrorCode(),
+            e.getSQLState().c_str());
         if (isBadMysqlConnection(e)) {
-            guard.discardConnection();
-
-            {
-                lock_guard<mutex> lock(m_mutex);
-                --m_connections;
-            }
-            m_need_refill_cond.notify_one();
+            notifyConnectionLost();
+            return BadConn;
         }
         return MysqlPool::QueryResult::ServerError;
     }
 }
 
+MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, MysqlParams &params, uint64_t *id) {
+    MysqlConnGuard guard(*this);
+    sql::Connection *conn = guard.get();
+    if (conn == nullptr) return ServerError;
+
+    MysqlPool::QueryResult ret = executeRaw(conn, sql, params, id);
+    if (ret == BadConn) {
+        guard.discardConnection();
+        return ServerError;
+    }
+    return ret;
+}
+
+MysqlPool::QueryResult MysqlPool::executeQuery(std::vector<std::string> &sqls, std::vector<MysqlParams> &params, std::vector<ExecuteResult> &result) {
+    MysqlConnGuard guard(*this);
+    sql::Connection *conn = guard.get();
+    if (conn == nullptr) return ServerError;
+
+    try {
+        conn->setAutoCommit(false);
+
+        MysqlPool::QueryResult ret = ServerError;
+        for (size_t i = 0; i < sqls.size(); ++i) {
+            if (result[i].mode == SqlResultMode::None) ret = executeRaw(conn, sqls[i], params[i]);
+            else if (result[i].mode == SqlResultMode::LastInsertId) ret = executeRaw(conn, sqls[i], params[i], result[i].id);
+            else if (result[i].mode == SqlResultMode::Rows) ret = executeRaw(conn, sqls[i], params[i], result[i].rows, result[i].col_count);
+
+            if (ret == BadConn) {
+                guard.discardConnection();
+                return ServerError;
+            }
+            if (ret != Success) {
+                conn->rollback();
+                conn->setAutoCommit(true);
+                return ret;
+            }
+        }
+
+        conn->commit();
+        conn->setAutoCommit(true);
+        return Success;
+    } catch (const sql::SQLException &e) {
+        if (isBadMysqlConnection(e)) {
+            guard.discardConnection();
+            notifyConnectionLost();
+            return ServerError;
+        }
+
+        try {
+            conn->rollback();
+            conn->setAutoCommit(true);
+        } catch (const sql::SQLException &e) {
+            guard.discardConnection();
+            notifyConnectionLost();
+        }
+        return ServerError;
+    }
+}
+
+MysqlPool::QueryResult MysqlPool::executeTransaction(std::function<QueryResult(MysqlTxnContext &)> work) {
+    MysqlConnGuard guard(*this);
+    sql::Connection *conn = guard.get();
+    if (conn == nullptr) return ServerError;
+
+    MysqlTxnContext txn(*this, conn);
+    try {
+        conn->setAutoCommit(false);
+        MysqlPool::QueryResult ret = work(txn);
+        if (ret == BadConn) {
+            guard.discardConnection();
+            return ServerError;
+        }
+        if (ret != Success) {
+            conn->rollback();
+            conn->setAutoCommit(true);
+            return ret;
+        }
+
+        conn->commit();
+        conn->setAutoCommit(true);
+        return Success;
+    } catch (const sql::SQLException &e) {
+        if (isBadMysqlConnection(e)) {
+            guard.discardConnection();
+            notifyConnectionLost();
+            return ServerError;
+        }
+
+        try {
+            conn->rollback();
+            conn->setAutoCommit(true);
+        } catch (const sql::SQLException &e) {
+            guard.discardConnection();
+            notifyConnectionLost();
+        }
+        return ServerError;
+    }
+}
+
 bool MysqlPool::isBadMysqlConnection(const sql::SQLException &e) {
     return e.getErrorCode() == 2006 || e.getErrorCode() == 2013 || e.getSQLState() == "08S01";
+}
+
+void MysqlPool::notifyConnectionLost() {
+    {
+        {
+            lock_guard<mutex> lock(m_mutex);
+            --m_connections;
+        }
+    }
+    m_need_refill_cond.notify_one();
 }
 
 MysqlConnGuard::MysqlConnGuard(MysqlPool &pool) : m_pool(pool) {
@@ -225,9 +323,9 @@ void MysqlPool::maintainConnections() {
                     mysql_conn->setSchema("webserver");
                 } catch (const sql::SQLException &e) {
                     LOG_ERROR("mysql init failed: %s, code = %d, state = %s",
-                              e.what(),
-                              e.getErrorCode(),
-                              e.getSQLState().c_str());
+                        e.what(),
+                        e.getErrorCode(),
+                        e.getSQLState().c_str());
                     mysql_conn = nullptr;
                     if (++fail_count > m_max_fail_count) {
                         LOG_ERROR("mysql connect failed too much in maintainConnections");

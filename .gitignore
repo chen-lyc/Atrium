@@ -10,7 +10,7 @@ logs/
 
 # 本地笔记 / AI 上下文
 000_READ_BEFORE_EVERY_CHANGE/
-master-mentor/
+mentor/
 
 # 临时截图
 *.png

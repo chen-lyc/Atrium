@@ -28,15 +28,16 @@ class MysqlConnGuard {
     std::unique_ptr<sql::Connection> m_mysql_conn;
 };
 
-class MysqlPool {
-    friend class MysqlConnGuard;
+class MysqlTxnContext;
 
+class MysqlPool {
   public:
     enum QueryResult {
         Success,
         NotFound,
         AlreadyExists,
         SqlError,
+        BadConn,
         ServerError,
     };
     struct Blob {
@@ -51,15 +52,36 @@ class MysqlPool {
         return instance;
     }
     ~MysqlPool();
+
     QueryResult executeQuery(const std::string &sql, MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count);
     QueryResult executeQuery(const std::string &sql, MysqlParams &params, uint64_t *id = nullptr);
 
+    enum class SqlResultMode {
+        None,
+        LastInsertId,
+        Rows
+    };
+    struct ExecuteResult {
+        SqlResultMode mode;
+        uint64_t *id = nullptr;
+        std::vector<std::vector<std::string>> &rows;
+        size_t col_count;
+    };
+    QueryResult executeQuery(std::vector<std::string> &sqls, std::vector<MysqlParams> &params, std::vector<ExecuteResult> &result);
+    QueryResult executeTransaction(std::function<QueryResult(MysqlTxnContext &)> work);
+
   private:
     MysqlPool(int min_connections, int max_connections);
+    QueryResult executeRaw(sql::Connection *conn, const std::string &sql, MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count);
+    QueryResult executeRaw(sql::Connection *conn, const std::string &sql, MysqlParams &params, uint64_t *id = nullptr);
     bool isBadMysqlConnection(const sql::SQLException &e);
+    void notifyConnectionLost();
     void maintainConnections();
 
   private:
+    friend class MysqlConnGuard;
+    friend class MysqlTxnContext;
+
     int m_min_connections;
     int m_max_connections;
     int m_max_fail_count;
@@ -73,4 +95,20 @@ class MysqlPool {
     bool m_stop = false;
     bool m_init_all_fail = false;
     bool m_unreachable = false;
+};
+
+class MysqlTxnContext {
+  public:
+    MysqlPool::QueryResult executeQuery(const std::string &sql, MysqlPool::MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count) {
+        return m_pool.executeRaw(m_mysql_conn, sql, params, rows, col_count);
+    }
+    MysqlPool::QueryResult executeQuery(const std::string &sql, MysqlPool::MysqlParams &params, uint64_t *id = nullptr) {
+        return m_pool.executeRaw(m_mysql_conn, sql, params, id);
+    }
+
+  private:
+    friend class MysqlPool;
+    MysqlTxnContext(MysqlPool &pool, sql::Connection *conn) : m_pool(pool), m_mysql_conn(conn) {}
+    MysqlPool &m_pool;
+    sql::Connection *m_mysql_conn;
 };

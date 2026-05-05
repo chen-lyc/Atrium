@@ -366,7 +366,6 @@ MysqlPool::QueryResult get_room_ids(uint64_t user_id, std::vector<uint64_t> &ids
             ids.emplace_back(stoull(result[i][0]));
         } catch (const exception &e) {
             LOG_WARN("parse room_id failed: room_id = %s, reason = %s", result[i][0].data(), e.what());
-            return MysqlPool::QueryResult::ServerError;
         }
     }
     return MysqlPool::QueryResult::Success;
@@ -387,71 +386,56 @@ MysqlPool::QueryResult get_room_ids(uint64_t user_id, std::unordered_set<uint64_
             ids.emplace(stoull(result[i][0]));
         } catch (const exception &e) {
             LOG_WARN("parse room_id failed: room_id = %s, reason = %s", result[i][0].data(), e.what());
-            return MysqlPool::QueryResult::ServerError;
         }
     }
     return MysqlPool::QueryResult::Success;
 }
 
-MysqlPool::QueryResult get_room_data(uint64_t room_id, string &room_name, uint64_t &main_conversation_id) {
-    static const string sql = "SELECT name, main_conversation_id FROM rooms WHERE id = ?";
+MysqlPool::QueryResult get_room_data(uint64_t room_id, string &room_name, uint64_t &main_conversation_id, int &type) {
+    static const string sql = "SELECT name, main_conversation_id, type FROM rooms WHERE id = ?";
     MysqlPool::MysqlParams params{room_id};
     vector<vector<string>> result;
-    size_t col_count = 2;
+    size_t col_count = 3;
     MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, result, col_count);
-    if (ret == MysqlPool::QueryResult::ServerError || ret == MysqlPool::QueryResult::NotFound) {
-        return MysqlPool::QueryResult::ServerError;
+    if (ret != MysqlPool::QueryResult::Success) {
+        return ret;
     }
 
     room_name = std::move(result[0][0]);
     try {
         main_conversation_id = stoull(result[0][1]);
+        type = stoi(result[0][2]);
     } catch (const exception &e) {
-        LOG_WARN("parse main_conversation_id failed: value = %s, reason = %s", result[0][1].data(), e.what());
+        LOG_WARN("parse room data failed: reason = %s", e.what());
         return MysqlPool::QueryResult::ServerError;
     }
     return MysqlPool::QueryResult::Success;
 }
 
-MysqlPool::QueryResult create_room(uint64_t &room_id, uint64_t &main_conversation_id, const std::string &name, const uint64_t user_id) {
-    uint64_t time_ms = now_ms();
-    main_conversation_id = 0;
-    static const string sql = "INSERT INTO rooms (name, main_conversation_id, owner_id, created_at_ms) VALUES (?, ?, ?, ?)";
-    MysqlPool::MysqlParams params{name, main_conversation_id, user_id, time_ms};
-    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, &room_id);
-    if (ret != MysqlPool::QueryResult::Success) {
-        return MysqlPool::QueryResult::ServerError;
-    }
-    static const string cm_sql = "INSERT INTO room_members (room_id, user_id, role, join_at_ms) VALUES (?, ?, ?, ?)";
-    params = {room_id, user_id, 0, now_ms()};
-    ret = MysqlPool::getInstance().executeQuery(cm_sql, params);
-    if (ret != MysqlPool::QueryResult::Success) {
-        return MysqlPool::QueryResult::ServerError;
-    }
+MysqlPool::QueryResult create_room(uint64_t &room_id, uint64_t &main_conversation_id, const std::string &name, const uint64_t user_id, RoomType type) {
+    return MysqlPool::getInstance().executeTransaction([&](MysqlTxnContext &txn) {
+        uint64_t time_ms = now_ms();
+        int type_int = static_cast<int>(type);
 
-    ret = create_conversation_with_title(room_id, name, user_id, main_conversation_id);
-    if (ret != MysqlPool::QueryResult::Success) {
-        return MysqlPool::QueryResult::ServerError;
-    }
+        static const string sql = "INSERT INTO rooms (name, main_conversation_id, owner_id, created_at_ms, type) VALUES (?, ?, ?, ?, ?)";
+        MysqlPool::MysqlParams params{name, uint64_t(0), user_id, time_ms, type_int};
+        MysqlPool::QueryResult ret = txn.executeQuery(sql, params, &room_id);
+        if (ret != MysqlPool::QueryResult::Success) return ret;
 
-    static const string up_sql = "UPDATE rooms SET main_conversation_id = ? WHERE id = ?";
-    params = {main_conversation_id, room_id};
-    ret = MysqlPool::getInstance().executeQuery(up_sql, params);
-    if (ret != MysqlPool::QueryResult::Success) {
-        return MysqlPool::QueryResult::ServerError;
-    }
-    return MysqlPool::QueryResult::Success;
-}
+        static const string cm_sql = "INSERT INTO room_members (room_id, user_id, role, join_at_ms) VALUES (?, ?, ?, ?)";
+        params = {room_id, user_id, uint64_t(0), time_ms};
+        ret = txn.executeQuery(cm_sql, params);
+        if (ret != MysqlPool::QueryResult::Success) return ret;
 
-MysqlPool::QueryResult create_room(uint64_t &room_id, const std::string &name, const uint64_t user_id) {
-    uint64_t main_conversation_id = 0;
-    return create_room(room_id, main_conversation_id, name, user_id);
-}
+        static const string conv_sql = "INSERT INTO conversations (room_id, title, created_by, created_at_ms) VALUES (?, ?, ?, ?)";
+        params = {room_id, name, user_id, time_ms};
+        ret = txn.executeQuery(conv_sql, params, &main_conversation_id);
+        if (ret != MysqlPool::QueryResult::Success) return ret;
 
-MysqlPool::QueryResult create_room(const std::string &name, const uint64_t user_id) {
-    uint64_t room_id = 0;
-    uint64_t main_conversation_id = 0;
-    return create_room(room_id, main_conversation_id, name, user_id);
+        static const string up_sql = "UPDATE rooms SET main_conversation_id = ? WHERE id = ?";
+        params = {main_conversation_id, room_id};
+        return txn.executeQuery(up_sql, params);
+    });
 }
 
 MysqlPool::QueryResult join_public_room(uint64_t &room_id, uint64_t &main_conversation_id, uint64_t user_id) {
@@ -480,41 +464,17 @@ MysqlPool::QueryResult create_conversation(uint64_t room_id, uint64_t created_by
 }
 
 MysqlPool::QueryResult delete_room(uint64_t room_id) {
-    static const string del_inv_sql = "DELETE FROM invitations WHERE room_id = ?";
-    {
-        MysqlPool::MysqlParams params{room_id};
-        MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(del_inv_sql, params);
-        if (ret != MysqlPool::QueryResult::Success) {
-            return MysqlPool::QueryResult::ServerError;
-        }
-    }
-
-    static const string del_msg_sql =
-        "DELETE FROM messages WHERE conversation_id IN "
-        "(SELECT id FROM conversations WHERE room_id = ?)";
-    MysqlPool::MysqlParams params{room_id};
-    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(del_msg_sql, params);
-    if (ret != MysqlPool::QueryResult::Success) {
-        return MysqlPool::QueryResult::ServerError;
-    }
-
-    static const string del_conv_sql = "DELETE FROM conversations WHERE room_id = ?";
-    params = {room_id};
-    ret = MysqlPool::getInstance().executeQuery(del_conv_sql, params);
-    if (ret != MysqlPool::QueryResult::Success) {
-        return MysqlPool::QueryResult::ServerError;
-    }
-
-    static const string del_members_sql = "DELETE FROM room_members WHERE room_id = ?";
-    params = {room_id};
-    ret = MysqlPool::getInstance().executeQuery(del_members_sql, params);
-    if (ret != MysqlPool::QueryResult::Success) {
-        return MysqlPool::QueryResult::ServerError;
-    }
-
-    static const string sql = "DELETE FROM rooms WHERE id = ?";
-    params = {room_id};
-    return MysqlPool::getInstance().executeQuery(sql, params);
+    static vector<vector<string>> dummy_rows;
+    vector<string> sqls = {
+        "DELETE FROM invitations WHERE room_id = ?",
+        "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE room_id = ?)",
+        "DELETE FROM conversations WHERE room_id = ?",
+        "DELETE FROM room_members WHERE room_id = ?",
+        "DELETE FROM rooms WHERE id = ?"
+    };
+    vector<MysqlPool::MysqlParams> params(5, MysqlPool::MysqlParams{room_id});
+    vector<MysqlPool::ExecuteResult> results(5, MysqlPool::ExecuteResult{MysqlPool::SqlResultMode::None, nullptr, dummy_rows, 0});
+    return MysqlPool::getInstance().executeQuery(sqls, params, results);
 }
 
 MysqlPool::QueryResult get_room_from_conversations(uint64_t &room_id, uint64_t conversation_id) {
@@ -661,6 +621,21 @@ MysqlPool::QueryResult delete_invitation(uint64_t invitation_id) {
     static const string sql = "DELETE FROM invitations WHERE id = ?";
     MysqlPool::MysqlParams params{invitation_id};
     return MysqlPool::getInstance().executeQuery(sql, params);
+}
+
+MysqlPool::QueryResult accept_room_invitation(uint64_t room_id, uint64_t user_id, uint64_t invitation_id) {
+    static vector<vector<string>> dummy_rows;
+    vector<string> sqls = {
+        "INSERT INTO room_members (room_id, user_id, role, join_at_ms) VALUES (?, ?, ?, ?)",
+        "DELETE FROM invitations WHERE id = ?"
+    };
+    uint64_t now = now_ms();
+    vector<MysqlPool::MysqlParams> params = {
+        MysqlPool::MysqlParams{room_id, user_id, 2, now},
+        MysqlPool::MysqlParams{invitation_id}
+    };
+    vector<MysqlPool::ExecuteResult> results(2, MysqlPool::ExecuteResult{MysqlPool::SqlResultMode::None, nullptr, dummy_rows, 0});
+    return MysqlPool::getInstance().executeQuery(sqls, params, results);
 }
 
 MysqlPool::QueryResult get_room_invitations(uint64_t room_id, std::vector<std::vector<std::string>> &rows) {
@@ -823,6 +798,22 @@ MysqlPool::QueryResult insert_friendship(uint64_t user_a, uint64_t user_b) {
     return MysqlPool::getInstance().executeQuery(sql, params);
 }
 
+MysqlPool::QueryResult accept_friend_request_transaction(uint64_t from_user_id, uint64_t to_user_id, uint64_t request_id) {
+    if (from_user_id > to_user_id) std::swap(from_user_id, to_user_id);
+    static vector<vector<string>> dummy_rows;
+    vector<string> sqls = {
+        "INSERT INTO friendships (user_a_id, user_b_id, created_at_ms) VALUES (?, ?, ?)",
+        "DELETE FROM friend_requests WHERE id = ?"
+    };
+    uint64_t now = now_ms();
+    vector<MysqlPool::MysqlParams> params = {
+        MysqlPool::MysqlParams{from_user_id, to_user_id, now},
+        MysqlPool::MysqlParams{request_id}
+    };
+    vector<MysqlPool::ExecuteResult> results(2, MysqlPool::ExecuteResult{MysqlPool::SqlResultMode::None, nullptr, dummy_rows, 0});
+    return MysqlPool::getInstance().executeQuery(sqls, params, results);
+}
+
 MysqlPool::QueryResult delete_friendship(uint64_t user_a, uint64_t user_b) {
     if (user_a > user_b) std::swap(user_a, user_b);
     static const string sql = "DELETE FROM friendships WHERE user_a_id = ? AND user_b_id = ?";
@@ -915,15 +906,14 @@ MysqlPool::QueryResult get_conversation_data(uint64_t conversation_id, uint64_t 
 }
 
 MysqlPool::QueryResult delete_conversation_row(uint64_t conversation_id) {
-    static const string del_msg_sql = "DELETE FROM messages WHERE conversation_id = ?";
-    MysqlPool::MysqlParams params{conversation_id};
-    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(del_msg_sql, params);
-    if (ret != MysqlPool::QueryResult::Success) {
-        return MysqlPool::QueryResult::ServerError;
-    }
-    static const string sql = "DELETE FROM conversations WHERE id = ?";
-    params = {conversation_id};
-    return MysqlPool::getInstance().executeQuery(sql, params);
+    static vector<vector<string>> dummy_rows;
+    vector<string> sqls = {
+        "DELETE FROM messages WHERE conversation_id = ?",
+        "DELETE FROM conversations WHERE id = ?"
+    };
+    vector<MysqlPool::MysqlParams> params(2, MysqlPool::MysqlParams{conversation_id});
+    vector<MysqlPool::ExecuteResult> results(2, MysqlPool::ExecuteResult{MysqlPool::SqlResultMode::None, nullptr, dummy_rows, 0});
+    return MysqlPool::getInstance().executeQuery(sqls, params, results);
 }
 
 MysqlPool::QueryResult get_message_meta(uint64_t message_id, uint64_t &sender_id, uint64_t &send_time_ms) {
@@ -968,7 +958,6 @@ MysqlPool::QueryResult get_user_ids_by_room(uint64_t room_id, std::vector<uint64
             ids.emplace_back(stoull(result[i][0]));
         } catch (const exception &e) {
             LOG_WARN("parse user_id failed in get_user_ids_by_room: value = %s, reason = %s", result[i][0].data(), e.what());
-            return MysqlPool::QueryResult::ServerError;
         }
     }
     return MysqlPool::QueryResult::Success;
@@ -1002,8 +991,11 @@ MysqlPool::QueryResult get_list_conversations_by_room_id(uint64_t room_id, std::
     vector<vector<string>> rows;
     size_t col_count = 2;
     MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, rows, col_count);
-    if (ret != MysqlPool::QueryResult::Success) {
+    if (ret == MysqlPool::QueryResult::ServerError) {
         return MysqlPool::QueryResult::ServerError;
+    }
+    if (ret != MysqlPool::QueryResult::Success) {
+        return ret;
     }
     for (size_t i = 0; i < rows.size(); ++i) {
         try {
@@ -1011,7 +1003,6 @@ MysqlPool::QueryResult get_list_conversations_by_room_id(uint64_t room_id, std::
             titles.emplace_back(rows[i][1]);
         } catch (const exception &e) {
             LOG_WARN("parse conversations data failed: reason = %s", e.what());
-            return MysqlPool::QueryResult::ServerError;
         }
     }
     return MysqlPool::QueryResult::Success;
@@ -1027,16 +1018,18 @@ MysqlPool::QueryResult insert_message(chatdb::Message &msg, uint64_t &message_id
 
 MysqlPool::QueryResult get_recent_messages(uint64_t conversation_id, std::optional<chatdb::Cursor> cursor, int limit, std::vector<std::vector<std::string>> &rows) {
     static const string first_page_sql =
-        "SELECT id, send_id, type, content, send_time_ms FROM messages "
-        "WHERE conversation_id = ? AND deleted_at_ms IS NULL "
-        "ORDER BY send_time_ms DESC, id DESC LIMIT ?";
+        "SELECT m.id, m.send_id, u.username, m.type, m.content, m.send_time_ms "
+        "FROM messages m JOIN users u ON u.id = m.send_id "
+        "WHERE m.conversation_id = ? AND m.deleted_at_ms IS NULL "
+        "ORDER BY m.send_time_ms DESC, m.id DESC LIMIT ?";
     static const string before_cursor_sql =
-        "SELECT id, send_id, type, content, send_time_ms FROM messages "
-        "WHERE conversation_id = ? AND (send_time_ms, id) < (?, ?) "
-        "AND deleted_at_ms IS NULL "
-        "ORDER BY send_time_ms DESC, id DESC LIMIT ?";
+        "SELECT m.id, m.send_id, u.username, m.type, m.content, m.send_time_ms "
+        "FROM messages m JOIN users u ON u.id = m.send_id "
+        "WHERE m.conversation_id = ? AND (m.send_time_ms, m.id) < (?, ?) "
+        "AND m.deleted_at_ms IS NULL "
+        "ORDER BY m.send_time_ms DESC, m.id DESC LIMIT ?";
 
-    size_t col_count = 5;
+    size_t col_count = 6;
     if (cursor == nullopt) {
         MysqlPool::MysqlParams params{conversation_id, limit};
         return MysqlPool::getInstance().executeQuery(first_page_sql, params, rows, col_count);
