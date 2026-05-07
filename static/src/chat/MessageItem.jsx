@@ -236,6 +236,8 @@ function renderMessageContent(text) {
 
 export default function MessageItem({ message, hiddenMessageId, itemAnimationMode = "standard", onContextMenu }) {
   const isHiddenForFlight = message.id === hiddenMessageId;
+  const participantType = message.isAI ? "ai" : message.isSelf ? "self" : "human";
+  const avatarSrc = message.avatarUrl || (message.isAI ? "/avatars/deepseek-logo.svg" : "");
   const resolvedAnimationMode = message.source === "local-welcome" ? "welcome" : itemAnimationMode;
   const animationPreset = isHiddenForFlight
     ? ANIMATION_PRESETS.flightTarget
@@ -273,29 +275,37 @@ export default function MessageItem({ message, hiddenMessageId, itemAnimationMod
       layout={animationPreset.layout}
       className={`message-entry ${
         message.groupedWithPrev ? "is-grouped" : message.showDivider ? "is-first" : "is-fresh"
-      }`}
+      } is-${participantType}`}
       data-message-id={message.id}
+      data-participant-type={participantType}
+      data-message-role={message.isAI ? "assistant" : "message"}
       onContextMenu={handleContextMenu}
     >
       {shouldShowDivider ? <div className="time-divider">{message.dividerLabel}</div> : null}
       <motion.article
-        className="message-block"
+        className={`message-block is-${participantType}`}
         initial={false}
         animate={{
-          opacity: isHiddenForFlight ? 0 : 1,
-          backgroundColor: "rgba(47, 128, 237, 0)"
+          opacity: isHiddenForFlight ? 0 : 1
         }}
         transition={{
-          opacity: { duration: isHiddenForFlight ? 0.04 : 0.12, ease: EASE },
-          backgroundColor: { duration: 0.15, ease: EASE }
+          opacity: { duration: isHiddenForFlight ? 0.04 : 0.12, ease: EASE }
         }}
       >
         {message.showAuthor ? (
           <div className="message-meta">
+            {avatarSrc ? (
+              <img className="message-avatar" src={avatarSrc} alt="" />
+            ) : (
+              <span className={`message-avatar-fallback is-${participantType}`} aria-hidden="true">
+                {String(message.nickname || "用").slice(0, 1)}
+              </span>
+            )}
             <span className="message-author-button">
               <span className="message-author">{message.nickname}</span>
             </span>
             {message.isSelf ? <span className="message-you">• 你</span> : null}
+            {message.isAI ? <span className="message-badge is-ai">AI</span> : null}
             <span className="message-time">{message.timeLabel}</span>
           </div>
         ) : null}

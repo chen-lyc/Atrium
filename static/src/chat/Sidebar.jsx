@@ -60,12 +60,72 @@ function ThemeToggle() {
   );
 }
 
+const SIDEBAR_AI_MODELS = [
+  { name: "DeepSeek", meta: "AI 模型" },
+  { name: "Qwen", meta: "AI 模型" }
+];
+
+function SidebarWorkbenchNav({ onOpenWorkspacePanel, readOnly }) {
+  return (
+    <section className="sidebar-workbench-nav" aria-label="AI 模型与知识沉淀">
+      <div className="sidebar-nav-group">
+        <div className="section-label">AI 模型</div>
+        <div className="sidebar-nav-list">
+          {SIDEBAR_AI_MODELS.map((model) => (
+            <button
+              key={model.name}
+              type="button"
+              className="sidebar-nav-row focus-ring"
+              onClick={onOpenWorkspacePanel}
+              disabled={readOnly}
+            >
+              <span>{model.name}</span>
+              <small>{model.meta}</small>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="sidebar-nav-group">
+        <div className="section-label">知识沉淀</div>
+        <div className="sidebar-nav-list">
+          <button
+            type="button"
+            className="sidebar-nav-row is-strong focus-ring"
+            onClick={onOpenWorkspacePanel}
+            disabled={readOnly}
+          >
+            <span>笔记与摘录</span>
+            <small>沉淀讨论结论</small>
+          </button>
+          <button
+            type="button"
+            className="sidebar-nav-row focus-ring"
+            onClick={onOpenWorkspacePanel}
+            disabled={readOnly}
+          >
+            <span>空间索引</span>
+            <small>房间 · 对话 · 成员</small>
+          </button>
+        </div>
+      </div>
+      <button
+        type="button"
+        className="sidebar-workspace-link focus-ring"
+        onClick={onOpenWorkspacePanel}
+        disabled={readOnly}
+      >
+        打开侧工作区
+      </button>
+    </section>
+  );
+}
+
 export default function Sidebar({
   nickname, onLogout,
   shouldAnimateEntry, entryDelay, entryDuration = 0.3, entryOffsetX = -20,
   transitionMode = "idle", motionTiming = null, readOnly = false,
   rooms = null, activeRoomId = "", onRoomSelect = () => {},
-  roomName = "我的讨论室"
+  roomName = "我的讨论室", onOpenWorkspacePanel = () => {}
 }) {
   const resolvedRooms =
     Array.isArray(rooms) && rooms.length
@@ -88,25 +148,32 @@ export default function Sidebar({
 
   return (
     <motion.aside className="sidebar" initial={initial} animate={animate} transition={transition}>
-      <div className="brand">Atrium</div>
+      <div className="brand">
+        <span className="brand-mark" aria-hidden="true">
+          <span />
+        </span>
+        <span className="brand-copy">
+          <span>Atrium</span>
+          <small>AI 思辨工作台</small>
+        </span>
+      </div>
 
       <div className="identity">
+        <span className="identity-kicker">当前身份</span>
         <div className="identity-name">{nickname}</div>
       </div>
 
       <section>
-        <div className="section-label">讨论室</div>
+        <div className="section-label">讨论空间</div>
         <div className="room-list">
           {resolvedRooms.map((room) => {
             const isActive = room.id === activeRoomId || (!activeRoomId && room.name === roomName);
             const isDisabled = readOnly || !room.isAvailable;
-            const cues = Array.isArray(room.cues) ? room.cues.join(" ") : "";
-            const showsAiMember = /ai/i.test(cues) || room.note?.includes("AI");
             return (
               <motion.button
                 key={room.id}
                 type="button"
-                className={`room-item focus-ring ${isActive ? "is-active" : ""} ${!room.isAvailable ? "is-disabled" : ""}`}
+                className={`room-item focus-ring is-${room.tone || "personal"} ${isActive ? "is-active" : ""} ${!room.isAvailable ? "is-disabled" : ""}`}
                 onClick={() => { if (!isDisabled) onRoomSelect(room.id); }}
                 disabled={isDisabled}
                 whileTap={isDisabled ? undefined : { scale: 0.99 }}
@@ -117,15 +184,14 @@ export default function Sidebar({
                   <span className="room-label">{room.name}</span>
                   {room.note ? <span className="room-status">{room.note}</span> : null}
                 </span>
-                <span className="room-member-hints" aria-hidden="true" title={showsAiMember ? "AI 可加入" : "讨论成员"}>
-                  <span className="room-member-dot is-self" />
-                  {showsAiMember ? <span className="room-member-dot is-ai" /> : null}
-                </span>
+                <span className="room-kind">{room.placeLabel || "讨论室"}</span>
               </motion.button>
             );
           })}
         </div>
       </section>
+
+      <SidebarWorkbenchNav onOpenWorkspacePanel={onOpenWorkspacePanel} readOnly={readOnly} />
 
       <div className="sidebar-footer">
         <ThemeToggle />

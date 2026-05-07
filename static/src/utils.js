@@ -183,6 +183,7 @@ export function normalizeIncomingMessage(payload, currentNickname, currentUserId
     userId: normalizedUserId,
     username: normalizedUsername,
     nickname: normalizedNickname,
+    avatarUrl: typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || "",
     roomId: normalizeIncomingRoomId(payload),
     conversationId: normalizeIncomingConversationId(payload),
     messageType: normalizeIncomingMessageType(payload),
@@ -607,12 +608,17 @@ export async function createRoom(roomName) {
   };
 }
 
-export async function createConversation(roomId, title) {
+export async function createConversation(roomId, title, model) {
   const data = await apiRequest(`/api/rooms/${roomId}/conversations`, {
     method: "POST",
-    body: { title }
+    body: { title, model }
   });
   return { conversationId: normalizeNumericId(data?.conversation_id ?? data?.conversationId) };
+}
+
+export async function fetchConversationModel(conversationId) {
+  const data = await apiRequest(`/api/conversations/${conversationId}/model`);
+  return { provider: data?.provider || "", model: data?.model || "" };
 }
 
 export async function renameRoom(roomId, name) {

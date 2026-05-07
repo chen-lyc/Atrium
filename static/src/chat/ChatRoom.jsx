@@ -8,21 +8,84 @@ import MessageInput from "./MessageInput.jsx";
 import MessageFlight from "./MessageFlight.jsx";
 import WorkspacePanel from "./WorkspacePanel.jsx";
 
-const DEFAULT_ROOM_CUES = ["共同讨论", "AI 参与", "笔记沉淀"];
 const NOTE_TOAST_MS = 2200;
+const ROOM_AI_MODELS = ["DeepSeek", "Qwen"];
 
 function RoomAtmosphere({ tone }) {
   return (
     <div className={`room-atmosphere-layer is-${tone}`} aria-hidden="true">
-      <span className="room-atmosphere-arch is-outer" />
-      <span className="room-atmosphere-arch is-inner" />
-      <span className="room-atmosphere-table" />
-      <span className="room-atmosphere-thread is-left" />
-      <span className="room-atmosphere-thread is-right" />
-      <span className="room-atmosphere-seat is-self" />
-      <span className="room-atmosphere-seat is-ai" />
-      <span className="room-atmosphere-seat is-note" />
+      <span className="room-atmosphere-grid" />
+      <span className="room-atmosphere-axis is-left" />
+      <span className="room-atmosphere-axis is-right" />
+      <span className="room-atmosphere-horizon" />
     </div>
+  );
+}
+
+function WorkbenchOverview({
+  tone,
+  connectionState,
+  messageCount,
+  conversationCount,
+  activeConversationId,
+  roomAtmosphere
+}) {
+  const connectionLabel = connectionState === "connected" ? "房间在线" : connectionState === "connecting" ? "同步中" : "未连接";
+
+  return (
+    <section className={`workbench-overview is-${tone}`} aria-label="当前讨论工作台">
+      <div className="workbench-primary">
+        <span className="workbench-kicker">当前工作台</span>
+        <p>{roomAtmosphere}</p>
+      </div>
+      <div className="workbench-console" aria-label="讨论状态">
+        <span className="workbench-console-item is-thread">
+          <strong>{messageCount} 消息 · {conversationCount || 1} 对话 · #{activeConversationId || 1}</strong>
+          <small>讨论索引</small>
+        </span>
+        <span className="workbench-console-item is-model">
+          <strong>{ROOM_AI_MODELS.join(" · ")}</strong>
+          <small>AI 模型</small>
+        </span>
+        <span className="workbench-console-item is-note">
+          <strong>笔记沉淀</strong>
+          <small>摘录 · 结论 · 索引</small>
+        </span>
+        <span className="workbench-console-item is-sync">
+          <strong>{connectionLabel}</strong>
+          <small>连接</small>
+        </span>
+      </div>
+    </section>
+  );
+}
+
+function RoomSwitchOverlay({ transition }) {
+  return (
+    <AnimatePresence>
+      {transition ? (
+        <motion.div
+          key={transition.id}
+          className={`room-switch-overlay is-${transition.tone || "personal"}`}
+          initial={{ opacity: 0, x: "-50%", y: 8, scale: 0.985 }}
+          animate={{ opacity: 1, x: "-50%", y: 0, scale: 1 }}
+          exit={{ opacity: 0, x: "-50%", y: -6, scale: 0.99 }}
+          transition={{ duration: 0.2, ease: EASE }}
+          aria-live="polite"
+        >
+          <span className="room-switch-kicker">
+            {transition.kind === "conversation" ? "切换对话" : "切换房间"}
+          </span>
+          <span className="room-switch-route">
+            <span>{transition.fromLabel}</span>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 7h8M8 4l3 3-3 3" />
+            </svg>
+            <strong>{transition.toLabel}</strong>
+          </span>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
   );
 }
 
@@ -38,6 +101,7 @@ export default function ChatRoom({
   currentUserId = "", onRoomsChanged = async () => {},
   roomName = "我的讨论室", roomHint = "",
   room = null,
+  roomTransition = null,
   activeConversationId = 0, roomConversations = [],
   onConversationSelect = () => {}, onDeleteConversation = () => {},
   readOnly = false, suppressConnectionPulse = false,
@@ -171,11 +235,13 @@ export default function ChatRoom({
   const roomTone = room?.tone === "public" ? "public" : "personal";
   const roomPlaceLabel = room?.placeLabel || (roomTone === "public" ? "公共大厅" : "个人空间");
   const roomAtmosphere = room?.atmosphere || roomHint || "写下一个想法，让讨论从这里开始。";
-  const roomCues = Array.isArray(room?.cues) && room.cues.length ? room.cues : DEFAULT_ROOM_CUES;
   const emptyTitle = room?.emptyTitle || (roomTone === "public" ? "大厅正在等待新的讨论" : "这里还很安静");
   const emptyHint = room?.emptyHint || roomHint || "写下一个想法，让讨论从这里开始。";
+  const emptySuggestions = roomTone === "public"
+    ? ["提出一个公共问题", "贴出材料和判断", "沉淀阶段结论"]
+    : ["写下研究对象", "让 DeepSeek / Qwen 接入推演", "保存待整理结论"];
   const composerPlaceholder = room?.composerPlaceholder || "输入消息，按 Enter 发送";
-  const aiPresenceLabel = roomTone === "public" ? "@AI 可召唤" : "AI 陪同席";
+  const discussionMessageCount = visibleMessages.filter((message) => message.nickname !== "__system__").length;
   const stageInitial = resolvedTransitionMode === "idle" ? { opacity: 0.96, y: 2 } : messagesMotion.initial;
   const stageAnimate = resolvedTransitionMode === "idle" ? { opacity: 1, y: 0 } : messagesMotion.animate;
   const stageTransition = resolvedTransitionMode === "idle" ? { duration: 0.22, ease: EASE } : messagesMotion.transition;
@@ -183,9 +249,12 @@ export default function ChatRoom({
   return (
     <div className="shell">
       <button
+        type="button"
         className="mobile-menu-btn"
         onClick={() => setMobileSidebarOpen((v) => !v)}
         aria-label="菜单"
+        aria-expanded={mobileSidebarOpen}
+        aria-controls="atrium-sidebar-panel"
       >
         <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
           <path d="M3 5h14M3 10h14M3 15h14"/>
@@ -194,7 +263,7 @@ export default function ChatRoom({
 
       <div className={`sidebar-overlay ${mobileSidebarOpen ? "is-open" : ""}`} onClick={() => setMobileSidebarOpen(false)} />
 
-      <div className={`sidebar-wrapper ${mobileSidebarOpen ? "is-open" : ""}`}>
+      <div id="atrium-sidebar-panel" className={`sidebar-wrapper ${mobileSidebarOpen ? "is-open" : ""}`}>
         <Sidebar
           nickname={nickname}
           onLogout={onLogout}
@@ -206,6 +275,7 @@ export default function ChatRoom({
           activeRoomId={activeRoomId}
           onRoomSelect={(id) => { onRoomSelect(id); setMobileSidebarOpen(false); }}
           roomName={roomName}
+          onOpenWorkspacePanel={() => setWorkspacePanelOpen(true)}
         />
       </div>
 
@@ -219,36 +289,21 @@ export default function ChatRoom({
           <div className="header-inner">
             <div className="room-heading">
               <div className="room-kicker">{roomPlaceLabel}</div>
-              <div className="room-name">{roomName}</div>
-              {roomHint ? <div className="room-hint">{roomHint}</div> : null}
-              <div className="room-presence-strip" aria-label="房间成员线索">
-                <span className="room-presence-item is-self">
-                  <span className="room-presence-dot" aria-hidden="true" />
-                  你
-                </span>
-                <span className="room-presence-item is-ai">
-                  <span className="room-presence-dot" aria-hidden="true" />
-                  {aiPresenceLabel}
-                </span>
-                <span className="room-presence-item is-note">
-                  <span className="room-presence-dot" aria-hidden="true" />
-                  可摘录
-                </span>
+              <div className="room-title-row">
+                <div className="room-name">{roomName}</div>
+                <span className={`room-tone-chip is-${roomTone}`}>{roomTone === "public" ? "团队讨论" : "个人研究"}</span>
               </div>
+              {roomHint ? <div className="room-hint">{roomHint}</div> : null}
             </div>
             <div className="header-actions">
               <button
                 type="button"
-                className="header-icon-button focus-ring"
+                className="header-action-button focus-ring"
                 onClick={() => setWorkspacePanelOpen(true)}
                 disabled={readOnly}
-                aria-label="打开空间面板"
-                title="空间面板"
+                aria-label="打开侧工作区"
               >
-                <svg width="17" height="17" viewBox="0 0 17 17" fill="none" stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M3.2 4.8h10.6M3.2 8.5h10.6M3.2 12.2h10.6" />
-                  <path d="M5.1 3v3.6M11.9 6.7v3.6M7.6 10.4V14" />
-                </svg>
+                侧工作区
               </button>
               <ConnectionStatus state={connectionState} allowPulse={!suppressConnectionPulse} />
             </div>
@@ -302,23 +357,21 @@ export default function ChatRoom({
 
         <motion.div
           key={`${activeRoomId}-${activeConversationId || "main"}`}
-          className={`messages-stage is-${roomTone}`}
+          className={`messages-stage is-${roomTone} ${roomTransition ? "is-switching" : ""}`}
           initial={stageInitial}
           animate={stageAnimate}
           transition={stageTransition}
         >
           <RoomAtmosphere tone={roomTone} />
-          <div className={`room-context-strip is-${roomTone}`} aria-label={`${roomName}空间状态`}>
-            <div className="room-context-copy">
-              <span className="room-context-mark" aria-hidden="true" />
-              <span>{roomAtmosphere}</span>
-            </div>
-            <div className="room-context-cues" aria-label="房间线索">
-              {roomCues.map((cue) => (
-                <span key={cue} className="room-context-cue">{cue}</span>
-              ))}
-            </div>
-          </div>
+          <RoomSwitchOverlay transition={roomTransition} />
+          <WorkbenchOverview
+            tone={roomTone}
+            connectionState={connectionState}
+            messageCount={discussionMessageCount}
+            conversationCount={roomConversations.length}
+            activeConversationId={activeConversationId}
+            roomAtmosphere={roomAtmosphere}
+          />
           <MessageList
             messages={visibleMessages}
             onScrolled={onScrolled}
@@ -330,19 +383,12 @@ export default function ChatRoom({
             viewportRef={messagesViewportRef}
             renderEmpty={hideMessageContent ? () => null : () => (
               <div className={`empty-state empty-state--room is-${roomTone}`}>
-                <div className="empty-room-visual" aria-hidden="true">
-                  <span className="empty-room-track" />
-                  <span className="empty-room-seat is-self" />
-                  <span className="empty-room-seat is-ai" />
-                  <span className="empty-room-seat is-note" />
-                </div>
                 <div className="empty-copy">
+                  <div className="empty-kicker">{roomPlaceLabel}</div>
                   <div className="empty-title">{emptyTitle}</div>
                   <div className="empty-hint">{emptyHint}</div>
-                  <div className="empty-cues" aria-label="房间线索">
-                    {roomCues.map((cue) => (
-                      <span key={cue}>{cue}</span>
-                    ))}
+                  <div className="empty-prompt-rail" aria-label="讨论起点">
+                    {emptySuggestions.map((item) => <span key={item}>{item}</span>)}
                   </div>
                 </div>
               </div>

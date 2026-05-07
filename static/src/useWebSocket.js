@@ -132,16 +132,24 @@ function normalizeHistoryMessages(data, conversationId, nickname, userId) {
   return rawMessages
     .slice()
     .reverse()
-    .map((message) => normalizeIncomingMessage({
-      ...message,
-      id: message.id ?? message.message_id,
-      user_id: message.user_id ?? message.send_id,
-      conversation_id: message.conversation_id ?? conversationId,
-      status: "sent"
-    }, nickname, userId));
+    .map((message) => {
+      const normalized = normalizeIncomingMessage({
+        ...message,
+        id: message.id ?? message.message_id,
+        user_id: message.user_id ?? message.send_id,
+        conversation_id: message.conversation_id ?? conversationId,
+        status: "sent"
+      }, nickname, userId);
+      if (normalized.userId === "0") {
+        normalized.isAI = true;
+        normalized.nickname = "DeepSeek";
+        normalized.model = message.model || "";
+      }
+      return normalized;
+    });
 }
 
-export default function useWebSocket({ url, nickname, userId = "", enabled, onAuthFailed, roomId = 0, conversationId = DEFAULT_CONVERSATION_ID }) {
+export default function useWebSocket({ url, nickname, userId = "", enabled, onAuthFailed, roomId = 0, conversationId = DEFAULT_CONVERSATION_ID, isMainConversation = false }) {
   const socketRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
@@ -337,8 +345,16 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
                   ? await event.data.text()
                   : String(event.data);
             if (cancelled) return;
-            const payload = JSON.parse(rawData);
+            const raw = JSON.parse(rawData);
+            const envelopeType = typeof raw.type === "number" ? raw.type : undefined;
+            const payload = raw.data || raw;
             const nextMessage = normalizeIncomingMessage(payload, nickname, normalizedUserId);
+            if (envelopeType === 1) {
+              nextMessage.isAI = true;
+              nextMessage.model = payload.model;
+              nextMessage.nickname = "DeepSeek";
+              nextMessage.userId = "0";
+            }
             if (nextMessage.roomId && activeRoomId && nextMessage.roomId !== activeRoomId) {
               return;
             }
@@ -428,11 +444,14 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
 
     try {
       current.send(JSON.stringify({
-        room_id: activeRoomId,
-        conversation_id: localMessage.conversationId,
-        type: localMessage.messageType,
-        content,
-        client_message_id: localMessage.clientMessageId
+        data: {
+          room_id: activeRoomId,
+          conversation_id: localMessage.conversationId,
+          is_main_conversation: isMainConversation,
+          type: localMessage.messageType,
+          content,
+          client_message_id: localMessage.clientMessageId
+        }
       }));
       schedulePendingResolve(localMessage.id);
       return localMessage;

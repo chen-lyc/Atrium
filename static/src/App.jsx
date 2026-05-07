@@ -135,14 +135,14 @@ function createPersonalRoom(record, fallbackConversationId = DEFAULT_CONVERSATIO
     id: PERSONAL_ROOM_ID,
     roomId: normalizeConversationId(record?.roomId),
     name: record?.name || "我的讨论室",
-    note: "安静的个人空间",
-    description: "适合先整理自己的想法，也为未来的个人 + 多 AI 讨论预留位置。",
+    note: "个人研究空间",
+    description: "适合整理问题、材料和初步判断，也为个人 + 多 AI 讨论预留位置。",
     placeLabel: "个人空间",
-    atmosphere: "先把想法放稳，再决定要不要带 AI 一起拆开。",
-    cues: ["私下整理", "AI 可加入", "摘录成笔记"],
-    emptyTitle: "这里可以慢慢想",
-    emptyHint: "写下一个问题、计划或灵感，个人讨论室会先替你留住它。",
-    composerPlaceholder: "在个人房间写下一个想法...",
+    atmosphere: "把问题、材料和初步判断放在同一条思考线上，再让 AI 接入讨论。",
+    cues: ["个人研究", "DeepSeek", "笔记沉淀"],
+    emptyTitle: "建立一个清晰问题",
+    emptyHint: "写下研究对象、待拆问题或初步观点，让个人空间成为稳定的思考记录。",
+    composerPlaceholder: "写下问题、论点或材料...",
     tone: "personal",
     conversations: record?.conversations || [],
     mainConversationId: normalizeConversationId(record?.mainConversationId) || conversationId,
@@ -157,14 +157,14 @@ function createPublicRoom(record, fallbackConversationId = PUBLIC_CONVERSATION_I
     id: PUBLIC_ROOM_ID,
     roomId: normalizeConversationId(record?.roomId) || 1,
     name: record?.name || "Atrium 大厅",
-    note: "多人共享讨论",
-    description: "和其他人进入同一个空间，把临时对话逐步沉淀成清晰结论。",
+    note: "团队共享讨论",
+    description: "让多人和 AI 在同一条讨论线上推进问题，并把结论沉淀下来。",
     placeLabel: "公共大厅",
-    atmosphere: "这里适合把问题抛出来，让人和 AI 在同一张讨论桌旁接住它。",
-    cues: ["共同讨论", "@AI 梳理", "共享沉淀"],
-    emptyTitle: "大厅正在等第一段讨论",
-    emptyHint: "发起一个话题，让这张公共讨论桌开始有声音。",
-    composerPlaceholder: "向大厅发起一个话题...",
+    atmosphere: "把问题公开出来，让人、DeepSeek 和未来更多 AI 在同一个上下文里形成判断。",
+    cues: ["团队讨论", "DeepSeek", "共享笔记"],
+    emptyTitle: "开启一场可沉淀的讨论",
+    emptyHint: "提出一个问题、观点或材料，让大厅成为多人和 AI 共同推进的工作台。",
+    composerPlaceholder: "向大厅提出问题或观点...",
     tone: "public",
     conversations: record?.conversations || [],
     mainConversationId: normalizeConversationId(record?.mainConversationId) || conversationId,
@@ -183,11 +183,11 @@ function createGenericRoom(record, index) {
     note: "讨论室",
     description: `${name} 的实时讨论空间。`,
     placeLabel: "讨论室",
-    atmosphere: "把话题放进这个房间，让讨论沿着同一条线继续。",
-    cues: ["持续讨论", "多人参与", "后续沉淀"],
-    emptyTitle: "这里还没有消息",
-    emptyHint: "发起第一段讨论，让这个房间开始运转。",
-    composerPlaceholder: `在${name}写下消息...`,
+    atmosphere: "把话题、证据和判断放进同一个房间，让讨论沿着一条线继续。",
+    cues: ["持续讨论", "AI 模型", "知识沉淀"],
+    emptyTitle: "建立新的讨论线",
+    emptyHint: "发起第一段问题或材料，让这个房间开始形成可追踪的上下文。",
+    composerPlaceholder: `在${name}写下问题或消息...`,
     tone: index % 2 === 0 ? "personal" : "public",
     conversations: record?.conversations || [],
     mainConversationId: normalizeConversationId(record?.mainConversationId) || getRoomConversationId(record),
@@ -268,6 +268,7 @@ export default function App() {
   const lastSendFlightAtRef = useRef(0);
   const composerFieldRef = useRef(null);
   const chatMessagesViewportRef = useRef(null);
+  const roomSwitchTimerRef = useRef(null);
 
   const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches || false;
   const loginRitualConfig = prefersReducedMotion ? REDUCED_LOGIN_RITUAL : NORMAL_LOGIN_RITUAL;
@@ -291,6 +292,7 @@ export default function App() {
   const [messageFlight, setMessageFlight] = useState(null);
   const [hiddenMessageId, setHiddenMessageId] = useState(null);
   const [sceneTransition, setSceneTransition] = useState(null);
+  const [roomTransition, setRoomTransition] = useState(null);
   const [isChatRuntimeReady, setChatRuntimeReady] = useState(false);
   const [ChatRoomComponent, setChatRoomComponent] = useState(null);
 
@@ -319,6 +321,7 @@ export default function App() {
     activeRoom.conversationId || personalRoom.conversationId;
   const activeRoomConversations = activeRoom.conversations || [];
   const activeBackendRoomId = activeRoom.roomId || personalRoom.roomId || 0;
+  const isMainConversation = activeConversationId === activeRoom.mainConversationId;
   const shouldKeepSocketEnabled =
     Boolean(authedNickname) && (sceneTransition?.kind === "login" || sceneTransition?.kind === "logout" || (appStage === "chat" && sceneTransition?.kind !== "logout"));
 
@@ -326,7 +329,7 @@ export default function App() {
     messages, connectionState, historyState, historyHasMore, historyError,
     loadOlderMessages, sendChatMessage, deleteChatMessage
   } = useWebSocket({
-    url: CHAT_URL, nickname: authedNickname, userId: authedUserId, roomId: activeBackendRoomId, conversationId: activeConversationId,
+    url: CHAT_URL, nickname: authedNickname, userId: authedUserId, roomId: activeBackendRoomId, conversationId: activeConversationId, isMainConversation,
     enabled: shouldKeepSocketEnabled && wsEnabled,
     onAuthFailed: () => {
       clearRitualTimers(); setSceneTransition(null); deleteSessionCookie();
@@ -334,6 +337,7 @@ export default function App() {
       setLocalSystemMessages([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID);
       setRoomRecords([]);
       setActiveRoomId(PERSONAL_ROOM_ID);
+      clearRoomTransition();
       syncAuthRoute("login", true, { replace: true });
       setMessageDraft(""); setDraftAttachment(null); setComposerError(""); setMessageFlight(null); setHiddenMessageId(null);
     }
@@ -350,6 +354,19 @@ export default function App() {
     window.clearTimeout(ritualTimerRef.current);
     authPanelCloseTimerRef.current = null; ritualTimerRef.current = null;
     if (focusFrameRef.current != null) { window.cancelAnimationFrame(focusFrameRef.current); focusFrameRef.current = null; }
+  }
+  function clearRoomTransition() {
+    window.clearTimeout(roomSwitchTimerRef.current);
+    roomSwitchTimerRef.current = null;
+    setRoomTransition(null);
+  }
+  function beginRoomTransition(nextTransition) {
+    window.clearTimeout(roomSwitchTimerRef.current);
+    setRoomTransition({
+      id: createId("room-transition"),
+      ...nextTransition
+    });
+    roomSwitchTimerRef.current = window.setTimeout(() => setRoomTransition(null), 620);
   }
   function focusComposerAfterRitual() {
     if (focusFrameRef.current != null) window.cancelAnimationFrame(focusFrameRef.current);
@@ -478,7 +495,7 @@ export default function App() {
   }, [appStage, authedNickname, sceneTransition]);
 
   useEffect(() => { if (shouldKeepSocketEnabled) setWsEnabled(true); else setWsEnabled(false); }, [shouldKeepSocketEnabled]);
-  useEffect(() => { return () => { clearRitualTimers(); window.clearTimeout(launchTimerRef.current); if (launchFrameRef.current != null) window.cancelAnimationFrame(launchFrameRef.current); if (focusFrameRef.current != null) window.cancelAnimationFrame(focusFrameRef.current); }; }, []);
+  useEffect(() => { return () => { clearRitualTimers(); window.clearTimeout(roomSwitchTimerRef.current); window.clearTimeout(launchTimerRef.current); if (launchFrameRef.current != null) window.cancelAnimationFrame(launchFrameRef.current); if (focusFrameRef.current != null) window.cancelAnimationFrame(focusFrameRef.current); }; }, []);
 
   useEffect(() => { if (appStage === "chat") return; clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false); if (focusFrameRef.current != null) { window.cancelAnimationFrame(focusFrameRef.current); focusFrameRef.current = null; } }, [appStage]);
 
@@ -513,6 +530,7 @@ export default function App() {
   function handleLogout() {
     clearRitualTimers(); deleteSessionCookie();
     setAuthHandoffPending(false); setMessageFlight(null); setHiddenMessageId(null);
+    clearRoomTransition();
     setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
     setAuthPanelOpen(true);
     setSceneTransition({ kind: "logout", authMode: "login", config: logoutRitualConfig });
@@ -557,6 +575,12 @@ export default function App() {
   function handleRoomSelect(roomId) {
     const nextRoom = rooms.find((r) => r.id === roomId);
     if (!nextRoom || !nextRoom.isAvailable || nextRoom.id === activeRoom.id) return;
+    beginRoomTransition({
+      kind: "room",
+      fromLabel: activeRoom.name,
+      toLabel: nextRoom.name,
+      tone: nextRoom.tone || "personal"
+    });
     if (nextRoom.roomId) setCookieValue("room_id", nextRoom.roomId);
     setCookieValue("conversation_id", nextRoom.conversationId);
     setActiveRoomId(nextRoom.id);
@@ -566,6 +590,13 @@ export default function App() {
 
   async function handleConversationSelect(conversationId) {
     if (!conversationId || conversationId === activeConversationId) return;
+    const nextConversation = activeRoomConversations.find((conversation) => conversation.id === conversationId);
+    beginRoomTransition({
+      kind: "conversation",
+      fromLabel: activeRoom.name,
+      toLabel: nextConversation?.name || `对话 ${conversationId}`,
+      tone: activeRoom.tone || "personal"
+    });
     setCookieValue("conversation_id", conversationId);
     setConversationOverride({ roomId: activeRoom.id, conversationId });
     clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
@@ -697,6 +728,7 @@ export default function App() {
               roomName={activeRoom.name}
               roomHint={activeRoom.description}
               room={activeRoom}
+              roomTransition={roomTransition}
               activeConversationId={activeConversationId}
               roomConversations={activeRoomConversations}
               onConversationSelect={handleConversationSelect}
