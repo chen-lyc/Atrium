@@ -9,6 +9,8 @@
     "editor.formatOnType": true,
     "C_Cpp.formatting": "disabled",
     "C_Cpp.clang_format_style": "file",
+    "clangd.path": "/home/lyc/桌面/WebServer/.vscode/clangd-on-type-semicolon.py",
+    "clangd.useScriptAsExecutable": true,
     "[cpp]": {
         "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
         "editor.tabSize": 4,
@@ -16,7 +18,7 @@
         "editor.detectIndentation": false,
         "editor.autoIndent": "full",
         "editor.formatOnPaste": false,
-        "editor.formatOnType": false
+        "editor.formatOnType": true
     },
     "[c]": {
         "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
@@ -25,7 +27,7 @@
         "editor.detectIndentation": false,
         "editor.autoIndent": "full",
         "editor.formatOnPaste": false,
-        "editor.formatOnType": false
+        "editor.formatOnType": true
     },
     "clangd.arguments": [
         "--background-index",

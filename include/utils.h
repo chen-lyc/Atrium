@@ -117,6 +117,9 @@ MysqlPool::QueryResult accept_friend_request_transaction(uint64_t from_user_id, 
 MysqlPool::QueryResult delete_friendship(uint64_t user_a, uint64_t user_b);
 
 MysqlPool::QueryResult get_conversation_data(uint64_t conversation_id, uint64_t &room_id, uint64_t &created_by);
+MysqlPool::QueryResult get_conversation_ai_model(uint64_t conversation_id, std::string &provider, std::string &model);
+MysqlPool::QueryResult get_ai_id_by_model(const std::string &model, uint64_t &ai_id);
+MysqlPool::QueryResult insert_conversation_ai_member(uint64_t conversation_id, uint64_t ai_id);
 MysqlPool::QueryResult delete_conversation_row(uint64_t conversation_id);
 
 MysqlPool::QueryResult get_message_meta(uint64_t message_id, uint64_t &sender_id, uint64_t &send_time_ms);
@@ -132,6 +135,11 @@ MysqlPool::QueryResult get_friends(uint64_t user_id, std::vector<std::vector<std
 MysqlPool::QueryResult get_list_conversations_by_room_id(uint64_t room_id, std::vector<uint64_t> &ids, std::vector<std::string> &titles);
 
 namespace chatdb {
+enum class EventType {
+    UserMsg,
+    AiMsg,
+};
+
 enum class MessageType {
     TEXT = 1,
     IMAGE = 2,
@@ -145,7 +153,7 @@ struct Message {
     int type;
     std::string content;
     uint64_t send_time_ms;
-    std::string client_message_id;
+    std::optional<std::string> client_message_id;
 };
 
 struct Cursor {

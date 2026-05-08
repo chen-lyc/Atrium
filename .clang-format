@@ -27,8 +27,10 @@ AllowShortLoopsOnASingleLine: true
 AllowShortFunctionsOnASingleLine: Empty
 AllowShortBlocksOnASingleLine: Never
 AllowShortEnumsOnASingleLine: false
-AllowShortCaseLabelsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: true
 AllowShortNamespacesOnASingleLine: false
+
+IndentCaseLabels: true
 
 AlwaysBreakBeforeMultilineStrings: true
 BreakAdjacentStringLiterals: true

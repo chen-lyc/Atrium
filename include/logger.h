@@ -2,7 +2,6 @@
 
 #include <condition_variable>
 #include <fstream>
-#include <iostream>
 #include <mutex>
 #include <queue>
 #include <string_view>
@@ -10,31 +9,20 @@
 
 #define IF_DEBUG if (AsyncLogger::getMinLevel() == AsyncLogger::DEBUG)
 
-#define LOG_DEBUG(fmt, ...)                                                          \
-    do {                                                                             \
-        if (AsyncLogger::getMinLevel() <= AsyncLogger::DEBUG)                        \
-            AsyncLogger::getInstance().logf(AsyncLogger::DEBUG, fmt, ##__VA_ARGS__); \
-    } while (0)
-#define LOG_INFO(fmt, ...)                                                          \
-    do {                                                                            \
-        if (AsyncLogger::getMinLevel() <= AsyncLogger::INFO)                        \
-            AsyncLogger::getInstance().logf(AsyncLogger::INFO, fmt, ##__VA_ARGS__); \
-    } while (0)
-#define LOG_WARN(fmt, ...)                                                          \
-    do {                                                                            \
-        if (AsyncLogger::getMinLevel() <= AsyncLogger::WARN)                        \
-            AsyncLogger::getInstance().logf(AsyncLogger::WARN, fmt, ##__VA_ARGS__); \
-    } while (0)
-#define LOG_ERROR(fmt, ...)                                                          \
-    do {                                                                             \
-        if (AsyncLogger::getMinLevel() <= AsyncLogger::ERROR)                        \
-            AsyncLogger::getInstance().logf(AsyncLogger::ERROR, fmt, ##__VA_ARGS__); \
-    } while (0)
-#define LOG_FATAL(fmt, ...)                                                          \
-    do {                                                                             \
-        if (AsyncLogger::getMinLevel() <= AsyncLogger::FATAL)                        \
-            AsyncLogger::getInstance().logf(AsyncLogger::FATAL, fmt, ##__VA_ARGS__); \
-    } while (0)
+#define LOG_DEBUG(fmt, ...) \
+    AsyncLogger::getInstance().logf(AsyncLogger::DEBUG, fmt, ##__VA_ARGS__)
+
+#define LOG_INFO(fmt, ...) \
+    AsyncLogger::getInstance().logf(AsyncLogger::INFO, fmt, ##__VA_ARGS__)
+
+#define LOG_WARN(fmt, ...) \
+    AsyncLogger::getInstance().logf(AsyncLogger::WARN, "%s:%d %s " fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
+
+#define LOG_ERROR(fmt, ...) \
+    AsyncLogger::getInstance().logf(AsyncLogger::ERROR, "%s:%d %s " fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
+
+#define LOG_FATAL(fmt, ...) \
+    AsyncLogger::getInstance().logf(AsyncLogger::FATAL, "%s:%d %s " fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
 
 class AsyncLogger {
   public:
@@ -49,6 +37,7 @@ class AsyncLogger {
     static AsyncLogger &getInstance();
     ~AsyncLogger();
     void logf(LOGLEVEL level, const char *fmt, ...);
+    void logf(LOGLEVEL level, const char *file, int line, const char *fmt, ...);
     void setFilePath(const std::string file_path);
     void setLevel(std::string_view min_level);
     static void setLevel(LOGLEVEL min_level) {

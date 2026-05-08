@@ -1,8 +1,10 @@
+#include "ai_client.h"
 #include "sub_reactor.h"
 #include "connection_route.h"
 #include "http.h"
 #include "http_codec.h"
 #include "http_route.h"
+#include "json.hpp"
 #include "logger.h"
 #include "message.pb.h"
 #include "mysql_pool.h"
@@ -10,7 +12,6 @@
 #include "utils.h"
 #include "websocket_codec.h"
 #include <fcntl.h>
-#include <json.hpp>
 #include <netinet/in.h>
 #include <openssl/bio.h>
 #include <openssl/buffer.h>
@@ -23,6 +24,13 @@
 #include <sys/stat.h>
 using namespace std;
 using json = nlohmann::json;
+
+static uint64_t now_ms() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+}
 
 Reactor::Reactor(int index, vector<unique_ptr<Reactor>> &sub_reactors, size_t num_memory) : m_index(index), m_sub_reactors(sub_reactors), m_timer_heap(index), m_conn_pool(num_memory) {
     m_epollfd = epoll_create1(0);
@@ -396,9 +404,9 @@ void Reactor::process(Connection &conn) {
                     struct stat st;
                     fstat(file_fd, &st);
                     size_t file_size = st.st_size;
+                    conn.file_size = file_size;
                     if (req.method == Method::GET) {
                         conn.file_fd = file_fd;
-                        conn.file_size = file_size;
                     } else {
                         close(file_fd);
                     }
@@ -495,12 +503,14 @@ void Reactor::process(Connection &conn) {
             WebSocketOpcode ret = parseWebSocketFrame(conn.inbuf, req);
             conn.outbuf.reserve(conn.outbuf.size() + 256);
 
+            string ai_reply_body;
             auto buildResponse = [&](WebSocketOpcode opcode, string payload_data = "", bool broadcast = false, uint16_t close_code = 0) {
                 if (opcode == WS_TEXT) {
                     try {
                         json in = json::parse(payload_data);
-                        room_id = in["room_id"];
-                        uint64_t conversation_id = in["conversation_id"];
+                        room_id = in["data"]["room_id"];
+                        uint64_t conversation_id = in["data"]["conversation_id"];
+                        LOG_DEBUG("get some data from brower");
 
                         if (!conn.room_ids.contains(room_id)) {
                             sendError(conn, WS_PROTOCOLERROR);
@@ -529,10 +539,10 @@ void Reactor::process(Connection &conn) {
                         chatdb::Message msg{
                             conversation_id,
                             conn.user_id,
-                            in["type"],
-                            in["content"],
-                            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()),
-                            in["client_message_id"]};
+                            in["data"]["type"],
+                            in["data"]["content"],
+                            now_ms(),
+                            in["data"]["client_message_id"]};
                         if (msg.type >= static_cast<int>(chatdb::MessageType::SYSTEM) || msg.type < static_cast<int>(chatdb::MessageType::TEXT)) {
                             sendError(conn, WS_PROTOCOLERROR);
                             return false;
@@ -547,18 +557,68 @@ void Reactor::process(Connection &conn) {
                             return false;
                         }
 
-                        json out;
-                        out["room_id"] = room_id;
-                        out["conversation_id"] = conversation_id;
-                        out["message_id"] = message_id;
-                        out["user_id"] = conn.user_id;
-                        out["username"] = conn.username;
-                        out["type"] = msg.type;
-                        out["content"] = msg.content;
-                        out["send_time_ms"] = msg.send_time_ms;
+                        LOG_DEBUG("build user json to brower");
+                        json data;
+                        data["room_id"] = room_id;
+                        data["conversation_id"] = conversation_id;
+                        data["message_id"] = message_id;
+                        data["user_id"] = conn.user_id;
+                        data["username"] = conn.username;
+                        data["type"] = msg.type;
+                        data["content"] = msg.content;
+                        data["send_time_ms"] = msg.send_time_ms;
+                        data["client_message_id"] = msg.client_message_id.value_or("");
 
-                        payload_data = out.dump();
+                        json user_json;
+                        user_json["type"] = static_cast<int>(chatdb::EventType::UserMsg);
+                        user_json["data"] = data;
+                        payload_data = user_json.dump();
                         LOG_DEBUG("fd = %d websocket payload: %s", conn.fd, payload_data.c_str());
+
+                        string provider, ai_model;
+                        MysqlPool::QueryResult ai_member_ret = get_conversation_ai_model(conversation_id, provider, ai_model);
+                        if (ai_member_ret == MysqlPool::QueryResult::Success) {
+                            const char *api_key = std::getenv("DEEPSEEK_API_KEY");
+                            if (!api_key || !api_key[0]) {
+                                LOG_WARN("fd = %d, DEEPSEEK_API_KEY not set", conn.fd);
+                            } else {
+                                LOG_DEBUG("build ai reply json to brower");
+                                AiClientResult res = m_deepseek.chat(conversation_id, conn.user_id, api_key, ai_model, msg.content);
+
+                                if (res.state != AiClientStatus::Success) {
+                                    LOG_WARN("fd = %d, ai client fail, state = %d", conn.fd, static_cast<int>(res.state));
+                                } else {
+
+                                    chatdb::Message ai_msg{
+                                        conversation_id,
+                                        res.ai_id,
+                                        static_cast<int>(chatdb::MessageType::TEXT),
+                                        res.reply,
+                                        now_ms(),
+                                        nullopt};
+                                    uint64_t ai_message_id = 0;
+                                    MysqlPool::QueryResult ret = insert_message(ai_msg, ai_message_id);
+                                    if (ret != MysqlPool::QueryResult::Success) {
+                                        LOG_WARN("insert ai message failed, ai reply: %s", res.reply.data());
+                                    } else {
+                                        json ai_reply;
+                                        ai_reply["room_id"] = room_id;
+                                        ai_reply["conversation_id"] = conversation_id;
+                                        ai_reply["message_id"] = ai_message_id;
+                                        ai_reply["user_id"] = res.ai_id;
+                                        ai_reply["avatar_url"] = "/avatars/deepseek-logo.svg";
+                                        ai_reply["model"] = ai_model;
+                                        ai_reply["content"] = res.reply;
+                                        ai_reply["send_time_ms"] = now_ms();
+
+                                        json ai_json;
+                                        ai_json["type"] = static_cast<int>(chatdb::EventType::AiMsg);
+                                        ai_json["data"] = ai_reply;
+                                        ai_reply_body = ai_json.dump();
+                                    }
+                                }
+                            }
+                        }
                     } catch (const json::exception &e) {
                         LOG_WARN("bad json: %s", e.what());
                         sendError(conn, WS_PROTOCOLERROR);
@@ -613,6 +673,30 @@ void Reactor::process(Connection &conn) {
                 should_broadcast = true;
                 if (buildResponse(WS_TEXT, std::move(req.payload_data), should_broadcast) == 0) {
                     return;
+                }
+
+                if (!ai_reply_body.empty()) {
+                    string ai_frame;
+                    uint8_t byte0 = 0x80 | WS_TEXT;
+                    ai_frame.append(reinterpret_cast<char *>(&byte0), 1);
+                    if (ai_reply_body.size() < 126) {
+                        uint8_t byte1 = static_cast<uint8_t>(ai_reply_body.size());
+                        ai_frame.append(reinterpret_cast<char *>(&byte1), 1);
+                    } else if (ai_reply_body.size() < (1 << 16)) {
+                        uint8_t byte1 = 126;
+                        ai_frame.append(reinterpret_cast<char *>(&byte1), 1);
+                        uint16_t payload_length = ai_reply_body.size();
+                        uint16_t ext = htons(payload_length);
+                        ai_frame.append(reinterpret_cast<char *>(&ext), 2);
+                    } else {
+                        uint8_t byte1 = 127;
+                        ai_frame.append(reinterpret_cast<char *>(&byte1), 1);
+                        uint64_t payload_length = ai_reply_body.size();
+                        uint64_t ext = htobe64(payload_length);
+                        ai_frame.append(reinterpret_cast<char *>(&ext), 8);
+                    }
+                    ai_frame += std::move(ai_reply_body);
+                    broadcast_frame += std::move(ai_frame);
                 }
             } else if (ret == WS_CLOSE) {
                 buildResponse(WS_CLOSE);

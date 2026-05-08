@@ -4,6 +4,7 @@
 #include "logger.h"
 #include "mysql_pool.h"
 #include "utils.h"
+#include <chrono>
 #include <cstddef>
 #include <exception>
 #include <optional>
@@ -31,12 +32,14 @@ Router::Router() {
         {Method::POST, {"rooms", ":room_id", "conversations"}, true, handle_create_conversation},
         {Method::GET, {"conversations", ":conversation_id", "messages"}, true, handle_conversation_messages},
         {Method::HEAD, {"conversations", ":conversation_id", "messages"}, true, handle_conversation_messages},
+        {Method::GET, {"conversations", ":conversation_id", "model"}, true, handle_conversation_model},
+        {Method::HEAD, {"conversations", ":conversation_id", "model"}, true, handle_conversation_model},
         {Method::DELETE, {"conversations", ":conversation_id"}, true, handle_delete_conversation},
         {Method::DELETE, {"messages", ":message_id"}, true, handle_delete_message},
+
         {Method::POST, {"rooms"}, true, handle_create_room},
         {Method::DELETE, {"rooms", ":room_id"}, true, handle_delete_room},
         {Method::PATCH, {"rooms", ":room_id"}, true, handle_update_room},
-
         {Method::DELETE, {"rooms", ":room_id", "members", ":user_id"}, true, handle_kick_or_leave_room},
         {Method::PATCH, {"rooms", ":room_id", "members", ":user_id"}, true, handle_set_room_member_role},
         {Method::GET, {"rooms", ":room_id", "members"}, true, handle_list_room_members},
@@ -44,6 +47,7 @@ Router::Router() {
         {Method::POST, {"rooms", ":room_id", "invitations"}, true, handle_create_room_invitation},
         {Method::GET, {"rooms", ":room_id", "invitations"}, true, handle_list_room_invitations},
         {Method::HEAD, {"rooms", ":room_id", "invitations"}, true, handle_list_room_invitations},
+
         {Method::PATCH, {"invitations", ":invitation_id"}, true, handle_respond_room_invitation},
         {Method::DELETE, {"invitations", ":invitation_id"}, true, handle_cancel_invitation},
         {Method::GET, {"invitations"}, true, handle_list_my_invitations},
@@ -349,7 +353,9 @@ RouteResult handle_list_rooms(RequestContext &ctx) {
             string name;
             uint64_t main_conversation_id;
             int type;
-            bool operator<(const RoomEntry &other) const { return type < other.type; }
+            bool operator<(const RoomEntry &other) const {
+                return type < other.type;
+            }
         };
         bool any_server_error = false;
         vector<RoomEntry> room_list;
@@ -554,9 +560,10 @@ RouteResult handle_conversation_messages(RequestContext &ctx) {
             msg["message_id"] = rows[i][0];
             msg["send_id"] = rows[i][1];
             msg["username"] = rows[i][2];
-            msg["type"] = rows[i][3];
-            msg["content"] = rows[i][4];
-            msg["send_time_ms"] = rows[i][5];
+            msg["avatar_url"] = rows[i][3];
+            msg["type"] = rows[i][4];
+            msg["content"] = rows[i][5];
+            msg["send_time_ms"] = rows[i][6];
             list.emplace_back(msg);
         }
         out["messages"] = std::move(list);
@@ -579,6 +586,48 @@ RouteResult handle_conversation_messages(RequestContext &ctx) {
     if (ctx.req.method == Method::GET) ctx.conn.outbuf += body;
     return {RouteStatus::Success};
 }
+
+RouteResult handle_conversation_model(RequestContext &ctx) {
+    string id_value(ctx.params["conversation_id"]);
+    uint64_t conversation_id = 0;
+    try {
+        conversation_id = stoull(id_value);
+    } catch (const exception &e) {
+        return {RouteStatus::BadRequest};
+    }
+
+    MysqlPool::QueryResult ret = verify_conversation_member(conversation_id, ctx.user_id);
+    if (ret == MysqlPool::QueryResult::NotFound) {
+        return {RouteStatus::BadRequest};
+    }
+    if (ret != MysqlPool::QueryResult::Success) {
+        return {RouteStatus::ServerError};
+    }
+
+    string provider, model;
+    ret = get_conversation_ai_model(conversation_id, provider, model);
+    if (ret != MysqlPool::QueryResult::Success) {
+        return {RouteStatus::NotFound};
+    }
+
+    json out;
+    out["provider"] = std::move(provider);
+    out["model"] = std::move(model);
+    string body = out.dump();
+
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Content-Length: ";
+    ctx.conn.outbuf += std::to_string(body.size());
+    ctx.conn.outbuf +=
+        "\r\n"
+        "Connection: keep-alive\r\n"
+        "\r\n";
+    if (ctx.req.method == Method::GET) ctx.conn.outbuf += body;
+    return {RouteStatus::Success};
+}
+
 RouteResult handle_create_room(RequestContext &ctx) {
     // POST /api/rooms
     string name;
@@ -1508,9 +1557,11 @@ RouteResult handle_create_conversation(RequestContext &ctx) {
     }
 
     string title;
+    string model;
     try {
         json in = json::parse(ctx.req.body);
         title = in["title"];
+        model = in.value("model", "deepseek-v4-flash");
     } catch (const exception &e) {
         LOG_WARN("bad json in handle_create_conversation: %s", e.what());
         return {RouteStatus::BadRequest};
@@ -1520,7 +1571,43 @@ RouteResult handle_create_conversation(RequestContext &ctx) {
     }
 
     uint64_t conversation_id = 0;
-    ret = create_conversation_with_title(room_id, title, ctx.user_id, conversation_id);
+    ret = MysqlPool::getInstance().executeTransaction([&](MysqlTxnContext &txn) -> MysqlPool::QueryResult {
+        static const string conv_sql =
+            "INSERT INTO conversations (room_id, title, created_by, created_at_ms) "
+            "VALUES (?, ?, ?, ?)";
+        uint64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        MysqlPool::MysqlParams conv_params{room_id, title, ctx.user_id, now};
+        MysqlPool::QueryResult ret = txn.executeQuery(conv_sql, conv_params, &conversation_id);
+        if (ret != MysqlPool::QueryResult::Success) {
+            return MysqlPool::QueryResult::ServerError;
+        }
+
+        static const string ai_sql = "SELECT id FROM ai WHERE model = ?";
+        MysqlPool::MysqlParams ai_params{model};
+        vector<vector<string>> rows;
+        size_t col_count = 1;
+        ret = txn.executeQuery(ai_sql, ai_params, rows, col_count);
+        if (ret != MysqlPool::QueryResult::Success) {
+            return MysqlPool::QueryResult::ServerError;
+        }
+        uint64_t ai_id = 0;
+        try {
+            ai_id = stoull(rows[0][0]);
+        } catch (const exception &e) {
+            return MysqlPool::QueryResult::ServerError;
+        }
+
+        static const string mem_sql =
+            "INSERT INTO conversation_ai_members (conversation_id, ai_id) VALUES (?, ?)";
+        MysqlPool::MysqlParams mem_params{conversation_id, ai_id};
+        ret = txn.executeQuery(mem_sql, mem_params);
+        if (ret != MysqlPool::QueryResult::Success) {
+            return MysqlPool::QueryResult::ServerError;
+        }
+
+        return MysqlPool::QueryResult::Success;
+    });
     if (ret != MysqlPool::QueryResult::Success) {
         return {RouteStatus::ServerError};
     }

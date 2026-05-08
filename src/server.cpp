@@ -56,7 +56,6 @@ int main(int argc, char *argv[]) {
                 http_port = stoi(argv[2]);
                 protobuf_port = stoi(argv[3]);
             }
-            cout << "ip = " << ip << ':' << http_port << endl;
 
             if (argc > 4) {
                 AsyncLogger::getInstance().setLevel(argv[4]);

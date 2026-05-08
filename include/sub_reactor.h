@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ai_client.h"
 #include "connection.h"
 #include "http_route.h"
 #include "memory_pool.h"
@@ -73,4 +74,5 @@ class Reactor {
     std::thread m_thread;
     std::atomic<bool> m_running{true};
     http::Router m_router;
+    DeepSeek m_deepseek;
 };

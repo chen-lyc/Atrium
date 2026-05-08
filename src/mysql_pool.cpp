@@ -50,7 +50,7 @@ MysqlPool::~MysqlPool() {
     }
 }
 
-MysqlPool::QueryResult MysqlPool::executeRaw(sql::Connection *conn, const std::string &sql, MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count) {
+MysqlPool::QueryResult MysqlPool::executeRaw(sql::Connection *conn, const std::string &sql, const MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count) {
     try {
         unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement(sql));
 
@@ -62,9 +62,11 @@ MysqlPool::QueryResult MysqlPool::executeRaw(sql::Connection *conn, const std::s
             } else if (holds_alternative<int>(params[i])) {
                 stmt->setInt(i + 1, get<int>(params[i]));
             } else if (holds_alternative<Blob>(params[i])) {
-                Blob &blob = get<Blob>(params[i]);
+                const Blob &blob = get<Blob>(params[i]);
                 istringstream iss(blob.bytes);
                 stmt->setBlob(i + 1, &iss);
+            } else if (holds_alternative<nullptr_t>(params[i])) {
+                stmt->setNull(i + 1, sql::DataType::VARCHAR);
             }
         }
 
@@ -87,26 +89,26 @@ MysqlPool::QueryResult MysqlPool::executeRaw(sql::Connection *conn, const std::s
             e.getSQLState().c_str());
         if (isBadMysqlConnection(e)) {
             notifyConnectionLost();
-            return BadConn;
+            return QueryResult::BadConn;
         }
         return MysqlPool::QueryResult::ServerError;
     }
 }
 
-MysqlPool::QueryResult MysqlPool::executeQuery(const std::string &sql, MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count) {
+MysqlPool::QueryResult MysqlPool::executeQuery(const std::string &sql, const MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count) {
     MysqlConnGuard guard(*this);
     sql::Connection *conn = guard.get();
-    if (conn == nullptr) return ServerError;
+    if (conn == nullptr) return QueryResult::ServerError;
 
     MysqlPool::QueryResult ret = executeRaw(conn, sql, params, rows, col_count);
-    if (ret == BadConn) {
+    if (ret == QueryResult::BadConn) {
         guard.discardConnection();
-        return ServerError;
+        return QueryResult::ServerError;
     }
     return ret;
 }
 
-MysqlPool::QueryResult MysqlPool::executeRaw(sql::Connection *conn, const std::string &sql, MysqlParams &params, uint64_t *id) {
+MysqlPool::QueryResult MysqlPool::executeRaw(sql::Connection *conn, const std::string &sql, const MysqlParams &params, uint64_t *id, uint64_t *affected_rows) {
     try {
         unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement(sql));
 
@@ -119,13 +121,18 @@ MysqlPool::QueryResult MysqlPool::executeRaw(sql::Connection *conn, const std::s
             } else if (holds_alternative<int>(params[i])) {
                 stmt->setInt(i + 1, get<int>(params[i]));
             } else if (holds_alternative<Blob>(params[i])) {
-                Blob &blob = get<Blob>(params[i]);
+                const Blob &blob = get<Blob>(params[i]);
                 blob_stream.emplace_back(make_unique<istringstream>(blob.bytes));
                 stmt->setBlob(i + 1, blob_stream.back().get());
+            } else if (holds_alternative<nullptr_t>(params[i])) {
+                stmt->setNull(i + 1, sql::DataType::VARCHAR);
             }
         }
 
-        stmt->executeUpdate();
+        int affected = stmt->executeUpdate();
+        if (affected_rows != nullptr) {
+            *affected_rows = affected > 0 ? static_cast<uint64_t>(affected) : 0;
+        }
 
         if (id != nullptr) {
             unique_ptr<sql::Statement> id_stmt(conn->createStatement());
@@ -150,21 +157,35 @@ MysqlPool::QueryResult MysqlPool::executeRaw(sql::Connection *conn, const std::s
             e.getSQLState().c_str());
         if (isBadMysqlConnection(e)) {
             notifyConnectionLost();
-            return BadConn;
+            return QueryResult::BadConn;
         }
         return MysqlPool::QueryResult::ServerError;
     }
 }
 
-MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, MysqlParams &params, uint64_t *id) {
+MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, const MysqlParams &params, uint64_t *id) {
     MysqlConnGuard guard(*this);
     sql::Connection *conn = guard.get();
-    if (conn == nullptr) return ServerError;
+    if (conn == nullptr) return QueryResult::ServerError;
 
     MysqlPool::QueryResult ret = executeRaw(conn, sql, params, id);
-    if (ret == BadConn) {
+    if (ret == QueryResult::BadConn) {
         guard.discardConnection();
-        return ServerError;
+        return QueryResult::ServerError;
+    }
+    return ret;
+}
+
+MysqlPool::QueryResult MysqlPool::executeUpdateAffected(const std::string &sql, const MysqlParams &params, uint64_t &affected_rows) {
+    MysqlConnGuard guard(*this);
+    sql::Connection *conn = guard.get();
+    if (conn == nullptr) return QueryResult::ServerError;
+
+    affected_rows = 0;
+    MysqlPool::QueryResult ret = executeRaw(conn, sql, params, nullptr, &affected_rows);
+    if (ret == QueryResult::BadConn) {
+        guard.discardConnection();
+        return QueryResult::ServerError;
     }
     return ret;
 }
@@ -172,22 +193,22 @@ MysqlPool::QueryResult MysqlPool::executeQuery(const string &sql, MysqlParams &p
 MysqlPool::QueryResult MysqlPool::executeQuery(std::vector<std::string> &sqls, std::vector<MysqlParams> &params, std::vector<ExecuteResult> &result) {
     MysqlConnGuard guard(*this);
     sql::Connection *conn = guard.get();
-    if (conn == nullptr) return ServerError;
+    if (conn == nullptr) return QueryResult::ServerError;
 
     try {
         conn->setAutoCommit(false);
 
-        MysqlPool::QueryResult ret = ServerError;
+        MysqlPool::QueryResult ret = QueryResult::ServerError;
         for (size_t i = 0; i < sqls.size(); ++i) {
             if (result[i].mode == SqlResultMode::None) ret = executeRaw(conn, sqls[i], params[i]);
             else if (result[i].mode == SqlResultMode::LastInsertId) ret = executeRaw(conn, sqls[i], params[i], result[i].id);
             else if (result[i].mode == SqlResultMode::Rows) ret = executeRaw(conn, sqls[i], params[i], result[i].rows, result[i].col_count);
 
-            if (ret == BadConn) {
+            if (ret == QueryResult::BadConn) {
                 guard.discardConnection();
-                return ServerError;
+                return QueryResult::ServerError;
             }
-            if (ret != Success) {
+            if (ret != QueryResult::Success) {
                 conn->rollback();
                 conn->setAutoCommit(true);
                 return ret;
@@ -196,12 +217,12 @@ MysqlPool::QueryResult MysqlPool::executeQuery(std::vector<std::string> &sqls, s
 
         conn->commit();
         conn->setAutoCommit(true);
-        return Success;
+        return QueryResult::Success;
     } catch (const sql::SQLException &e) {
         if (isBadMysqlConnection(e)) {
             guard.discardConnection();
             notifyConnectionLost();
-            return ServerError;
+            return QueryResult::ServerError;
         }
 
         try {
@@ -211,24 +232,24 @@ MysqlPool::QueryResult MysqlPool::executeQuery(std::vector<std::string> &sqls, s
             guard.discardConnection();
             notifyConnectionLost();
         }
-        return ServerError;
+        return QueryResult::ServerError;
     }
 }
 
 MysqlPool::QueryResult MysqlPool::executeTransaction(std::function<QueryResult(MysqlTxnContext &)> work) {
     MysqlConnGuard guard(*this);
     sql::Connection *conn = guard.get();
-    if (conn == nullptr) return ServerError;
+    if (conn == nullptr) return QueryResult::ServerError;
 
     MysqlTxnContext txn(*this, conn);
     try {
         conn->setAutoCommit(false);
         MysqlPool::QueryResult ret = work(txn);
-        if (ret == BadConn) {
+        if (ret == QueryResult::BadConn) {
             guard.discardConnection();
-            return ServerError;
+            return QueryResult::ServerError;
         }
-        if (ret != Success) {
+        if (ret != QueryResult::Success) {
             conn->rollback();
             conn->setAutoCommit(true);
             return ret;
@@ -236,12 +257,12 @@ MysqlPool::QueryResult MysqlPool::executeTransaction(std::function<QueryResult(M
 
         conn->commit();
         conn->setAutoCommit(true);
-        return Success;
+        return QueryResult::Success;
     } catch (const sql::SQLException &e) {
         if (isBadMysqlConnection(e)) {
             guard.discardConnection();
             notifyConnectionLost();
-            return ServerError;
+            return QueryResult::ServerError;
         }
 
         try {
@@ -251,7 +272,7 @@ MysqlPool::QueryResult MysqlPool::executeTransaction(std::function<QueryResult(M
             guard.discardConnection();
             notifyConnectionLost();
         }
-        return ServerError;
+        return QueryResult::ServerError;
     }
 }
 

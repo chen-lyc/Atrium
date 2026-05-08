@@ -17,7 +17,7 @@ class MainReactor {
   private:
     int m_num_reactors;
     std::vector<std::unique_ptr<Reactor>> m_sub_reactors;
-    int m_max_events;
+    const int m_max_events;
     int m_epollfd;
     int m_http_listenfd;
     int m_protobuf_listenfd;

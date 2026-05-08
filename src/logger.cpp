@@ -2,6 +2,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <iostream>
 using namespace std;
 
 AsyncLogger::LOGLEVEL AsyncLogger::m_min_level = AsyncLogger::INFO;
@@ -82,6 +83,31 @@ void AsyncLogger::logf(LOGLEVEL level, const char *fmt, ...) {
     va_end(args_copy);
 }
 
+void AsyncLogger::logf(LOGLEVEL level, const char *file, int line, const char *fmt, ...) {
+    if (level < getMinLevel()) {
+        return;
+    }
+
+    va_list args, args_copy;
+    va_start(args, fmt);
+    va_copy(args_copy, args);
+
+    char stack_buf[STACK_BUF_SIZE];
+    int n = vsnprintf(stack_buf, STACK_BUF_SIZE, fmt, args);
+
+    if (n >= STACK_BUF_SIZE) {
+        unique_ptr<char[]> heap_buf = make_unique<char[]>(n + 1);
+        vsnprintf(heap_buf.get(), n + 1, fmt, args_copy);
+        log(level, string_view(heap_buf.get(), n));
+    } else if (n >= 0) {
+        log(level, string_view(stack_buf, n));
+    } else {
+        log(ERROR, "vsnprintf failed");
+    }
+    va_end(args);
+    va_end(args_copy);
+}
+
 void AsyncLogger::log(LOGLEVEL level, string_view message) {
     if (level < m_min_level) return;
 
@@ -95,7 +121,7 @@ void AsyncLogger::log(LOGLEVEL level, string_view message) {
 
     {
         lock_guard<mutex> lock(m_mutex);
-        m_front_buffer.emplace(move(entry));
+        m_front_buffer.emplace(std::move(entry));
         if (m_front_buffer.size() > m_flush_threshold) {
             m_cond.notify_one();
         }
@@ -120,18 +146,18 @@ void AsyncLogger::setLevel(string_view min_level) {
 
 string_view AsyncLogger::levelToString(AsyncLogger::LOGLEVEL level) const {
     switch (level) {
-    case DEBUG:
-        return "DEBUG";
-    case INFO:
-        return "INFO";
-    case WARN:
-        return "WARN";
-    case ERROR:
-        return "ERROR";
-    case FATAL:
-        return "FATAL";
-    default:
-        return "UNKNOWN";
+        case DEBUG:
+            return "DEBUG";
+        case INFO:
+            return "INFO";
+        case WARN:
+            return "WARN";
+        case ERROR:
+            return "ERROR";
+        case FATAL:
+            return "FATAL";
+        default:
+            return "UNKNOWN";
     }
 }
 

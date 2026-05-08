@@ -1,12 +1,16 @@
 #include "main_reactor.h"
 #include "logger.h"
+#include "ai_client.h"
 #include "server_utils.h"
 #include <arpa/inet.h>
+#include <cstring>
 #include <netinet/in.h>
 #include <sys/epoll.h>
 using namespace std;
 
 MainReactor::MainReactor(int stopfd, const string &ip, int http_port, int protobuf_port, int n, int max_events) : m_num_reactors(n), m_max_events(max_events), m_stopfd(stopfd) {
+    DeepSeek::init();
+
     m_epollfd = epoll_create1(0);
     addfd(m_epollfd, stopfd);
     m_http_listenfd = socket_bind_listen(ip, http_port);
@@ -29,10 +33,10 @@ MainReactor::~MainReactor() {
 
 void MainReactor::loop() {
     int next_reactor_idx = 0;
-    epoll_event events[m_max_events];
+    vector<epoll_event> events(m_max_events);
 
     while (m_running) {
-        int number = epoll_wait(m_epollfd, events, m_max_events, -1);
+        int number = epoll_wait(m_epollfd, events.data(), m_max_events, -1);
         LOG_DEBUG("happened events number = %d", number);
         if (number <= 0) {
             if (errno == EINTR && m_running == false) {
@@ -92,7 +96,11 @@ int MainReactor::socket_bind_listen(const string &ip, int port) {
     int listenfd = socket(PF_INET, SOCK_STREAM, 0);
     int opt = 1;
     setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    bind(listenfd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
+    if (bind(listenfd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
+        LOG_ERROR("bind failed, errno = %d, err = %s", errno, strerror(errno));
+        close(listenfd);
+        return -1;
+    }
     listen(listenfd, 1024);
     addfd(m_epollfd, listenfd);
 

@@ -32,7 +32,7 @@ class MysqlTxnContext;
 
 class MysqlPool {
   public:
-    enum QueryResult {
+    enum class QueryResult {
         Success,
         NotFound,
         AlreadyExists,
@@ -45,7 +45,7 @@ class MysqlPool {
         Blob(const char *data, size_t len) : bytes(data, len) {}
         Blob(std::string s) : bytes(std::move(s)) {}
     };
-    using MysqlParams = std::vector<std::variant<std::string, uint64_t, int, Blob>>;
+    using MysqlParams = std::vector<std::variant<std::string, uint64_t, int, Blob, std::nullptr_t>>;
 
     static MysqlPool &getInstance() {
         static MysqlPool instance(2, 8);
@@ -53,8 +53,9 @@ class MysqlPool {
     }
     ~MysqlPool();
 
-    QueryResult executeQuery(const std::string &sql, MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count);
-    QueryResult executeQuery(const std::string &sql, MysqlParams &params, uint64_t *id = nullptr);
+    QueryResult executeQuery(const std::string &sql, const MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count);
+    QueryResult executeQuery(const std::string &sql, const MysqlParams &params, uint64_t *id = nullptr);
+    QueryResult executeUpdateAffected(const std::string &sql, const MysqlParams &params, uint64_t &affected_rows);
 
     enum class SqlResultMode {
         None,
@@ -72,8 +73,8 @@ class MysqlPool {
 
   private:
     MysqlPool(int min_connections, int max_connections);
-    QueryResult executeRaw(sql::Connection *conn, const std::string &sql, MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count);
-    QueryResult executeRaw(sql::Connection *conn, const std::string &sql, MysqlParams &params, uint64_t *id = nullptr);
+    QueryResult executeRaw(sql::Connection *conn, const std::string &sql, const MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count);
+    QueryResult executeRaw(sql::Connection *conn, const std::string &sql, const MysqlParams &params, uint64_t *id = nullptr, uint64_t *affected_rows = nullptr);
     bool isBadMysqlConnection(const sql::SQLException &e);
     void notifyConnectionLost();
     void maintainConnections();
