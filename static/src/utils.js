@@ -1,4 +1,4 @@
-import { DEFAULT_CONVERSATION_ID } from "./constants.js";
+import { AI_MODEL_LABELS, DEFAULT_CONVERSATION_ID } from "./constants.js";
 
 const MAX_IMAGE_SOURCE_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_DATA_URL_BYTES = 5 * 1024 * 1024;
@@ -428,10 +428,23 @@ async function apiRequest(path, options = {}) {
 }
 
 export function getApiErrorMessage(error, fallback = "操作失败，请稍后重试") {
+  if (/QuotaExceeded|quota/i.test(String(error?.body || error?.message || ""))) {
+    return "今日 AI 额度已用完，明天会自动恢复";
+  }
   if (error?.status === 401) return "登录状态已失效，请重新登录";
   if (error?.status === 400) return "当前操作不符合后端规则";
   if (error?.status === 409) return "这项内容已经存在";
   if (error?.status >= 500) return "服务器暂时没有接住这个操作";
+  return fallback;
+}
+
+export function getModelDisplayName(modelInfo, fallback = "") {
+  if (!modelInfo) return fallback;
+  const model = normalizeText(modelInfo?.model);
+  const provider = normalizeText(modelInfo?.provider);
+  if (model && AI_MODEL_LABELS[model]) return AI_MODEL_LABELS[model];
+  if (model) return model;
+  if (provider) return provider;
   return fallback;
 }
 
@@ -616,8 +629,8 @@ export async function createConversation(roomId, title, model) {
   return { conversationId: normalizeNumericId(data?.conversation_id ?? data?.conversationId) };
 }
 
-export async function fetchConversationModel(conversationId) {
-  const data = await apiRequest(`/api/conversations/${conversationId}/model`);
+export async function fetchConversationModel(conversationId, signal) {
+  const data = await apiRequest(`/api/conversations/${conversationId}/model`, { signal });
   return { provider: data?.provider || "", model: data?.model || "" };
 }
 

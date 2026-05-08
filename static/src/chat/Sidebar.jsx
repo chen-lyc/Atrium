@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { EASE, TAP_TRANSITION } from "../constants.js";
+import { AI_MODEL_OPTIONS, EASE, TAP_TRANSITION } from "../constants.js";
 import { ThemeManager } from "../theme.js";
 import { useState, useEffect } from "react";
 
@@ -60,10 +60,10 @@ function ThemeToggle() {
   );
 }
 
-const SIDEBAR_AI_MODELS = [
-  { name: "DeepSeek", meta: "AI 模型" },
-  { name: "Qwen", meta: "AI 模型" }
-];
+const SIDEBAR_AI_MODELS = AI_MODEL_OPTIONS.map((model) => ({
+  name: model.label,
+  meta: "可选模型"
+}));
 
 function SidebarWorkbenchNav({ onOpenWorkspacePanel, readOnly }) {
   return (
@@ -95,7 +95,7 @@ function SidebarWorkbenchNav({ onOpenWorkspacePanel, readOnly }) {
             disabled={readOnly}
           >
             <span>笔记与摘录</span>
-            <small>沉淀讨论结论</small>
+            <small>右键摘录可用</small>
           </button>
           <button
             type="button"
@@ -114,7 +114,7 @@ function SidebarWorkbenchNav({ onOpenWorkspacePanel, readOnly }) {
         onClick={onOpenWorkspacePanel}
         disabled={readOnly}
       >
-        打开侧工作区
+        打开空间管理
       </button>
     </section>
   );

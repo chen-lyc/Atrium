@@ -6,7 +6,6 @@ import {
   cancelRoomInvitation,
   createFriendRequest,
   createRoom,
-  createConversation,
   createRoomInvitation,
   deleteFriend,
   deleteRoom,
@@ -30,7 +29,6 @@ const ROLE_LABELS = {
   2: "成员"
 };
 const MANAGER_ROLES = new Set([0, 1]);
-const PANEL_AI_MODELS = ["DeepSeek", "Qwen"];
 
 function getRoleLabel(role) {
   return ROLE_LABELS[Number(role)] || "成员";
@@ -55,8 +53,9 @@ function EmptyLine({ children }) {
   return <div className="workspace-empty">{children}</div>;
 }
 
-function WorkspaceRoomBrief({ room, members, conversations }) {
+function WorkspaceRoomBrief({ room, members, conversations, modelLabel, modelLoading }) {
   const discussionCount = conversations.length || 1;
+  const resolvedModelLabel = modelLoading ? "模型同步中" : modelLabel || "未绑定 AI";
   return (
     <section className={`workspace-room-brief is-${room?.tone || "personal"}`} aria-label="房间概览">
       <div className="workspace-brief-copy">
@@ -71,8 +70,8 @@ function WorkspaceRoomBrief({ room, members, conversations }) {
         </div>
         <div>
           <span>AI 模型</span>
-          <strong>{PANEL_AI_MODELS.join(" · ")}</strong>
-          <small>作为讨论能力保留在空间内</small>
+          <strong>{resolvedModelLabel}</strong>
+          <small>绑定在当前对话内</small>
         </div>
         <div>
           <span>知识沉淀</span>
@@ -91,14 +90,14 @@ export default function WorkspacePanel({
   room = null,
   rooms = [],
   readOnly = false,
+  activeConversationModelLabel = "",
+  isConversationModelLoading = false,
   onRoomsChanged = async () => {},
   onConversationSelect = () => {},
   onRoomSelect = () => {}
 }) {
   const [tab, setTab] = useState("room");
   const [newRoomName, setNewRoomName] = useState("");
-  const [newConversationTitle, setNewConversationTitle] = useState("");
-  const [newConversationModel, setNewConversationModel] = useState("deepseek-v4-flash");
   const [renameValue, setRenameValue] = useState(room?.name || "");
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
@@ -212,21 +211,6 @@ export default function WorkspacePanel({
       setNewRoomName("");
       const nextRoom = await onRoomsChanged(created.roomId);
       if (nextRoom?.id) onRoomSelect(nextRoom.id);
-    }
-  }
-
-  async function handleCreateConversation() {
-    const title = newConversationTitle.trim();
-    if (!title) {
-      setError("请先给对话起名");
-      return;
-    }
-    if (!roomId) return;
-    const created = await runAction("create-conversation", async () => createConversation(roomId, title, newConversationModel), "新对话已创建");
-    if (created?.conversationId) {
-      setNewConversationTitle("");
-      await onRoomsChanged(roomId);
-      onConversationSelect(created.conversationId);
     }
   }
 
@@ -357,23 +341,23 @@ export default function WorkspacePanel({
             transition={{ duration: 0.22, ease: EASE }}
             role="dialog"
             aria-modal="true"
-            aria-label="侧工作区"
+            aria-label="空间管理"
             aria-labelledby="workspace-panel-title"
           >
             <header className="workspace-panel-header">
               <div>
-                <div className="workspace-panel-kicker">侧工作区</div>
+                <div className="workspace-panel-kicker">空间管理</div>
                 <h2 id="workspace-panel-title">{room?.name || "空间"}</h2>
-                <p className="workspace-panel-subtitle">{room?.placeLabel || "讨论室"} · 模型与沉淀入口</p>
+                <p className="workspace-panel-subtitle">{room?.placeLabel || "讨论室"} · 对话、成员与模型设置</p>
               </div>
-              <button type="button" className="workspace-close focus-ring" onClick={onClose} aria-label="关闭侧工作区">
+              <button type="button" className="workspace-close focus-ring" onClick={onClose} aria-label="关闭空间管理">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
                   <path d="M4 4l8 8M12 4l-8 8" />
                 </svg>
               </button>
             </header>
 
-            <div className="workspace-tabs" role="tablist" aria-label="侧工作区分类">
+            <div className="workspace-tabs" role="tablist" aria-label="空间管理分类">
               {[
                 ["room", "空间"],
                 ["members", "成员"],
@@ -410,6 +394,8 @@ export default function WorkspacePanel({
                     room={room}
                     members={members}
                     conversations={room?.conversations || []}
+                    modelLabel={activeConversationModelLabel}
+                    modelLoading={isConversationModelLoading}
                   />
 
                   <section className="workspace-section">
@@ -426,32 +412,6 @@ export default function WorkspacePanel({
                       <RowAction kind="primary" busy={actionKey === "create-room"} disabled={readOnly} onClick={handleCreateRoom}>创建</RowAction>
                     </div>
                   </section>
-
-                  {roomId && room?.type !== 0 ? (
-                    <section className="workspace-section">
-                      <div className="workspace-section-title">新对话</div>
-                      <div className="workspace-inline-form">
-                        <input
-                          className="workspace-input"
-                          value={newConversationTitle}
-                          onChange={(event) => setNewConversationTitle(event.target.value)}
-                          placeholder="例如：周报讨论"
-                          maxLength={32}
-                          disabled={readOnly}
-                        />
-                        <select
-                          className="workspace-input"
-                          value={newConversationModel}
-                          onChange={(event) => setNewConversationModel(event.target.value)}
-                          disabled={readOnly}
-                        >
-                          <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
-                          <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
-                        </select>
-                        <RowAction kind="primary" busy={actionKey === "create-conversation"} disabled={readOnly} onClick={handleCreateConversation}>创建</RowAction>
-                      </div>
-                    </section>
-                  ) : null}
 
                   <section className="workspace-section">
                     <div className="workspace-section-title">当前房间</div>

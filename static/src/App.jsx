@@ -9,9 +9,9 @@ import {
   createId, deleteSessionCookie, fetchCurrentUser,
   getApiErrorMessage,
   getConversationIdCookie, getCookieValue,
-  loadSessionRooms, deleteConversation,
+  loadSessionRooms, deleteConversation, fetchConversationModel,
   setCookieValue, prepareImageAttachment, buildImageMarkdown,
-  normalizeAuthPayload
+  normalizeAuthPayload, getModelDisplayName
 } from "./utils.js";
 import useWebSocket from "./useWebSocket.js";
 import { LoadingStage } from "./auth/AuthShell.jsx";
@@ -285,6 +285,7 @@ export default function App() {
   const [roomRecords, setRoomRecords] = useState([]);
   const [activeRoomId, setActiveRoomId] = useState(PERSONAL_ROOM_ID);
   const [conversationOverride, setConversationOverride] = useState(null);
+  const [conversationModels, setConversationModels] = useState({});
   const [messageDraft, setMessageDraft] = useState("");
   const [draftAttachment, setDraftAttachment] = useState(null);
   const [composerError, setComposerError] = useState("");
@@ -321,21 +322,32 @@ export default function App() {
     activeRoom.conversationId || personalRoom.conversationId;
   const activeRoomConversations = activeRoom.conversations || [];
   const activeBackendRoomId = activeRoom.roomId || personalRoom.roomId || 0;
-  const isMainConversation = activeConversationId === activeRoom.mainConversationId;
+  const hasKnownConversationModel = Object.prototype.hasOwnProperty.call(conversationModels, activeConversationId);
+  const activeConversationModel = hasKnownConversationModel ? conversationModels[activeConversationId] : undefined;
+  const activeConversationModelLabel = getModelDisplayName(activeConversationModel, "");
+  const isConversationModelLoading = Boolean(authedNickname && activeConversationId && !hasKnownConversationModel);
+  const assistantExpected = activeConversationModel !== null;
   const shouldKeepSocketEnabled =
     Boolean(authedNickname) && (sceneTransition?.kind === "login" || sceneTransition?.kind === "logout" || (appStage === "chat" && sceneTransition?.kind !== "logout"));
 
   const {
-    messages, connectionState, historyState, historyHasMore, historyError,
+    messages, connectionState, assistantState, historyState, historyHasMore, historyError,
     loadOlderMessages, sendChatMessage, deleteChatMessage
   } = useWebSocket({
-    url: CHAT_URL, nickname: authedNickname, userId: authedUserId, roomId: activeBackendRoomId, conversationId: activeConversationId, isMainConversation,
+    url: CHAT_URL,
+    nickname: authedNickname,
+    userId: authedUserId,
+    roomId: activeBackendRoomId,
+    conversationId: activeConversationId,
+    assistantModelLabel: activeConversationModelLabel,
+    assistantExpected,
     enabled: shouldKeepSocketEnabled && wsEnabled,
     onAuthFailed: () => {
       clearRitualTimers(); setSceneTransition(null); deleteSessionCookie();
       setAuthedNickname(""); setAuthedUserId(""); setWsEnabled(false); setAuthHandoffPending(false);
       setLocalSystemMessages([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID);
       setRoomRecords([]);
+      setConversationModels({});
       setActiveRoomId(PERSONAL_ROOM_ID);
       clearRoomTransition();
       syncAuthRoute("login", true, { replace: true });
@@ -412,6 +424,7 @@ export default function App() {
     const nextActiveRoomId = getDefaultActiveRoomId(nextRooms);
     const nextPersonalId = getPersonalConversationIdFromRooms(nextRooms);
     setRoomRecords(nextRoomRecords);
+    setConversationModels({});
     setPersonalConversationId(nextPersonalId);
     setActiveRoomId(nextActiveRoomId);
     syncRoomCookies(nextRooms, nextActiveRoomId);
@@ -431,6 +444,11 @@ export default function App() {
     const nextActiveRoomId = preferredRoom?.id || getDefaultActiveRoomId(nextRooms);
     const nextPersonalId = getPersonalConversationIdFromRooms(nextRooms);
     setRoomRecords(nextRoomRecords);
+    setConversationModels((current) => {
+      const nextConversationIds = new Set(nextRooms.flatMap((room) => (room.conversations || []).map((conversation) => conversation.id)));
+      if (activeConversationId) nextConversationIds.add(activeConversationId);
+      return Object.fromEntries(Object.entries(current).filter(([id]) => nextConversationIds.has(Number(id))));
+    });
     setPersonalConversationId(nextPersonalId);
     setActiveRoomId(nextActiveRoomId);
     syncRoomCookies(nextRooms, nextActiveRoomId);
@@ -499,6 +517,27 @@ export default function App() {
 
   useEffect(() => { if (appStage === "chat") return; clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false); if (focusFrameRef.current != null) { window.cancelAnimationFrame(focusFrameRef.current); focusFrameRef.current = null; } }, [appStage]);
 
+  useEffect(() => {
+    if (!authedNickname || !activeConversationId || hasKnownConversationModel) return undefined;
+    const controller = new AbortController();
+    fetchConversationModel(activeConversationId, controller.signal)
+      .then((modelInfo) => {
+        const hasModel = Boolean(modelInfo?.model || modelInfo?.provider);
+        setConversationModels((current) => ({
+          ...current,
+          [activeConversationId]: hasModel ? modelInfo : null
+        }));
+      })
+      .catch((error) => {
+        if (error?.name === "AbortError") return;
+        setConversationModels((current) => ({
+          ...current,
+          [activeConversationId]: null
+        }));
+      });
+    return () => controller.abort();
+  }, [authedNickname, activeConversationId, hasKnownConversationModel]);
+
   function beginLoginRitual(authData, config) {
     const { session } = applyAuthSession(authData);
     const resolved = session.nickname.trim();
@@ -532,12 +571,14 @@ export default function App() {
     setAuthHandoffPending(false); setMessageFlight(null); setHiddenMessageId(null);
     clearRoomTransition();
     setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
+    setConversationModels({});
     setAuthPanelOpen(true);
     setSceneTransition({ kind: "logout", authMode: "login", config: logoutRitualConfig });
     if (window.location.pathname !== "/login") window.history.replaceState({ path: "/login" }, "", "/login");
     ritualTimerRef.current = window.setTimeout(() => {
       setSceneTransition(null); setWsEnabled(false); setAuthedNickname(""); setAuthedUserId(""); setLocalSystemMessages([]);
       setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
+      setConversationModels({});
       clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
       setAppStage("login"); setAuthPanelOpen(true);
     }, logoutRitualConfig.totalMs);
@@ -730,6 +771,9 @@ export default function App() {
               room={activeRoom}
               roomTransition={roomTransition}
               activeConversationId={activeConversationId}
+              activeConversationModelLabel={activeConversationModelLabel}
+              isConversationModelLoading={isConversationModelLoading}
+              assistantState={assistantState}
               roomConversations={activeRoomConversations}
               onConversationSelect={handleConversationSelect}
               onDeleteConversation={handleDeleteConversation}

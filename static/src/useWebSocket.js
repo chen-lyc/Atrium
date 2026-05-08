@@ -14,6 +14,32 @@ import {
   mergeIncomingMessage
 } from "./utils.js";
 
+const AI_THINKING_TIMEOUT_MS = 15000;
+const ASSISTANT_IDLE_STATE = Object.freeze({
+  status: "idle",
+  modelLabel: "",
+  message: "",
+  detail: ""
+});
+
+function getQuotaExceededMessage(raw) {
+  const data = raw?.data && typeof raw.data === "object" ? raw.data : {};
+  const values = [
+    raw?.code,
+    raw?.error,
+    raw?.message,
+    raw?.reason,
+    typeof raw?.type === "string" ? raw.type : "",
+    data.code,
+    data.error,
+    data.message,
+    data.reason
+  ];
+  return values.some((value) => /QuotaExceeded|quota/i.test(String(value || "")))
+    ? "今日 AI 额度已用完，明天会自动恢复"
+    : "";
+}
+
 function normalizeConversationId(value) {
   if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
   if (typeof value === "string" && value.trim()) {
@@ -140,7 +166,10 @@ function normalizeHistoryMessages(data, conversationId, nickname, userId) {
         conversation_id: message.conversation_id ?? conversationId,
         status: "sent"
       }, nickname, userId);
-      if (normalized.userId === "0") {
+      const isAssistantHistoryMessage =
+        normalized.userId === "0" ||
+        Boolean(typeof message.model === "string" && message.model.trim());
+      if (isAssistantHistoryMessage) {
         normalized.isAI = true;
         normalized.nickname = "DeepSeek";
         normalized.model = message.model || "";
@@ -149,11 +178,22 @@ function normalizeHistoryMessages(data, conversationId, nickname, userId) {
     });
 }
 
-export default function useWebSocket({ url, nickname, userId = "", enabled, onAuthFailed, roomId = 0, conversationId = DEFAULT_CONVERSATION_ID, isMainConversation = false }) {
+export default function useWebSocket({
+  url,
+  nickname,
+  userId = "",
+  enabled,
+  onAuthFailed,
+  roomId = 0,
+  conversationId = DEFAULT_CONVERSATION_ID,
+  assistantModelLabel = "",
+  assistantExpected = true
+}) {
   const socketRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
   const pendingResolveTimersRef = useRef(new Map());
+  const aiThinkingTimerRef = useRef(null);
   const authFailedRef = useRef(onAuthFailed);
   const activeRoomId = normalizeRoomId(roomId);
   const activeConversationId = normalizeConversationId(conversationId);
@@ -161,12 +201,15 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
   const activeRoomIdRef = useRef(activeRoomId);
   const activeConversationIdRef = useRef(activeConversationId);
   const nicknameRef = useRef(nickname);
+  const assistantModelLabelRef = useRef(assistantModelLabel);
+  const assistantExpectedRef = useRef(assistantExpected);
   const messageCacheRef = useRef(new Map());
 
   const [messages, setMessages] = useState([]);
   const [connectionState, setConnectionState] = useState(enabled ? "connecting" : "idle");
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [lastError, setLastError] = useState("");
+  const [assistantState, setAssistantState] = useState(ASSISTANT_IDLE_STATE);
   const [historyState, setHistoryState] = useState("idle");
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [historyError, setHistoryError] = useState("");
@@ -174,6 +217,49 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
   useEffect(() => {
     authFailedRef.current = onAuthFailed;
   }, [onAuthFailed]);
+
+  useEffect(() => {
+    assistantModelLabelRef.current = assistantModelLabel || "";
+    assistantExpectedRef.current = assistantExpected;
+    if (assistantExpected === false) resetAssistantState();
+  }, [assistantModelLabel, assistantExpected]);
+
+  function clearAssistantTimer() {
+    if (aiThinkingTimerRef.current == null) return;
+    window.clearTimeout(aiThinkingTimerRef.current);
+    aiThinkingTimerRef.current = null;
+  }
+
+  function resetAssistantState() {
+    clearAssistantTimer();
+    setAssistantState(ASSISTANT_IDLE_STATE);
+  }
+
+  function beginAssistantThinking() {
+    if (assistantExpectedRef.current === false) return;
+    clearAssistantTimer();
+    const modelLabel = assistantModelLabelRef.current || "AI";
+    setAssistantState({
+      status: "thinking",
+      modelLabel,
+      message: `${modelLabel} 正在思考`,
+      detail: "正在接住你的上一条消息"
+    });
+    aiThinkingTimerRef.current = window.setTimeout(() => {
+      aiThinkingTimerRef.current = null;
+      setAssistantState((current) => current.status === "thinking" ? ASSISTANT_IDLE_STATE : current);
+    }, AI_THINKING_TIMEOUT_MS);
+  }
+
+  function showAssistantQuota(message) {
+    clearAssistantTimer();
+    setAssistantState({
+      status: "quota-exceeded",
+      modelLabel: assistantModelLabelRef.current || "AI",
+      message,
+      detail: "普通讨论仍可继续，AI 调用明天恢复"
+    });
+  }
 
   function clearAllPendingTimers() {
     pendingResolveTimersRef.current.forEach((timerId) => {
@@ -240,6 +326,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
       nicknameRef.current = nickname;
     }
     clearAllPendingTimers();
+    resetAssistantState();
     setMessages((prev) => {
       const previousRoomId = activeRoomIdRef.current;
       const previousConversationId = activeConversationIdRef.current;
@@ -345,11 +432,21 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
                   ? await event.data.text()
                   : String(event.data);
             if (cancelled) return;
+            if (/QuotaExceeded|quota/i.test(rawData)) {
+              showAssistantQuota("今日 AI 额度已用完，明天会自动恢复");
+              return;
+            }
             const raw = JSON.parse(rawData);
+            const quotaMessage = getQuotaExceededMessage(raw);
+            if (quotaMessage) {
+              showAssistantQuota(quotaMessage);
+              return;
+            }
             const envelopeType = typeof raw.type === "number" ? raw.type : undefined;
             const payload = raw.data || raw;
             const nextMessage = normalizeIncomingMessage(payload, nickname, normalizedUserId);
-            if (envelopeType === 1) {
+            const isAssistantFrame = envelopeType === 1;
+            if (isAssistantFrame) {
               nextMessage.isAI = true;
               nextMessage.model = payload.model;
               nextMessage.nickname = "DeepSeek";
@@ -361,6 +458,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
             if (nextMessage.conversationId && nextMessage.conversationId !== activeConversationIdRef.current) {
               return;
             }
+            if (isAssistantFrame) resetAssistantState();
             commitMessages((prev) => {
               if (nextMessage.isSelf) {
                 const matchIndex = findPendingLocalMatch(prev, nextMessage);
@@ -414,6 +512,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
       cancelled = true;
       window.clearTimeout(reconnectTimerRef.current);
       clearAllPendingTimers();
+      clearAssistantTimer();
       cleanupSocket();
     };
   }, [url, nickname, normalizedUserId, enabled, activeRoomId]);
@@ -444,15 +543,16 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
 
     try {
       current.send(JSON.stringify({
+        type: 0,
         data: {
           room_id: activeRoomId,
           conversation_id: localMessage.conversationId,
-          is_main_conversation: isMainConversation,
           type: localMessage.messageType,
           content,
           client_message_id: localMessage.clientMessageId
         }
       }));
+      beginAssistantThinking();
       schedulePendingResolve(localMessage.id);
       return localMessage;
     } catch (error) {
@@ -504,6 +604,7 @@ export default function useWebSocket({ url, nickname, userId = "", enabled, onAu
     connectionState,
     reconnectAttempt,
     lastError,
+    assistantState,
     historyState,
     historyHasMore,
     historyError,

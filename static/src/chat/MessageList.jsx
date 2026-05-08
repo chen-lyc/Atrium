@@ -21,6 +21,37 @@ function resolveEmpty(renderEmpty) {
   return <EmptyState />;
 }
 
+function AssistantStatusRow({ state }) {
+  if (!state || state.status === "idle") return null;
+  const isQuota = state.status === "quota-exceeded";
+  return (
+    <motion.li
+      className={`assistant-status-row is-${state.status}`}
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 4 }}
+      transition={{ duration: 0.18, ease: EASE }}
+      role="status"
+      aria-live="polite"
+    >
+      <span className="assistant-status-mark" aria-hidden="true">
+        {isQuota ? "!" : ""}
+      </span>
+      <span className="assistant-status-copy">
+        <strong>{state.message || (isQuota ? "今日 AI 额度已用完" : "AI 正在思考")}</strong>
+        {state.detail ? <small>{state.detail}</small> : null}
+      </span>
+      {!isQuota ? (
+        <span className="assistant-status-dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+      ) : null}
+    </motion.li>
+  );
+}
+
 export default function MessageList({
   messages, onScrolled = () => {}, hiddenMessageId,
   shouldAnimateEntry, entryDelay, entryDuration = 0.26,
@@ -28,6 +59,7 @@ export default function MessageList({
   itemAnimationMode = "standard",
   stickToBottom = true, className = "", innerClassName = "",
   viewportRef, renderEmpty,
+  assistantState = null,
   onContextMenu,
   hasMoreHistory = false,
   historyInitialLoading = false,
@@ -41,6 +73,7 @@ export default function MessageList({
   const [showNewMsgBtn, setShowNewMsgBtn] = useState(false);
   const decoratedMessages = decorateMessages(messages);
   const resolvedViewportRef = viewportRef || localViewportRef;
+  const hasAssistantState = Boolean(assistantState && assistantState.status !== "idle");
 
   useLayoutEffect(() => {
     const viewport = resolvedViewportRef.current;
@@ -54,7 +87,7 @@ export default function MessageList({
       return;
     }
     viewport.scrollTop = viewport.scrollHeight;
-  }, [messages.length, resolvedViewportRef, stickToBottom]);
+  }, [messages.length, hasAssistantState, resolvedViewportRef, stickToBottom]);
 
   useEffect(() => {
     const viewport = resolvedViewportRef.current;
@@ -178,6 +211,7 @@ export default function MessageList({
                 onContextMenu={onContextMenu}
               />
             ))}
+            {hasAssistantState ? <AssistantStatusRow key={`assistant-${assistantState.status}`} state={assistantState} /> : null}
           </AnimatePresence>
         </ol>
       </motion.div>

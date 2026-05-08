@@ -15,6 +15,26 @@ export const DEFAULT_CONVERSATION_ID = 1;
 export const PERSONAL_ROOM_ID = "personal";
 export const PUBLIC_ROOM_ID = "public";
 export const PUBLIC_CONVERSATION_ID = 1;
+export const DEFAULT_AI_MODEL = "deepseek-v4-flash";
+export const AI_MODEL_OPTIONS = Object.freeze([
+  {
+    value: "deepseek-v4-flash",
+    label: "DeepSeek V4 Flash",
+    shortLabel: "V4 Flash",
+    description: "快速回应，适合日常讨论、轻量整理和连续追问。",
+    fit: "轻量讨论"
+  },
+  {
+    value: "deepseek-v4-pro",
+    label: "DeepSeek V4 Pro",
+    shortLabel: "V4 Pro",
+    description: "更深推理，适合复杂材料、长问题和需要反复校准的判断。",
+    fit: "深度推演"
+  }
+]);
+export const AI_MODEL_LABELS = Object.freeze(
+  AI_MODEL_OPTIONS.reduce((labels, model) => ({ ...labels, [model.value]: model.label }), {})
+);
 export const MESSAGE_CONTENT_MAX_LENGTH = 4000;
 export const MESSAGE_HISTORY_PAGE_SIZE = 50;
 export const MESSAGE_TYPE = Object.freeze({
