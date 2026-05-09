@@ -332,11 +332,12 @@ MysqlConnGuard::~MysqlConnGuard() {
         return;
     }
     if (m_pooled_conn.expires_at <= std::chrono::steady_clock::now()) {
+        m_pool.notifyConnectionLost();
         return;
     }
     {
         lock_guard<mutex> lock(m_pool.m_mutex);
-        m_pool.m_ready_queue.emplace(std::move(m_pooled_conn.conn));
+        m_pool.m_ready_queue.emplace(std::move(m_pooled_conn));
         if (m_pool.m_waiters > 0) --m_pool.m_waiters;
     }
     m_pool.m_conn_available_cond.notify_one();
