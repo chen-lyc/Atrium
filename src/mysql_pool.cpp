@@ -16,7 +16,7 @@ MysqlPool::MysqlPool(int min_connections, int max_connections) : m_min_connectio
             unique_ptr<sql::Connection> conn(driver->connect("tcp://127.0.0.1:3306", "lyc", "lYc@123456"));
             conn->setSchema("webserver");
 
-            m_ready_queue.emplace(std::move(conn));
+            m_ready_queue.emplace(std::move(conn), getExpireTime());
             ++m_connections;
             fail_count = 0;
         } catch (const sql::SQLException &e) {
@@ -276,6 +276,10 @@ MysqlPool::QueryResult MysqlPool::executeTransaction(std::function<QueryResult(M
     }
 }
 
+std::chrono::steady_clock::time_point MysqlPool::getExpireTime() {
+    return std::chrono::steady_clock::now() + std::chrono::minutes(30);
+}
+
 bool MysqlPool::isBadMysqlConnection(const sql::SQLException &e) {
     return e.getErrorCode() == 2006 || e.getErrorCode() == 2013 || e.getSQLState() == "08S01";
 }
@@ -301,24 +305,38 @@ MysqlConnGuard::MysqlConnGuard(MysqlPool &pool) : m_pool(pool) {
             });
 
             if (pool.m_unreachable || pool.m_stop || pool.m_init_all_fail) {
-                m_mysql_conn = nullptr;
+                m_pooled_conn.conn = nullptr;
                 --pool.m_waiters;
                 return;
             }
         }
 
-        m_mysql_conn = std::move(pool.m_ready_queue.front());
+        m_pooled_conn = std::move(pool.m_ready_queue.front());
         pool.m_ready_queue.pop();
+    }
+    try {
+        if (m_pooled_conn.conn != nullptr && (m_pooled_conn.conn->isClosed() || !m_pooled_conn.conn->isValid())) {
+            m_pooled_conn.conn = nullptr;
+            m_pool.notifyConnectionLost();
+        }
+    } catch (const sql::SQLException &e) {
+        LOG_DEBUG("mysql connection alive check failed, code = %d, state = %s, err = %s",
+            e.getErrorCode(),
+            e.getSQLStateCStr(),
+            e.what());
     }
 }
 
 MysqlConnGuard::~MysqlConnGuard() {
-    if (m_mysql_conn == nullptr) {
+    if (m_pooled_conn.conn == nullptr) {
+        return;
+    }
+    if (m_pooled_conn.expires_at <= std::chrono::steady_clock::now()) {
         return;
     }
     {
         lock_guard<mutex> lock(m_pool.m_mutex);
-        m_pool.m_ready_queue.emplace(std::move(m_mysql_conn));
+        m_pool.m_ready_queue.emplace(std::move(m_pooled_conn.conn));
         if (m_pool.m_waiters > 0) --m_pool.m_waiters;
     }
     m_pool.m_conn_available_cond.notify_one();
@@ -361,7 +379,7 @@ void MysqlPool::maintainConnections() {
             fail_count = 0;
 
             lock.lock();
-            m_ready_queue.emplace(std::move(mysql_conn));
+            m_ready_queue.emplace(std::move(mysql_conn), getExpireTime());
             ++m_connections;
             if (m_waiters > 0) --m_waiters;
             m_conn_available_cond.notify_one();

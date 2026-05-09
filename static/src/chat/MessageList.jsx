@@ -24,6 +24,7 @@ function resolveEmpty(renderEmpty) {
 function AssistantStatusRow({ state }) {
   if (!state || state.status === "idle") return null;
   const isQuota = state.status === "quota-exceeded";
+  const isNoReply = state.status === "no-reply";
   return (
     <motion.li
       className={`assistant-status-row is-${state.status}`}
@@ -41,7 +42,7 @@ function AssistantStatusRow({ state }) {
         <strong>{state.message || (isQuota ? "今日 AI 额度已用完" : "AI 正在思考")}</strong>
         {state.detail ? <small>{state.detail}</small> : null}
       </span>
-      {!isQuota ? (
+      {!isQuota && !isNoReply ? (
         <span className="assistant-status-dots" aria-hidden="true">
           <i />
           <i />
@@ -153,6 +154,11 @@ export default function MessageList({
   const contentClassName = `messages-inner ${innerClassName}`.trim();
   const hasMessages = decoratedMessages.length > 0;
   const emptyHistoryState = !hasMessages && (historyInitialLoading || historyError);
+  const listClassName = [
+    "message-list",
+    hasMessages || hasAssistantState ? "has-tail-space" : "",
+    hasAssistantState ? "has-assistant-state" : ""
+  ].filter(Boolean).join(" ");
 
   return (
     <motion.div className={viewportClassName} ref={resolvedViewportRef} onScroll={handleScroll}>
@@ -185,7 +191,7 @@ export default function MessageList({
           ) : null}
         </AnimatePresence>
 
-        <ol className="message-list" role="list">
+        <ol className={listClassName} role="list">
           {hasMessages && (hasMoreHistory || historyLoading || historyError) ? (
             <li className="history-load-row">
               {hasMoreHistory || historyLoading ? (

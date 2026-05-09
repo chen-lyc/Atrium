@@ -10,24 +10,7 @@
 #include <variant>
 #include <vector>
 
-class MysqlPool;
-
-class MysqlConnGuard {
-  public:
-    MysqlConnGuard(MysqlPool &pool);
-    ~MysqlConnGuard();
-    sql::Connection *get() const {
-        return m_mysql_conn.get();
-    }
-    void discardConnection() {
-        m_mysql_conn = nullptr;
-    }
-
-  private:
-    MysqlPool &m_pool;
-    std::unique_ptr<sql::Connection> m_mysql_conn;
-};
-
+class MysqlConnGuard;
 class MysqlTxnContext;
 
 class MysqlPool {
@@ -75,6 +58,7 @@ class MysqlPool {
     MysqlPool(int min_connections, int max_connections);
     QueryResult executeRaw(sql::Connection *conn, const std::string &sql, const MysqlParams &params, std::vector<std::vector<std::string>> &rows, size_t col_count);
     QueryResult executeRaw(sql::Connection *conn, const std::string &sql, const MysqlParams &params, uint64_t *id = nullptr, uint64_t *affected_rows = nullptr);
+    std::chrono::steady_clock::time_point getExpireTime();
     bool isBadMysqlConnection(const sql::SQLException &e);
     void notifyConnectionLost();
     void maintainConnections();
@@ -88,7 +72,12 @@ class MysqlPool {
     int m_max_fail_count;
     int m_waiters = 0;
     int m_connections = 0;
-    std::queue<std::unique_ptr<sql::Connection>> m_ready_queue;
+
+    struct PooledConn {
+        std::unique_ptr<sql::Connection> conn;
+        std::chrono::steady_clock::time_point expires_at;
+    };
+    std::queue<PooledConn> m_ready_queue;
     std::mutex m_mutex;
     std::condition_variable m_need_refill_cond;
     std::condition_variable m_conn_available_cond;
@@ -96,6 +85,22 @@ class MysqlPool {
     bool m_stop = false;
     bool m_init_all_fail = false;
     bool m_unreachable = false;
+};
+
+class MysqlConnGuard {
+  public:
+    MysqlConnGuard(MysqlPool &pool);
+    ~MysqlConnGuard();
+    sql::Connection *get() const {
+        return m_pooled_conn.conn.get();
+    }
+    void discardConnection() {
+        m_pooled_conn.conn = nullptr;
+    }
+
+  private:
+    MysqlPool &m_pool;
+    MysqlPool::PooledConn m_pooled_conn;
 };
 
 class MysqlTxnContext {

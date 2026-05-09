@@ -145,15 +145,15 @@ MysqlPool::QueryResult DeepSeek::getSystemPrompt(uint64_t ai_id, std::string &pr
 
 MysqlPool::QueryResult DeepSeek::checkAndIncrementUsage(uint64_t user_id) {
     static const string select_sql =
-        "SELECT count FROM ai_usage WHERE user_id = ? AND date = CURDATE()";
+        "SELECT count, daily_quota FROM ai_usage WHERE user_id = ? AND date = CURDATE()";
     static const string insert_sql =
-        "INSERT INTO ai_usage (user_id, date, count) VALUES (?, CURDATE(), 1)";
+        "INSERT INTO ai_usage (user_id, date, count, daily_quota) VALUES (?, CURDATE(), 1, 20)";
     static const string update_sql =
-        "UPDATE ai_usage SET count = count + 1 WHERE user_id = ? AND date = CURDATE() AND count < 20";
+        "UPDATE ai_usage SET count = count + 1 WHERE user_id = ? AND date = CURDATE() AND count < daily_quota";
 
     MysqlPool::MysqlParams params{user_id};
     vector<vector<string>> rows;
-    size_t col_count = 1;
+    size_t col_count = 2;
     auto increment_existing_usage = [&]() -> MysqlPool::QueryResult {
         uint64_t affected_rows = 0;
         MysqlPool::QueryResult ret = MysqlPool::getInstance().executeUpdateAffected(update_sql, params, affected_rows);
@@ -164,13 +164,14 @@ MysqlPool::QueryResult DeepSeek::checkAndIncrementUsage(uint64_t user_id) {
 
     MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(select_sql, params, rows, col_count);
     if (ret == MysqlPool::QueryResult::Success) {
-        int count = 0;
+        int count = 0, quota = 20;
         try {
             count = stoi(rows[0][0]);
+            quota = stoi(rows[0][1]);
         } catch (const exception &e) {
             return MysqlPool::QueryResult::ServerError;
         }
-        if (count >= 20) return MysqlPool::QueryResult::AlreadyExists;
+        if (count >= quota) return MysqlPool::QueryResult::AlreadyExists;
 
         return increment_existing_usage();
     }

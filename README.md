@@ -327,12 +327,13 @@ CREATE TABLE ai_usage (
   user_id BIGINT UNSIGNED NOT NULL COMMENT '应用层外键：ai_usage.user_id -> users.id',
   date DATE NOT NULL,
   count TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  daily_quota TINYINT UNSIGNED NOT NULL DEFAULT 20,
 
   PRIMARY KEY (user_id, date)
 
   -- APP FK: ai_usage.user_id -> users.id
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4
-COMMENT = '用户每日 AI 调用次数计数';
+COMMENT = '用户每日 AI 调用次数 + 每日配额';
 ```
 
 ## 编译与运行

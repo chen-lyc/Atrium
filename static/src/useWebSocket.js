@@ -9,12 +9,15 @@ import {
   createId,
   deleteStoredMessage,
   fetchCurrentUser,
+  getIncomingText,
   normalizeIncomingMessage,
   findPendingLocalMatch,
   mergeIncomingMessage
 } from "./utils.js";
 
 const AI_THINKING_TIMEOUT_MS = 15000;
+const AI_NO_REPLY_SETTLE_MS = 1300;
+const AI_NO_REPLY_TOKEN = "<NO_REPLY>";
 const ASSISTANT_IDLE_STATE = Object.freeze({
   status: "idle",
   modelLabel: "",
@@ -38,6 +41,16 @@ function getQuotaExceededMessage(raw) {
   return values.some((value) => /QuotaExceeded|quota/i.test(String(value || "")))
     ? "今日 AI 额度已用完，明天会自动恢复"
     : "";
+}
+
+function isNoReplyText(value) {
+  return String(value || "").trim() === AI_NO_REPLY_TOKEN;
+}
+
+function isNoReplyPayload(payload) {
+  if (typeof payload === "string") return isNoReplyText(payload);
+  if (!payload || typeof payload !== "object") return false;
+  return isNoReplyText(getIncomingText(payload));
 }
 
 function normalizeConversationId(value) {
@@ -174,8 +187,12 @@ function normalizeHistoryMessages(data, conversationId, nickname, userId) {
         normalized.nickname = "DeepSeek";
         normalized.model = message.model || "";
       }
+      if (isAssistantHistoryMessage && isNoReplyText(normalized.text)) {
+        return null;
+      }
       return normalized;
-    });
+    })
+    .filter(Boolean);
 }
 
 export default function useWebSocket({
@@ -259,6 +276,21 @@ export default function useWebSocket({
       message,
       detail: "普通讨论仍可继续，AI 调用明天恢复"
     });
+  }
+
+  function showAssistantNoReply() {
+    clearAssistantTimer();
+    const modelLabel = assistantModelLabelRef.current || "AI";
+    setAssistantState({
+      status: "no-reply",
+      modelLabel,
+      message: `${modelLabel} 暂时旁听`,
+      detail: "这条消息没有生成回复"
+    });
+    aiThinkingTimerRef.current = window.setTimeout(() => {
+      aiThinkingTimerRef.current = null;
+      setAssistantState((current) => current.status === "no-reply" ? ASSISTANT_IDLE_STATE : current);
+    }, AI_NO_REPLY_SETTLE_MS);
   }
 
   function clearAllPendingTimers() {
@@ -432,6 +464,10 @@ export default function useWebSocket({
                   ? await event.data.text()
                   : String(event.data);
             if (cancelled) return;
+            if (isNoReplyText(rawData)) {
+              showAssistantNoReply();
+              return;
+            }
             if (/QuotaExceeded|quota/i.test(rawData)) {
               showAssistantQuota("今日 AI 额度已用完，明天会自动恢复");
               return;
@@ -444,8 +480,12 @@ export default function useWebSocket({
             }
             const envelopeType = typeof raw.type === "number" ? raw.type : undefined;
             const payload = raw.data || raw;
-            const nextMessage = normalizeIncomingMessage(payload, nickname, normalizedUserId);
             const isAssistantFrame = envelopeType === 1;
+            if (isAssistantFrame && isNoReplyPayload(payload)) {
+              showAssistantNoReply();
+              return;
+            }
+            const nextMessage = normalizeIncomingMessage(payload, nickname, normalizedUserId);
             if (isAssistantFrame) {
               nextMessage.isAI = true;
               nextMessage.model = payload.model;

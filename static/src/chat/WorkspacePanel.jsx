@@ -69,14 +69,14 @@ function WorkspaceRoomBrief({ room, members, conversations, modelLabel, modelLoa
           <small>{members.length || 0} 位成员</small>
         </div>
         <div>
-          <span>AI 模型</span>
+          <span>当前 AI</span>
           <strong>{resolvedModelLabel}</strong>
-          <small>绑定在当前对话内</small>
+          <small>随当前对话显示</small>
         </div>
         <div>
-          <span>知识沉淀</span>
-          <strong>摘录 · 结论 · 索引</strong>
-          <small>把聊天内容整理成可回看的材料</small>
+          <span>摘录入口</span>
+          <strong>右键消息</strong>
+          <small>从聊天上下文进入</small>
         </div>
       </div>
     </section>
@@ -348,7 +348,7 @@ export default function WorkspacePanel({
               <div>
                 <div className="workspace-panel-kicker">空间管理</div>
                 <h2 id="workspace-panel-title">{room?.name || "空间"}</h2>
-                <p className="workspace-panel-subtitle">{room?.placeLabel || "讨论室"} · 对话、成员与模型设置</p>
+                <p className="workspace-panel-subtitle">{room?.placeLabel || "讨论室"} · 对话与成员管理</p>
               </div>
               <button type="button" className="workspace-close focus-ring" onClick={onClose} aria-label="关闭空间管理">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">

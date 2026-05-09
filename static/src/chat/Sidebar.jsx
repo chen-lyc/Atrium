@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { AI_MODEL_OPTIONS, EASE, TAP_TRANSITION } from "../constants.js";
+import { EASE, TAP_TRANSITION } from "../constants.js";
 import { ThemeManager } from "../theme.js";
 import { useState, useEffect } from "react";
 
@@ -60,72 +60,12 @@ function ThemeToggle() {
   );
 }
 
-const SIDEBAR_AI_MODELS = AI_MODEL_OPTIONS.map((model) => ({
-  name: model.label,
-  meta: "可选模型"
-}));
-
-function SidebarWorkbenchNav({ onOpenWorkspacePanel, readOnly }) {
-  return (
-    <section className="sidebar-workbench-nav" aria-label="AI 模型与知识沉淀">
-      <div className="sidebar-nav-group">
-        <div className="section-label">AI 模型</div>
-        <div className="sidebar-nav-list">
-          {SIDEBAR_AI_MODELS.map((model) => (
-            <button
-              key={model.name}
-              type="button"
-              className="sidebar-nav-row focus-ring"
-              onClick={onOpenWorkspacePanel}
-              disabled={readOnly}
-            >
-              <span>{model.name}</span>
-              <small>{model.meta}</small>
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="sidebar-nav-group">
-        <div className="section-label">知识沉淀</div>
-        <div className="sidebar-nav-list">
-          <button
-            type="button"
-            className="sidebar-nav-row is-strong focus-ring"
-            onClick={onOpenWorkspacePanel}
-            disabled={readOnly}
-          >
-            <span>笔记与摘录</span>
-            <small>右键摘录可用</small>
-          </button>
-          <button
-            type="button"
-            className="sidebar-nav-row focus-ring"
-            onClick={onOpenWorkspacePanel}
-            disabled={readOnly}
-          >
-            <span>空间索引</span>
-            <small>房间 · 对话 · 成员</small>
-          </button>
-        </div>
-      </div>
-      <button
-        type="button"
-        className="sidebar-workspace-link focus-ring"
-        onClick={onOpenWorkspacePanel}
-        disabled={readOnly}
-      >
-        打开空间管理
-      </button>
-    </section>
-  );
-}
-
 export default function Sidebar({
   nickname, onLogout,
   shouldAnimateEntry, entryDelay, entryDuration = 0.3, entryOffsetX = -20,
   transitionMode = "idle", motionTiming = null, readOnly = false,
   rooms = null, activeRoomId = "", onRoomSelect = () => {},
-  roomName = "我的讨论室", onOpenWorkspacePanel = () => {}
+  roomName = "我的讨论室"
 }) {
   const resolvedRooms =
     Array.isArray(rooms) && rooms.length
@@ -190,8 +130,6 @@ export default function Sidebar({
           })}
         </div>
       </section>
-
-      <SidebarWorkbenchNav onOpenWorkspacePanel={onOpenWorkspacePanel} readOnly={readOnly} />
 
       <div className="sidebar-footer">
         <ThemeToggle />
