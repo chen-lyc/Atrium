@@ -22,9 +22,7 @@ function resolveEmpty(renderEmpty) {
 }
 
 function AssistantStatusRow({ state }) {
-  if (!state || state.status === "idle") return null;
-  const isQuota = state.status === "quota-exceeded";
-  const isNoReply = state.status === "no-reply";
+  if (!state || state.status !== "quota-exceeded") return null;
   return (
     <motion.li
       className={`assistant-status-row is-${state.status}`}
@@ -36,19 +34,12 @@ function AssistantStatusRow({ state }) {
       aria-live="polite"
     >
       <span className="assistant-status-mark" aria-hidden="true">
-        {isQuota ? "!" : ""}
+        !
       </span>
       <span className="assistant-status-copy">
-        <strong>{state.message || (isQuota ? "今日 AI 额度已用完" : "AI 正在思考")}</strong>
+        <strong>{state.message || "今日 AI 额度已用完"}</strong>
         {state.detail ? <small>{state.detail}</small> : null}
       </span>
-      {!isQuota && !isNoReply ? (
-        <span className="assistant-status-dots" aria-hidden="true">
-          <i />
-          <i />
-          <i />
-        </span>
-      ) : null}
     </motion.li>
   );
 }
@@ -74,7 +65,7 @@ export default function MessageList({
   const [showNewMsgBtn, setShowNewMsgBtn] = useState(false);
   const decoratedMessages = decorateMessages(messages);
   const resolvedViewportRef = viewportRef || localViewportRef;
-  const hasAssistantState = Boolean(assistantState && assistantState.status !== "idle");
+  const hasAssistantState = Boolean(assistantState && assistantState.status === "quota-exceeded");
 
   useLayoutEffect(() => {
     const viewport = resolvedViewportRef.current;

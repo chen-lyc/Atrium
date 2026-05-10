@@ -24,6 +24,7 @@ MainReactor::MainReactor(int stopfd, const string &ip, int http_port, int protob
 }
 
 MainReactor::~MainReactor() {
+    ThreadPool<Reactor::AiReplyTask>::getInstance().shutDown();
     for (int i = 0; i < m_num_reactors; i++) {
         m_sub_reactors[i]->shutDown();
     }

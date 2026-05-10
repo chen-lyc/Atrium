@@ -166,4 +166,6 @@ struct Cursor {
 } // namespace chatdb
 
 MysqlPool::QueryResult insert_message(chatdb::Message &msg, uint64_t &message_id);
+MysqlPool::QueryResult insert_hidden_message(chatdb::Message &msg, uint64_t deleted_at_ms, uint64_t &message_id);
+MysqlPool::QueryResult complete_message_content(uint64_t message_id, const std::string &content);
 MysqlPool::QueryResult get_recent_messages(uint64_t conversation_id, std::optional<chatdb::Cursor> cursor, int limit, std::vector<std::vector<std::string>> &rows);

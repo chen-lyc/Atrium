@@ -3645,36 +3645,10 @@ button:not(:disabled) {
     font-weight: 800;
 }
 
-.assistant-status-row.is-thinking .assistant-status-mark {
-    transform: rotate(45deg);
-}
-
-.assistant-status-row.is-thinking .assistant-status-mark::before {
-    content: "";
-    width: 6px;
-    height: 6px;
-    border-radius: 2px;
-    background: currentColor;
-}
-
 .assistant-status-row.is-quota-exceeded .assistant-status-mark {
     border-color: color-mix(in srgb, var(--warning) 32%, var(--line));
     background: color-mix(in srgb, var(--warning) 8%, transparent);
     color: color-mix(in srgb, var(--warning) 72%, var(--text));
-}
-
-.assistant-status-row.is-no-reply .assistant-status-mark {
-    border-color: color-mix(in srgb, var(--line) 86%, transparent);
-    background: color-mix(in srgb, var(--bg-hover) 54%, transparent);
-    color: var(--text-subtle);
-}
-
-.assistant-status-row.is-no-reply .assistant-status-mark::before {
-    content: "";
-    width: 8px;
-    height: 1px;
-    border-radius: 999px;
-    background: currentColor;
 }
 
 .assistant-status-copy {
@@ -3694,40 +3668,6 @@ button:not(:disabled) {
     color: var(--text-subtle);
     font-size: var(--meta);
     line-height: 1.3;
-}
-
-.assistant-status-dots {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    margin-left: 2px;
-}
-
-.assistant-status-dots i {
-    width: 4px;
-    height: 4px;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--accent) 48%, var(--text-subtle));
-    animation: assistant-dot 900ms var(--easing) infinite;
-}
-
-.assistant-status-dots i:nth-child(2) {
-    animation-delay: 120ms;
-}
-
-.assistant-status-dots i:nth-child(3) {
-    animation-delay: 240ms;
-}
-
-@keyframes assistant-dot {
-    0%, 100% {
-        opacity: 0.28;
-        transform: translateY(0);
-    }
-    50% {
-        opacity: 1;
-        transform: translateY(-2px);
-    }
 }
 
 .empty-state-layer {

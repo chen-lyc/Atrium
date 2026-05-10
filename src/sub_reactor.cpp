@@ -576,8 +576,47 @@ void Reactor::process(Connection &conn) {
                         payload_data = user_json.dump();
                         LOG_DEBUG("fd = %d websocket payload: %s", conn.fd, payload_data.c_str());
 
-                        unique_ptr<AiReplyTask> task = make_unique<AiReplyTask>(*this, conversation_id, message_id, conn.user_id, room_id, reactor_to_fds);
-                        ThreadPool<Reactor::AiReplyTask>::getInstance().enqueue(std::move(task));
+                        auto launcher = [reactor_ptr = this, conversation_id = conversation_id, user_id = conn.user_id, room_id = room_id](uint64_t trigger_message_id, uint64_t context_until_message_id) {
+                            string provider;
+                            string ai_model;
+                            MysqlPool::QueryResult ret = get_conversation_ai_model(conversation_id, provider, ai_model);
+                            if (ret != MysqlPool::QueryResult::Success) {
+                                ConvAiScheduler::getInstance().finish(conversation_id, nullopt);
+                                return;
+                            }
+
+                            const char *api_key = std::getenv("DEEPSEEK_API_KEY");
+                            if (!api_key || !api_key[0]) {
+                                ConvAiScheduler::getInstance().finish(conversation_id, nullopt);
+                                return;
+                            }
+
+                            uint64_t ai_id = 0;
+                            ret = get_ai_id_by_model(ai_model, ai_id);
+                            if (ret != MysqlPool::QueryResult::Success) {
+                                ConvAiScheduler::getInstance().finish(conversation_id, nullopt);
+                                return;
+                            }
+
+                            chatdb::Message ai_msg{
+                                conversation_id,
+                                ai_id,
+                                static_cast<int>(chatdb::MessageType::TEXT),
+                                "",
+                                now_ms(),
+                                nullopt};
+                            uint64_t ai_message_id = 0;
+                            ret = insert_hidden_message(ai_msg, now_ms(), ai_message_id);
+                            if (ret != MysqlPool::QueryResult::Success) {
+                                LOG_WARN("insert hidden ai message failed, conversation_id = %llu", conversation_id);
+                                ConvAiScheduler::getInstance().finish(conversation_id, nullopt);
+                                return;
+                            }
+
+                            unique_ptr<AiReplyTask> task = make_unique<AiReplyTask>(*reactor_ptr, conversation_id, trigger_message_id, context_until_message_id, user_id, room_id, ai_id, ai_model, ai_message_id);
+                            ThreadPool<Reactor::AiReplyTask>::getInstance().enqueue(std::move(task));
+                        };
+                        ConvAiScheduler::getInstance().submit(conversation_id, message_id, launcher);
                     } catch (const json::exception &e) {
                         LOG_WARN("bad json: %s", e.what());
                         sendError(conn, WS_PROTOCOLERROR);
@@ -675,37 +714,28 @@ void Reactor::process(Connection &conn) {
 static std::atomic<uint64_t> g_stream_id = 0;
 
 void Reactor::AiReplyTask::process(DeepSeek &deepseek) {
-    string provider;
-    MysqlPool::QueryResult ai_member_ret = get_conversation_ai_model(m_conversation_id, provider, m_ai_model);
-    if (ai_member_ret != MysqlPool::QueryResult::Success) return;
+    ConvAiTaskGuard guard(m_conversation_id);
+    guard.setCompletedAiMessageId(m_ai_message_id);
 
     const char *api_key = std::getenv("DEEPSEEK_API_KEY");
     if (!api_key || !api_key[0]) return;
     LOG_DEBUG("build ai reply json to brower");
 
-    uint64_t ai_id;
-    AiChatRequest ai_request{m_conversation_id, m_tigger_message_id, m_user_id, api_key, m_ai_model};
+    uint64_t chat_ai_id = m_ai_id;
+    AiChatRequest ai_request{m_conversation_id, m_trigger_message_id, m_context_until_message_id, m_user_id, api_key, m_ai_model};
     function<void(AiSseData & data)> on_chunk([this](AiSseData &data) {
         this->onChunk(data);
     });
-    AiClientStatus state = deepseek.chat(ai_request, ai_id, on_chunk);
+    AiClientStatus state = deepseek.chat(ai_request, chat_ai_id, on_chunk);
     if (state == AiClientStatus::NoReply) return;
     if (state != AiClientStatus::Success) {
         if (m_send_start_frame) sendError();
         return;
     }
 
-    chatdb::Message ai_msg{
-        m_conversation_id,
-        ai_id,
-        static_cast<int>(chatdb::MessageType::TEXT),
-        m_ai_reply,
-        now_ms(),
-        nullopt};
-    uint64_t ai_message_id = 0;
-    MysqlPool::QueryResult ret = insert_message(ai_msg, ai_message_id);
+    MysqlPool::QueryResult ret = complete_message_content(m_ai_message_id, m_ai_reply);
     if (ret != MysqlPool::QueryResult::Success) {
-        LOG_WARN("insert ai message failed, ai reply: %s", m_ai_reply.data());
+        LOG_WARN("complete ai message failed, ai reply: %s", m_ai_reply.data());
         if (m_send_start_frame) sendError();
         return;
     }
@@ -713,8 +743,8 @@ void Reactor::AiReplyTask::process(DeepSeek &deepseek) {
     string ai_reply_end;
     json ai_reply_end_json;
     ai_reply_end_json["model"] = m_ai_model;
-    ai_reply_end_json["user_id"] = ai_id;
-    ai_reply_end_json["message_id"] = ai_message_id;
+    ai_reply_end_json["user_id"] = m_ai_id;
+    ai_reply_end_json["message_id"] = m_ai_message_id;
 
     json ai_json;
     ai_json["stream_id"] = m_stream_id;
@@ -801,7 +831,8 @@ void Reactor::AiReplyTask::broadcastAiReply(const std::string reply) {
     ai_frame += std::move(reply);
 
     shared_ptr<const string> frame = make_shared<string>(ai_frame);
-    for (auto it = m_reactor_to_fds.begin(); it != m_reactor_to_fds.end(); ++it) {
+    unordered_map<int, vector<int>> reactor_to_fds = ConnRoute::getInstance().queryByRoom(m_room_id);
+    for (auto it = reactor_to_fds.begin(); it != reactor_to_fds.end(); ++it) {
         m_reactor.m_sub_reactors[it->first]->enqueueBroadcast({m_room_id, it->second, frame});
     }
 }

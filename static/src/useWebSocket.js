@@ -20,8 +20,6 @@ import {
   mergeIncomingMessage
 } from "./utils.js";
 
-const AI_THINKING_TIMEOUT_MS = 15000;
-const AI_NO_REPLY_SETTLE_MS = 1300;
 const AI_NO_REPLY_TOKEN = "<NO_REPLY>";
 const WS_EVENT = Object.freeze({
   USER_MSG: 0,
@@ -163,6 +161,39 @@ function getStreamKey(streamId) {
   return value ? `stream:${value}` : "";
 }
 
+function getTimelineValue(message) {
+  const value = message?.timestamp;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const trimmedValue = value.trim();
+    if (/^\d+$/.test(trimmedValue)) {
+      const numericValue = Number(trimmedValue);
+      if (Number.isFinite(numericValue)) return numericValue;
+    }
+    const parsedValue = Date.parse(trimmedValue);
+    if (Number.isFinite(parsedValue)) return parsedValue;
+  }
+  return Date.now();
+}
+
+function getMessageSortId(message) {
+  const value = Number(message?.serverId || message?.id || 0);
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function compareMessagesByTimeline(a, b) {
+  const timeGap = getTimelineValue(a) - getTimelineValue(b);
+  if (timeGap) return timeGap;
+  const aOrder = Number(a?.timelineOrder || 0);
+  const bOrder = Number(b?.timelineOrder || 0);
+  if (aOrder || bOrder) return aOrder - bOrder;
+  return getMessageSortId(a) - getMessageSortId(b);
+}
+
+function settleMessageList(messages) {
+  return dedupeMessageList(messages).slice().sort(compareMessagesByTimeline);
+}
+
 async function fetchHistoryPage(conversationId, cursor, signal) {
   const params = new URLSearchParams();
   params.set("limit", String(MESSAGE_HISTORY_PAGE_SIZE));
@@ -239,6 +270,7 @@ export default function useWebSocket({
   const assistantExpectedRef = useRef(assistantExpected);
   const messageCacheRef = useRef(new Map());
   const activeStreamsRef = useRef(new Map());
+  const timelineOrderRef = useRef(0);
 
   const [messages, setMessages] = useState([]);
   const [connectionState, setConnectionState] = useState(enabled ? "connecting" : "idle");
@@ -270,22 +302,6 @@ export default function useWebSocket({
     setAssistantState(ASSISTANT_IDLE_STATE);
   }
 
-  function beginAssistantThinking() {
-    if (assistantExpectedRef.current === false) return;
-    clearAssistantTimer();
-    const modelLabel = assistantModelLabelRef.current || "AI";
-    setAssistantState({
-      status: "thinking",
-      modelLabel,
-      message: `${modelLabel} 正在思考`,
-      detail: "正在接住你的上一条消息"
-    });
-    aiThinkingTimerRef.current = window.setTimeout(() => {
-      aiThinkingTimerRef.current = null;
-      setAssistantState((current) => current.status === "thinking" ? ASSISTANT_IDLE_STATE : current);
-    }, AI_THINKING_TIMEOUT_MS);
-  }
-
   function showAssistantQuota(message) {
     clearAssistantTimer();
     setAssistantState({
@@ -296,21 +312,6 @@ export default function useWebSocket({
     });
   }
 
-  function showAssistantNoReply() {
-    clearAssistantTimer();
-    const modelLabel = assistantModelLabelRef.current || "AI";
-    setAssistantState({
-      status: "no-reply",
-      modelLabel,
-      message: `${modelLabel} 暂时旁听`,
-      detail: "这条消息没有生成回复"
-    });
-    aiThinkingTimerRef.current = window.setTimeout(() => {
-      aiThinkingTimerRef.current = null;
-      setAssistantState((current) => current.status === "no-reply" ? ASSISTANT_IDLE_STATE : current);
-    }, AI_NO_REPLY_SETTLE_MS);
-  }
-
   function clearAllPendingTimers() {
     pendingResolveTimersRef.current.forEach((timerId) => {
       window.clearTimeout(timerId);
@@ -318,9 +319,14 @@ export default function useWebSocket({
     pendingResolveTimersRef.current.clear();
   }
 
+  function nextTimelineOrder() {
+    timelineOrderRef.current += 1;
+    return timelineOrderRef.current;
+  }
+
   function commitMessages(updater) {
     setMessages((prev) => {
-      const next = typeof updater === "function" ? updater(prev) : updater;
+      const next = settleMessageList(typeof updater === "function" ? updater(prev) : updater);
       messageCacheRef.current.set(
         getMessageCacheKey(activeRoomIdRef.current, activeConversationIdRef.current),
         next
@@ -341,12 +347,15 @@ export default function useWebSocket({
     }
     const cacheKey = getMessageCacheKey(targetRoomId, targetConversationId);
     const current = messageCacheRef.current.get(cacheKey) || [];
-    const next = typeof updater === "function" ? updater(current) : updater;
+    const next = settleMessageList(typeof updater === "function" ? updater(current) : updater);
     messageCacheRef.current.set(cacheKey, next);
   }
 
   function handleUserMessage(payload) {
-    const nextMessage = normalizeIncomingMessage(payload, nicknameRef.current, normalizedUserId);
+    const nextMessage = {
+      ...normalizeIncomingMessage(payload, nicknameRef.current, normalizedUserId),
+      timelineOrder: nextTimelineOrder()
+    };
     if (nextMessage.roomId && activeRoomIdRef.current && nextMessage.roomId !== activeRoomIdRef.current) {
       return;
     }
@@ -364,90 +373,158 @@ export default function useWebSocket({
     });
   }
 
-  function handleAiStreamStart(streamId, payload = {}) {
+  function createStreamMessageId(streamId) {
+    return createId(`ai-${String(streamId).replace(/[^a-zA-Z0-9_-]/g, "") || "stream"}`);
+  }
+
+  function createStreamState(streamId, payload = {}) {
     const streamKey = getStreamKey(streamId);
-    if (!streamKey) return;
+    if (!streamKey) return null;
     const streamRoomId = normalizeIncomingRoomId(payload) || activeRoomIdRef.current;
     const streamConversationId = normalizeIncomingConversationId(payload) || activeConversationIdRef.current;
-    if (!streamRoomId || !streamConversationId) return;
+    if (!streamRoomId || !streamConversationId) return null;
     const model = typeof payload.model === "string" ? payload.model.trim() : "";
     const modelLabel = getModelDisplayName({ model }, assistantModelLabelRef.current || "DeepSeek");
-    const messageId = createId(`ai-${String(streamId).replace(/[^a-zA-Z0-9_-]/g, "") || "stream"}`);
-    const streamMessage = {
-      id: messageId,
-      streamId: String(streamId),
-      roomId: streamRoomId,
-      conversationId: streamConversationId,
-      messageType: MESSAGE_TYPE.TEXT,
-      nickname: modelLabel,
-      userId: "",
-      username: "",
-      avatarUrl: typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || "",
-      text: "",
-      timestamp: normalizeIncomingTimestamp(payload),
-      isSelf: false,
-      isAI: true,
-      model,
-      status: "streaming",
-      source: "stream"
-    };
-    activeStreamsRef.current.set(streamKey, {
-      messageId,
+    return {
+      messageId: createStreamMessageId(streamId),
       roomId: streamRoomId,
       conversationId: streamConversationId,
       model,
       modelLabel,
-      avatarUrl: streamMessage.avatarUrl
-    });
+      avatarUrl: typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || "",
+      timestamp: normalizeIncomingTimestamp(payload),
+      timelineOrder: nextTimelineOrder(),
+      visible: false
+    };
+  }
+
+  function ensureStreamState(streamId, payload = {}) {
+    const streamKey = getStreamKey(streamId);
+    if (!streamKey) return null;
+    const existing = activeStreamsRef.current.get(streamKey);
+    if (existing) return existing;
+    const nextStream = createStreamState(streamId, payload);
+    if (!nextStream) return null;
+    activeStreamsRef.current.set(streamKey, nextStream);
+    return nextStream;
+  }
+
+  function buildStreamMessage(streamId, stream, text, status = "streaming") {
+    return {
+      id: stream.messageId,
+      streamId: String(streamId),
+      roomId: stream.roomId,
+      conversationId: stream.conversationId,
+      messageType: MESSAGE_TYPE.TEXT,
+      nickname: stream.modelLabel,
+      userId: "",
+      username: "",
+      avatarUrl: stream.avatarUrl,
+      text,
+      timestamp: stream.timestamp,
+      timelineOrder: stream.timelineOrder,
+      isSelf: false,
+      isAI: true,
+      model: stream.model,
+      status,
+      source: "stream"
+    };
+  }
+
+  function handleAiStreamStart(streamId, payload = {}) {
+    if (isNoReplyPayload(payload)) {
+      activeStreamsRef.current.delete(getStreamKey(streamId));
+      return;
+    }
+    const streamKey = getStreamKey(streamId);
+    const stream = createStreamState(streamId, payload);
+    if (!streamKey || !stream) return;
+    activeStreamsRef.current.set(streamKey, stream);
     resetAssistantState();
-    updateMessagesForContext(streamRoomId, streamConversationId, (prev) => {
-      if (prev.some((message) => message.id === messageId)) return prev;
-      return [...prev, streamMessage];
-    });
   }
 
   function handleAiStreamDelta(streamId, payload = {}) {
-    const stream = activeStreamsRef.current.get(getStreamKey(streamId));
+    if (isNoReplyPayload(payload)) {
+      activeStreamsRef.current.delete(getStreamKey(streamId));
+      return;
+    }
+    const streamKey = getStreamKey(streamId);
+    const stream = ensureStreamState(streamId, payload);
     if (!stream) return;
     const content = getIncomingText(payload);
     if (!content) return;
     const model = typeof payload.model === "string" && payload.model.trim() ? payload.model.trim() : stream.model;
+    stream.model = model;
+    stream.modelLabel = getModelDisplayName({ model }, stream.modelLabel || assistantModelLabelRef.current || "DeepSeek");
+    activeStreamsRef.current.set(streamKey, {
+      ...stream,
+      visible: true
+    });
+    resetAssistantState();
     updateMessagesForContext(stream.roomId, stream.conversationId, (prev) =>
-      prev.map((message) =>
-        message.id === stream.messageId
-          ? {
-              ...message,
-              text: `${message.text || ""}${content}`,
-              model,
-              status: message.status === "failed" ? "failed" : "streaming"
-            }
-          : message
-      )
+      prev.some((message) => message.id === stream.messageId)
+        ? prev.map((message) =>
+            message.id === stream.messageId
+              ? {
+                  ...message,
+                  text: `${message.text || ""}${content}`,
+                  nickname: stream.modelLabel,
+                  model,
+                  status: message.status === "failed" ? "failed" : "streaming"
+                }
+              : message
+          )
+        : [...prev, buildStreamMessage(streamId, stream, content)]
     );
   }
 
   function handleAiStreamEnd(streamId, payload = {}) {
     const streamKey = getStreamKey(streamId);
-    const stream = activeStreamsRef.current.get(streamKey);
+    if (isNoReplyPayload(payload)) {
+      const stream = activeStreamsRef.current.get(streamKey);
+      if (stream) {
+        updateMessagesForContext(stream.roomId, stream.conversationId, (prev) =>
+          prev.filter((message) => message.id !== stream.messageId)
+        );
+      }
+      activeStreamsRef.current.delete(streamKey);
+      return;
+    }
+    const stream = activeStreamsRef.current.get(streamKey) || ensureStreamState(streamId, payload);
     if (!stream) return;
     const serverMessageId = payload.message_id ?? payload.messageId;
     const userId = normalizeIncomingUserId(payload);
     const model = typeof payload.model === "string" && payload.model.trim() ? payload.model.trim() : stream.model;
     const modelLabel = getModelDisplayName({ model }, stream.modelLabel || assistantModelLabelRef.current || "DeepSeek");
+    const finalText = getIncomingText(payload);
+    stream.model = model;
+    stream.modelLabel = modelLabel;
     updateMessagesForContext(stream.roomId, stream.conversationId, (prev) =>
-      prev.map((message) =>
-        message.id === stream.messageId
-          ? {
-              ...message,
-              serverId: serverMessageId || message.serverId || "",
-              userId: userId || message.userId || "",
-              nickname: modelLabel,
-              model,
-              status: "sent",
-              source: "server"
-            }
-          : message
-      )
+      prev.some((message) => message.id === stream.messageId)
+        ? prev.map((message) =>
+            message.id === stream.messageId
+              ? {
+                  ...message,
+                  serverId: serverMessageId || message.serverId || "",
+                  userId: userId || message.userId || "",
+                  nickname: modelLabel,
+                  text: finalText || message.text,
+                  model,
+                  status: "sent",
+                  source: "server"
+                }
+              : message
+          )
+        : finalText
+          ? [
+              ...prev,
+              {
+                ...buildStreamMessage(streamId, stream, finalText, "sent"),
+                serverId: serverMessageId || "",
+                userId: userId || ""
+              }
+            ]
+          : prev
     );
     activeStreamsRef.current.delete(streamKey);
     resetAssistantState();
@@ -458,6 +535,11 @@ export default function useWebSocket({
     const stream = activeStreamsRef.current.get(streamKey);
     if (!stream) return;
     const model = typeof payload.model === "string" && payload.model.trim() ? payload.model.trim() : stream.model;
+    if (!stream.visible) {
+      activeStreamsRef.current.delete(streamKey);
+      resetAssistantState();
+      return;
+    }
     updateMessagesForContext(stream.roomId, stream.conversationId, (prev) =>
       prev.map((message) =>
         message.id === stream.messageId
@@ -625,7 +707,6 @@ export default function useWebSocket({
                   : String(event.data);
             if (cancelled) return;
             if (isNoReplyText(rawData)) {
-              showAssistantNoReply();
               return;
             }
             if (/QuotaExceeded|quota/i.test(rawData)) {
@@ -645,8 +726,7 @@ export default function useWebSocket({
               return;
             }
             if (envelopeType === WS_EVENT.AI_STREAM_START) {
-              if (isNoReplyPayload(payload)) showAssistantNoReply();
-              else handleAiStreamStart(raw.stream_id, payload);
+              handleAiStreamStart(raw.stream_id, payload);
               return;
             }
             if (envelopeType === WS_EVENT.AI_STREAM_DELTA) {
@@ -730,7 +810,8 @@ export default function useWebSocket({
       timestamp: Date.now(),
       isSelf: true,
       status: "pending",
-      source: "local"
+      source: "local",
+      timelineOrder: nextTimelineOrder()
     };
 
     commitMessages((prev) => [...prev, localMessage]);
@@ -746,7 +827,6 @@ export default function useWebSocket({
           client_message_id: localMessage.clientMessageId
         }
       }));
-      beginAssistantThinking();
       schedulePendingResolve(localMessage.id);
       return localMessage;
     } catch (error) {

@@ -21,7 +21,7 @@ class Reactor {
   public:
     class AiReplyTask {
       public:
-        AiReplyTask(Reactor &reactor, uint64_t conversation_id, uint64_t tigger_message_id, uint64_t user_id, uint64_t room_id, std::unordered_map<int, std::vector<int>> reactor_to_fds) : m_reactor(reactor), m_conversation_id(conversation_id), m_tigger_message_id(tigger_message_id), m_user_id(user_id), m_room_id(room_id), m_reactor_to_fds(reactor_to_fds) {}
+        AiReplyTask(Reactor &reactor, uint64_t conversation_id, uint64_t trigger_message_id, uint64_t context_until_message_id, uint64_t user_id, uint64_t room_id, uint64_t ai_id, std::string ai_model, uint64_t ai_message_id) : m_reactor(reactor), m_conversation_id(conversation_id), m_trigger_message_id(trigger_message_id), m_context_until_message_id(context_until_message_id), m_user_id(user_id), m_room_id(room_id), m_ai_id(ai_id), m_ai_model(ai_model), m_ai_message_id(ai_message_id) {}
         void process(DeepSeek &deepseek);
         void onChunk(AiSseData &data);
         void broadcastAiReply(const std::string reply);
@@ -30,12 +30,14 @@ class Reactor {
       private:
         Reactor &m_reactor;
         uint64_t m_conversation_id;
-        uint64_t m_tigger_message_id;
+        uint64_t m_trigger_message_id;
+        uint64_t m_context_until_message_id;
         uint64_t m_user_id;
         uint64_t m_room_id;
-        std::unordered_map<int, std::vector<int>> m_reactor_to_fds;
+        uint64_t m_ai_id;
         std::string m_ai_reply;
         std::string m_ai_model;
+        uint64_t m_ai_message_id;
         bool m_send_start_frame = false;
         uint64_t m_stream_id;
     };

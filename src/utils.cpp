@@ -1076,6 +1076,20 @@ MysqlPool::QueryResult insert_message(chatdb::Message &msg, uint64_t &message_id
     return MysqlPool::getInstance().executeQuery(sql, params, &message_id);
 }
 
+MysqlPool::QueryResult insert_hidden_message(chatdb::Message &msg, uint64_t deleted_at_ms, uint64_t &message_id) {
+    static const string sql =
+        "INSERT INTO messages (conversation_id, send_id, type, content, send_time_ms, "
+        "client_message_id, deleted_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)";
+    MysqlPool::MysqlParams params{msg.conversation_id, msg.send_id, msg.type, msg.content, msg.send_time_ms, (msg.client_message_id.has_value() ? msg.client_message_id.value() : ""), deleted_at_ms};
+    return MysqlPool::getInstance().executeQuery(sql, params, &message_id);
+}
+
+MysqlPool::QueryResult complete_message_content(uint64_t message_id, const std::string &content) {
+    static const string sql = "UPDATE messages SET content = ?, deleted_at_ms = NULL WHERE id = ?";
+    MysqlPool::MysqlParams params{content, message_id};
+    return MysqlPool::getInstance().executeQuery(sql, params);
+}
+
 MysqlPool::QueryResult get_recent_messages(uint64_t conversation_id, std::optional<chatdb::Cursor> cursor, int limit, std::vector<std::vector<std::string>> &rows) {
     static const string first_page_sql =
         "SELECT m.id, m.send_id, p.display_name, p.avatar_url, m.type, m.content, m.send_time_ms "

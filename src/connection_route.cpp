@@ -61,3 +61,56 @@ void ConnRoute::removeUserConn(uint64_t user_id, int reactor_id, int fd) {
     *it = refs.back();
     refs.pop_back();
 }
+
+void ConvAiScheduler::submit(uint64_t conversation_id, uint64_t trigger_message_id, Launcher launcher) {
+    bool trigger = false;
+    Launcher callback;
+    {
+        lock_guard<mutex> lock(m_mutex);
+        auto it = m_conv_to_state.find(conversation_id);
+        if (it == m_conv_to_state.end()) {
+            m_conv_to_state.try_emplace(conversation_id, true, nullopt);
+            m_conv_to_handle[conversation_id] = std::move(launcher);
+            callback = m_conv_to_handle[conversation_id];
+            trigger = true;
+        } else {
+            ConversationStatus &state = it->second;
+            if (state.ai_running) {
+                state.pending_trigger_id = trigger_message_id;
+                m_conv_to_handle[conversation_id] = std::move(launcher);
+            } else {
+                state.ai_running = true;
+                state.pending_trigger_id = nullopt;
+                m_conv_to_handle[conversation_id] = std::move(launcher);
+                callback = m_conv_to_handle[conversation_id];
+                trigger = true;
+            }
+        }
+    }
+    if (trigger) callback(trigger_message_id, trigger_message_id);
+}
+
+void ConvAiScheduler::finish(uint64_t conversation_id, std::optional<uint64_t> completed_ai_message_id) {
+    Launcher callback;
+    uint64_t trigger_message_id = 0;
+    uint64_t context_until_message_id = 0;
+    bool trigger = false;
+    {
+        lock_guard<mutex> lock(m_mutex);
+        auto it = m_conv_to_state.find(conversation_id);
+        if (it == m_conv_to_state.end()) return;
+        optional<uint64_t> &pending_trigger_id = it->second.pending_trigger_id;
+        if (pending_trigger_id.has_value()) {
+            trigger_message_id = pending_trigger_id.value();
+            context_until_message_id = completed_ai_message_id.has_value()
+                                           ? max(trigger_message_id, completed_ai_message_id.value())
+                                           : trigger_message_id;
+            pending_trigger_id = nullopt;
+            callback = m_conv_to_handle[conversation_id];
+            trigger = true;
+        } else {
+            it->second.ai_running = false;
+        }
+    }
+    if (trigger) callback(trigger_message_id, context_until_message_id);
+}

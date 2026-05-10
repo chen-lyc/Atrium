@@ -238,6 +238,7 @@ export function mergeIncomingMessage(prevMessages, incomingMessage) {
       id: message.id,
       serverId: incomingMessage.id,
       clientMessageId: incomingMessage.clientMessageId || message.clientMessageId || "",
+      timelineOrder: message.timelineOrder ?? incomingMessage.timelineOrder,
       status: incomingMessage.status === "failed" ? "failed" : "sent",
       source: "server"
     };

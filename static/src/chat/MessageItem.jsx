@@ -243,12 +243,7 @@ export default function MessageItem({ message, hiddenMessageId, itemAnimationMod
     ? ANIMATION_PRESETS.flightTarget
     : ANIMATION_PRESETS[resolvedAnimationMode] || ANIMATION_PRESETS.standard;
   const shouldShowDivider = message.showDivider && message.source !== "local-welcome";
-  const aiStateLabel =
-    message.isAI && message.status === "streaming"
-      ? "生成中"
-      : message.isAI && message.status === "failed"
-        ? "生成失败"
-        : "";
+  const aiStateLabel = message.isAI && message.status === "failed" ? "生成失败" : "";
   const messageStatusClass = message.status ? ` is-status-${message.status}` : "";
 
   function handleContextMenu(e) {

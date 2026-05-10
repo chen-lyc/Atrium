@@ -31,7 +31,7 @@ AiClientStatus DeepSeek::chat(const AiChatRequest &request, uint64_t &ai_id, std
     }
 
     vector<RecentMessage> recent_messages;
-    MysqlPool::QueryResult ret = getRecentMessages(recent_messages, request.conversation_id, request.trigger_message_id);
+    MysqlPool::QueryResult ret = getRecentMessages(recent_messages, request.conversation_id, request.context_until_message_id);
     if (ret != MysqlPool::QueryResult::NotFound && ret != MysqlPool::QueryResult::Success) {
         return AiClientStatus::ServerError;
     }

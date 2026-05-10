@@ -20,6 +20,7 @@ enum class AiClientStatus {
 struct AiChatRequest {
     uint64_t conversation_id;
     uint64_t trigger_message_id;
+    uint64_t context_until_message_id;
     uint64_t user_id;
     std::string api;
     std::string model;
