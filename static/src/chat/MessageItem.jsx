@@ -243,6 +243,13 @@ export default function MessageItem({ message, hiddenMessageId, itemAnimationMod
     ? ANIMATION_PRESETS.flightTarget
     : ANIMATION_PRESETS[resolvedAnimationMode] || ANIMATION_PRESETS.standard;
   const shouldShowDivider = message.showDivider && message.source !== "local-welcome";
+  const aiStateLabel =
+    message.isAI && message.status === "streaming"
+      ? "生成中"
+      : message.isAI && message.status === "failed"
+        ? "生成失败"
+        : "";
+  const messageStatusClass = message.status ? ` is-status-${message.status}` : "";
 
   function handleContextMenu(e) {
     if (onContextMenu) onContextMenu(e, message);
@@ -283,7 +290,7 @@ export default function MessageItem({ message, hiddenMessageId, itemAnimationMod
     >
       {shouldShowDivider ? <div className="time-divider">{message.dividerLabel}</div> : null}
       <motion.article
-        className={`message-block is-${participantType}`}
+        className={`message-block is-${participantType}${messageStatusClass}`}
         initial={false}
         animate={{
           opacity: isHiddenForFlight ? 0 : 1
@@ -315,6 +322,11 @@ export default function MessageItem({ message, hiddenMessageId, itemAnimationMod
         {message.isSelf && message.status !== "sent" ? (
           <div className={`message-state ${message.status === "failed" ? "is-failed" : ""}`}>
             {message.status === "failed" ? "发送失败" : "发送中"}
+          </div>
+        ) : null}
+        {aiStateLabel ? (
+          <div className={`message-state ${message.status === "failed" ? "is-failed" : ""}`}>
+            {aiStateLabel}
           </div>
         ) : null}
       </motion.article>

@@ -1,8 +1,19 @@
+#pragma once
+
+#include "ai_client.h"
 #include "thread_pool.h"
+#include <cstddef>
 using namespace std;
 
 template <typename T>
-ThreadPool<T>::ThreadPool(size_t threadnum, size_t max_requests) : m_max_requests(max_requests) {
+ThreadPool<T> &ThreadPool<T>::getInstance() {
+    static ThreadPool<T> instance;
+    return instance;
+}
+
+template <typename T>
+void ThreadPool<T>::init(size_t threadnum, size_t max_requests) {
+    m_max_requests = max_requests;
     for (int i = 0; i < threadnum; i++) {
         threads.emplace_back([this] { worker(); });
     }
@@ -44,6 +55,7 @@ bool ThreadPool<T>::enqueue(unique_ptr<T> request) {
 
 template <typename T>
 void ThreadPool<T>::worker() {
+    DeepSeek deepseek;
     while (true) {
         unique_ptr<T> request;
         {
@@ -56,11 +68,11 @@ void ThreadPool<T>::worker() {
                 return;
             }
 
-            request = move(m_workqueue.front());
+            request = std::move(m_workqueue.front());
             m_workqueue.pop();
         }
         if (request) {
-            request->process();
+            request->process(deepseek);
         }
     }
 }

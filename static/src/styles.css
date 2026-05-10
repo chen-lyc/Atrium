@@ -3778,20 +3778,28 @@ button:not(:disabled) {
 }
 
 .message-block {
+    position: relative;
     width: 100%;
     padding: 6px 8px;
     border-radius: var(--radius);
     border: 1px solid transparent;
-    transition: background-color 150ms var(--easing), border-color 150ms var(--easing);
-}
-
-.message-block:hover {
-    background: var(--bg-hover);
+    background: transparent;
+    transition:
+        border-color 150ms var(--easing),
+        box-shadow 150ms var(--easing);
 }
 
 .message-block.is-ai {
-    background: color-mix(in srgb, var(--accent) 4%, transparent);
-    border-color: color-mix(in srgb, var(--accent) 11%, transparent);
+    background: transparent;
+    border-color: transparent;
+}
+
+.message-block.is-ai.is-status-streaming {
+    box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.message-block.is-ai.is-status-failed {
+    box-shadow: inset 2px 0 0 color-mix(in srgb, var(--danger) 42%, transparent);
 }
 
 .message-meta {
@@ -3861,14 +3869,14 @@ button:not(:disabled) {
 
 .message-badge {
     min-height: 17px;
-    padding: 1px 5px;
+    padding: 1px 4px;
     border-radius: 5px;
     font-size: 10px;
     line-height: 1.2;
-    font-weight: 700;
-    color: color-mix(in srgb, var(--accent) 74%, var(--text));
-    background: color-mix(in srgb, var(--accent) 9%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+    font-weight: 650;
+    color: color-mix(in srgb, var(--accent) 62%, var(--text-muted));
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 13%, transparent);
 }
 
 .message-time {
@@ -3899,14 +3907,29 @@ button:not(:disabled) {
 }
 
 .message-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     margin-top: 2px;
     font-size: 11px;
     color: var(--text-subtle);
     padding-left: 28px;
 }
 
+.message-block.is-ai .message-state::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 56%, var(--text-subtle));
+}
+
 .message-state.is-failed {
     color: var(--danger);
+}
+
+.message-block.is-ai .message-state.is-failed::before {
+    background: var(--danger);
 }
 
 .system-message {

@@ -19,6 +19,27 @@ class Reactor {
     struct RoomMembershipUpdata;
 
   public:
+    class AiReplyTask {
+      public:
+        AiReplyTask(Reactor &reactor, uint64_t conversation_id, uint64_t tigger_message_id, uint64_t user_id, uint64_t room_id, std::unordered_map<int, std::vector<int>> reactor_to_fds) : m_reactor(reactor), m_conversation_id(conversation_id), m_tigger_message_id(tigger_message_id), m_user_id(user_id), m_room_id(room_id), m_reactor_to_fds(reactor_to_fds) {}
+        void process(DeepSeek &deepseek);
+        void onChunk(AiSseData &data);
+        void broadcastAiReply(const std::string reply);
+        void sendError();
+
+      private:
+        Reactor &m_reactor;
+        uint64_t m_conversation_id;
+        uint64_t m_tigger_message_id;
+        uint64_t m_user_id;
+        uint64_t m_room_id;
+        std::unordered_map<int, std::vector<int>> m_reactor_to_fds;
+        std::string m_ai_reply;
+        std::string m_ai_model;
+        bool m_send_start_frame = false;
+        uint64_t m_stream_id;
+    };
+
     Reactor(int index, std::vector<std::unique_ptr<Reactor>> &sub_reactors, size_t num_memory = 100);
     ~Reactor();
     void addConnection(int fd, ProtocolType protocol);
@@ -74,5 +95,4 @@ class Reactor {
     std::thread m_thread;
     std::atomic<bool> m_running{true};
     http::Router m_router;
-    DeepSeek m_deepseek;
 };

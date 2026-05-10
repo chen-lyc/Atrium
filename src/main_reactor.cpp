@@ -2,6 +2,7 @@
 #include "logger.h"
 #include "ai_client.h"
 #include "server_utils.h"
+#include "thread_pool.h"
 #include <arpa/inet.h>
 #include <cstring>
 #include <netinet/in.h>
@@ -10,6 +11,7 @@ using namespace std;
 
 MainReactor::MainReactor(int stopfd, const string &ip, int http_port, int protobuf_port, int n, int max_events) : m_num_reactors(n), m_max_events(max_events), m_stopfd(stopfd) {
     DeepSeek::init();
+    ThreadPool<Reactor::AiReplyTask>::getInstance().init();
 
     m_epollfd = epoll_create1(0);
     addfd(m_epollfd, stopfd);
@@ -39,8 +41,9 @@ void MainReactor::loop() {
         int number = epoll_wait(m_epollfd, events.data(), m_max_events, -1);
         LOG_DEBUG("happened events number = %d", number);
         if (number <= 0) {
-            if (errno == EINTR && m_running == false) {
+            if (errno == EINTR) {
                 LOG_INFO("server stopped by signal SIGINT or SIGTERM");
+                return;
             } else {
                 LOG_ERROR("epoll_wait failed");
             }

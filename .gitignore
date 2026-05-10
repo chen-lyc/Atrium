@@ -1,5 +1,7 @@
 *.out
 miss_demo.out
+demos/
+
 # 编译产物
 build/
 static/dist/

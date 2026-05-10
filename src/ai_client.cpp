@@ -14,31 +14,33 @@ void DeepSeek::init() {
     loadOrRegisterAiModel("deepseek-v4-pro");
 }
 
-AiClientResult DeepSeek::chat(const uint64_t conversation_id, const uint64_t user_id, const std::string &api, const std::string &model, const string &content) {
-    auto it = m_model_id.find(model);
+AiClientStatus DeepSeek::chat(const AiChatRequest &request, uint64_t &ai_id, std::function<void(AiSseData &reply)> &onChunk) {
+    auto it = m_model_id.find(request.model);
     if (it == m_model_id.end()) {
-        return {AiClientStatus::ModelNotRegistered};
+        return AiClientStatus::ModelNotRegistered;
     }
     uint64_t id = it->second;
+    ai_id = id;
 
-    MysqlPool::QueryResult usage_ret = checkAndIncrementUsage(user_id);
+    MysqlPool::QueryResult usage_ret = checkAndIncrementUsage(request.user_id);
     if (usage_ret == MysqlPool::QueryResult::AlreadyExists) {
-        return {AiClientStatus::QuotaExceeded};
+        return AiClientStatus::QuotaExceeded;
     }
     if (usage_ret != MysqlPool::QueryResult::Success) {
-        return {AiClientStatus::ServerError};
+        return AiClientStatus::ServerError;
     }
 
     vector<RecentMessage> recent_messages;
-    MysqlPool::QueryResult ret = getRecentMessages(recent_messages, conversation_id);
+    MysqlPool::QueryResult ret = getRecentMessages(recent_messages, request.conversation_id, request.trigger_message_id);
     if (ret != MysqlPool::QueryResult::NotFound && ret != MysqlPool::QueryResult::Success) {
-        return {AiClientStatus::ServerError};
+        return AiClientStatus::ServerError;
     }
 
     string body;
     try {
         json out;
-        out["model"] = model;
+        out["model"] = request.model;
+        out["stream"] = true;
         json messages = json::array();
 
         string system_prompt;
@@ -65,46 +67,92 @@ AiClientResult DeepSeek::chat(const uint64_t conversation_id, const uint64_t use
         body = out.dump();
     } catch (const json::exception &e) {
         LOG_WARN("DeepSeek chat failed: model = %s, step = build request body, error = %s",
-            std::string(model).c_str(),
+            std::string(request.model).c_str(),
             e.what());
-        return {AiClientStatus::BuildRequestFailed};
+        return AiClientStatus::BuildRequestFailed;
     }
 
     LOG_DEBUG("begin to be client");
     httplib::SSLClient cli("api.deepseek.com");
-    cli.set_default_headers({{"Authorization", "Bearer " + api}});
-    LOG_DEBUG("before ai post");
-    httplib::Result res = cli.Post("/chat/completions", body, "application/json");
+    cli.set_bearer_token_auth(request.api);
+    cli.set_read_timeout(60, 0);
+    httplib::Headers headers = {{"Content-Type", "application/json"}};
+
+    string buffer;
+    string pending;
+    bool start_sent = false;
+    static const string kNoReplyToken = "<NO_REPLY>";
+    httplib::Result res = cli.Post("/chat/completions", headers, body, "application/json", [&buffer, &pending, &start_sent, &onChunk, this](const char *data, size_t len) -> bool {
+        buffer.append(data, len);
+        while (true) {
+            size_t pos = buffer.find("\n\n");
+            size_t sep_len = 2;
+            if (pos == string::npos) {
+                pos = buffer.find("\r\n\r\n");
+                sep_len = 4;
+            }
+            if (pos == string::npos) return true;
+
+            if (!buffer.starts_with("data:")) return false;
+
+            string event = buffer.substr(0, pos);
+            buffer.erase(0, pos + sep_len);
+            AiSseData data;
+            AiClientStatus ret = parseSseLine(event, data);
+
+            if (ret == AiClientStatus::SseDone) {
+                if (!start_sent && !pending.empty() && pending != kNoReplyToken) {
+                    AiSseData flush;
+                    flush.content = pending;
+                    onChunk(flush);
+                    start_sent = true;
+                }
+                return true;
+            }
+            if (ret == AiClientStatus::InvalidResponse) return false;
+
+            if (data.content.empty()) continue;
+
+            if (start_sent) {
+                onChunk(data);
+                continue;
+            }
+
+            pending += data.content;
+            if (pending.size() < kNoReplyToken.size()) continue;
+            if (pending == kNoReplyToken) return true;
+
+            AiSseData flush;
+            flush.content = pending;
+            onChunk(flush);
+            start_sent = true;
+            pending.clear();
+        }
+        return false;
+    });
     LOG_DEBUG("after ai post");
-    if (!res) return {AiClientStatus::NetworkError};
+    if (!res) return AiClientStatus::NetworkError;
     LOG_DEBUG("ai response status = %d, body = %s", res->status, res->body.c_str());
     switch (res->status) {
-        case 200: break;
-        case 401: return {AiClientStatus::Unauthorized};
-        case 500: return {AiClientStatus::ServerError};
-        default: return {AiClientStatus::ServerError};
-    }
-
-    try {
-        json in = json::parse(res->body);
-        string reply = in["choices"][0]["message"]["content"];
-        LOG_DEBUG("get ai reply success");
-        return {AiClientStatus::Success, id, std::move(reply)};
-    } catch (const json::exception &e) {
-        LOG_WARN("ai bad json: %s, body: %s", e.what(), res->body.data());
-        return {AiClientStatus::ServerError};
+        case 200: {
+            if (start_sent) return AiClientStatus::Success;
+            else return AiClientStatus::NoReply;
+        }
+        case 401: return AiClientStatus::Unauthorized;
+        case 500: return AiClientStatus::ServerError;
+        default: return AiClientStatus::ServerError;
     }
 }
 
-MysqlPool::QueryResult DeepSeek::getRecentMessages(std::vector<RecentMessage> &recent_messages, uint64_t conversation_id, int limit) {
+MysqlPool::QueryResult DeepSeek::getRecentMessages(std::vector<RecentMessage> &recent_messages, uint64_t conversation_id, uint64_t last_message_id, int limit) {
     static const string sql =
         "SELECT m.send_id, p.display_name, m.content "
         "FROM messages m "
         "JOIN participants p ON p.id = m.send_id "
-        "WHERE m.conversation_id = ? AND m.deleted_at_ms IS NULL "
+        "WHERE m.conversation_id = ? AND m.id <= ? AND m.deleted_at_ms IS NULL "
         "ORDER BY m.send_time_ms DESC, m.id DESC "
         "LIMIT ?";
-    MysqlPool::MysqlParams params{conversation_id, limit};
+    MysqlPool::MysqlParams params{conversation_id, last_message_id, limit};
     vector<vector<string>> rows;
     size_t col_count = 3;
     MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, rows, col_count);
@@ -141,6 +189,63 @@ MysqlPool::QueryResult DeepSeek::getSystemPrompt(uint64_t ai_id, std::string &pr
     if (rows.empty() || rows[0].empty()) return MysqlPool::QueryResult::NotFound;
     prompt = std::move(rows[0][0]);
     return MysqlPool::QueryResult::Success;
+}
+
+AiClientStatus DeepSeek::parseSseLine(std::string_view sse_line, AiSseData &data) {
+    size_t colon_pos = sse_line.find(':');
+    if (colon_pos == string::npos) {
+        return AiClientStatus::InvalidResponse;
+    }
+    size_t data_pos = sse_line.find_first_not_of(" \t", colon_pos + 1);
+    string_view chunk = sse_line.substr(data_pos);
+    if (chunk == "[DONE]") {
+        return AiClientStatus::SseDone;
+    }
+
+    try {
+        json chunk_json = json::parse(chunk);
+        const json &delta = chunk_json["choices"][0]["delta"];
+        string content;
+        if (delta["content"].is_string())
+            content = delta["content"];
+        if (!content.empty())
+            data.content = std::move(content);
+
+        if (!chunk_json["choices"][0]["finish_reason"].is_string()) return AiClientStatus::Success;
+        string finish_reason = chunk_json["choices"][0]["finish_reason"];
+        if (finish_reason == "stop") {
+            if (!chunk_json.contains("usage") || chunk_json["usage"].is_null()) {
+                return AiClientStatus::InvalidResponse;
+            }
+            const json &usage = chunk_json["usage"];
+
+            data.prompt_tokens =
+                usage.value("prompt_tokens", 0ULL);
+
+            data.completion_tokens =
+                usage.value("completion_tokens", 0ULL);
+
+            data.total_tokens =
+                usage.value("total_tokens", data.prompt_tokens + data.completion_tokens);
+
+            data.cached_tokens =
+                usage.value("prompt_tokens_details", json::object())
+                    .value("cached_tokens", 0ULL);
+
+            data.prompt_cache_hit_tokens =
+                usage.value("prompt_cache_hit_tokens", data.cached_tokens);
+
+            data.prompt_cache_miss_tokens =
+                usage.value("prompt_cache_miss_tokens",
+                    data.prompt_tokens >= data.prompt_cache_hit_tokens
+                        ? data.prompt_tokens - data.prompt_cache_hit_tokens
+                        : 0ULL);
+        }
+        return AiClientStatus::Success;
+    } catch (const json::exception &e) {
+        LOG_WARN("parse usage failed: ", e.what());
+        return AiClientStatus::InvalidResponse;
+    }
 }
 
 MysqlPool::QueryResult DeepSeek::checkAndIncrementUsage(uint64_t user_id) {
@@ -200,7 +305,9 @@ MysqlPool::QueryResult DeepSeek::readPromptFile(std::string &prompt) {
         ssize_t n = read(file_fd, prompt.data() + recvd, file_size - recvd);
         if (n <= 0) {
             LOG_ERROR("deepseek read prompt file failed, errno=%d, recvd=%zu, file_size=%zu",
-                errno, recvd, file_size);
+                errno,
+                recvd,
+                file_size);
             close(file_fd);
             return MysqlPool::QueryResult::ServerError;
         }

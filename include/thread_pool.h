@@ -10,7 +10,8 @@
 template <typename T>
 class ThreadPool {
   public:
-    ThreadPool(size_t threadnum = 8, size_t max_requests = 10000);
+    static ThreadPool &getInstance();
+    void init(size_t threadnum = 8, size_t max_requests = 10000);
     ~ThreadPool();
     void shutDown();
     bool enqueue(std::unique_ptr<T> request);

@@ -137,7 +137,10 @@ MysqlPool::QueryResult get_list_conversations_by_room_id(uint64_t room_id, std::
 namespace chatdb {
 enum class EventType {
     UserMsg,
-    AiMsg,
+    AiStreamStart,
+    AiStreamDelta,
+    AiStreamEnd,
+    AiStreamError,
 };
 
 enum class MessageType {
