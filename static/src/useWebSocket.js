@@ -34,6 +34,63 @@ const ASSISTANT_IDLE_STATE = Object.freeze({
   message: "",
   detail: ""
 });
+const AI_DISPLAY_NAME = "deepseek";
+const AI_AVATAR_URL = "/avatars/deepseek-logo.svg";
+
+function cleanText(value) {
+  return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+}
+
+function normalizeServerMessageId(payload = {}) {
+  const value = payload.message_id ?? payload.messageId ?? payload.id;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return String(value);
+  if (typeof value === "string" && value.trim()) {
+    const trimmed = value.trim();
+    if (/^\d+$/.test(trimmed) && Number(trimmed) > 0) return trimmed;
+  }
+  return "";
+}
+
+function getAiProvider(payload = {}, fallback = "") {
+  return cleanText(payload.provider) || fallback || "";
+}
+
+function getAiModel(payload = {}, fallback = "") {
+  return cleanText(payload.model) || fallback || "";
+}
+
+function getAiAuthorName(payload = {}, fallback = AI_DISPLAY_NAME) {
+  const model = getAiModel(payload);
+  const modelLabel = getModelDisplayName({ model }, "");
+  const candidates = [
+    payload.display_name,
+    payload.displayName,
+    payload.nickname,
+    payload.username,
+    payload.provider
+  ];
+  const explicit = candidates.map(cleanText).find((value) => value && value !== model && value !== modelLabel);
+  if (explicit && explicit.toLowerCase() === AI_DISPLAY_NAME) return AI_DISPLAY_NAME;
+  return explicit || fallback || AI_DISPLAY_NAME;
+}
+
+function isAiPayload(payload = {}, normalizedMessage = null) {
+  const senderType = cleanText(payload.sender_type ?? payload.senderType ?? payload.participant_type ?? payload.participantType).toLowerCase();
+  const role = cleanText(payload.role ?? payload.message_role ?? payload.messageRole).toLowerCase();
+  const provider = getAiProvider(payload).toLowerCase();
+  const displayName = cleanText(payload.display_name ?? payload.displayName ?? payload.nickname ?? payload.username).toLowerCase();
+  return (
+    payload.is_ai === true ||
+    payload.isAI === true ||
+    senderType === "ai" ||
+    senderType === "assistant" ||
+    role === "assistant" ||
+    provider === "deepseek" ||
+    displayName === "deepseek" ||
+    Boolean(getAiModel(payload)) ||
+    normalizedMessage?.userId === "0"
+  );
+}
 
 function getQuotaExceededMessage(raw) {
   const data = raw?.data && typeof raw.data === "object" ? raw.data : {};
@@ -113,7 +170,17 @@ function messagesLookLikeSameStoredMessage(a, b) {
   if (!a || !b) return false;
   if (hasDurableServerId(a) && hasDurableServerId(b)) return false;
   if (a.source !== "server" && b.source !== "server") return false;
-  if (String(a.text || "") !== String(b.text || "")) return false;
+  const aText = String(a.text || "");
+  const bText = String(b.text || "");
+  const sameText = aText === bText;
+  const streamPrefixMatch = Boolean(
+    (a.source === "stream" || b.source === "stream") &&
+    (a.isAI || b.isAI) &&
+    aText &&
+    bText &&
+    (aText.startsWith(bText) || bText.startsWith(aText))
+  );
+  if (!sameText && !streamPrefixMatch) return false;
   if (Number(a.conversationId || 0) && Number(b.conversationId || 0) && Number(a.conversationId) !== Number(b.conversationId)) {
     return false;
   }
@@ -224,16 +291,18 @@ function normalizeHistoryMessages(data, conversationId, nickname, userId) {
         ...message,
         id: message.id ?? message.message_id,
         user_id: message.user_id ?? message.send_id,
+        username: message.username ?? message.display_name ?? message.displayName,
         conversation_id: message.conversation_id ?? conversationId,
         status: "sent"
       }, nickname, userId);
-      const isAssistantHistoryMessage =
-        normalized.userId === "0" ||
-        Boolean(typeof message.model === "string" && message.model.trim());
+      const isAssistantHistoryMessage = isAiPayload(message, normalized);
       if (isAssistantHistoryMessage) {
         normalized.isAI = true;
-        normalized.nickname = "DeepSeek";
-        normalized.model = message.model || "";
+        normalized.nickname = getAiAuthorName(message);
+        normalized.model = getAiModel(message);
+        normalized.provider = getAiProvider(message);
+        normalized.avatarUrl = normalized.avatarUrl || AI_AVATAR_URL;
+        normalized.senderType = "ai";
       }
       if (isAssistantHistoryMessage && isNoReplyText(normalized.text)) {
         return null;
@@ -270,6 +339,7 @@ export default function useWebSocket({
   const assistantExpectedRef = useRef(assistantExpected);
   const messageCacheRef = useRef(new Map());
   const activeStreamsRef = useRef(new Map());
+  const activeAiStreamRef = useRef(null);
   const timelineOrderRef = useRef(0);
 
   const [messages, setMessages] = useState([]);
@@ -280,6 +350,7 @@ export default function useWebSocket({
   const [historyState, setHistoryState] = useState("idle");
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [historyError, setHistoryError] = useState("");
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
 
   useEffect(() => {
     authFailedRef.current = onAuthFailed;
@@ -373,7 +444,9 @@ export default function useWebSocket({
     });
   }
 
-  function createStreamMessageId(streamId) {
+  function createStreamMessageId(streamId, payload = {}) {
+    const serverMessageId = normalizeServerMessageId(payload);
+    if (serverMessageId) return `ai-server-${serverMessageId}`;
     return createId(`ai-${String(streamId).replace(/[^a-zA-Z0-9_-]/g, "") || "stream"}`);
   }
 
@@ -383,15 +456,19 @@ export default function useWebSocket({
     const streamRoomId = normalizeIncomingRoomId(payload) || activeRoomIdRef.current;
     const streamConversationId = normalizeIncomingConversationId(payload) || activeConversationIdRef.current;
     if (!streamRoomId || !streamConversationId) return null;
-    const model = typeof payload.model === "string" ? payload.model.trim() : "";
-    const modelLabel = getModelDisplayName({ model }, assistantModelLabelRef.current || "DeepSeek");
+    const model = getAiModel(payload);
+    const provider = getAiProvider(payload);
+    const nickname = getAiAuthorName(payload);
+    const serverId = normalizeServerMessageId(payload);
     return {
-      messageId: createStreamMessageId(streamId),
+      messageId: createStreamMessageId(streamId, payload),
+      serverId,
       roomId: streamRoomId,
       conversationId: streamConversationId,
       model,
-      modelLabel,
-      avatarUrl: typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || "",
+      provider,
+      nickname,
+      avatarUrl: typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || AI_AVATAR_URL,
       timestamp: normalizeIncomingTimestamp(payload),
       timelineOrder: nextTimelineOrder(),
       visible: false
@@ -413,10 +490,11 @@ export default function useWebSocket({
     return {
       id: stream.messageId,
       streamId: String(streamId),
+      serverId: stream.serverId || "",
       roomId: stream.roomId,
       conversationId: stream.conversationId,
       messageType: MESSAGE_TYPE.TEXT,
-      nickname: stream.modelLabel,
+      nickname: stream.nickname || AI_DISPLAY_NAME,
       userId: "",
       username: "",
       avatarUrl: stream.avatarUrl,
@@ -426,6 +504,8 @@ export default function useWebSocket({
       isSelf: false,
       isAI: true,
       model: stream.model,
+      provider: stream.provider,
+      senderType: "ai",
       status,
       source: "stream"
     };
@@ -433,33 +513,49 @@ export default function useWebSocket({
 
   function handleAiStreamStart(streamId, payload = {}) {
     if (isNoReplyPayload(payload)) {
-      activeStreamsRef.current.delete(getStreamKey(streamId));
+      activeAiStreamRef.current = null;
       return;
     }
-    const streamKey = getStreamKey(streamId);
-    const stream = createStreamState(streamId, payload);
-    if (!streamKey || !stream) return;
-    activeStreamsRef.current.set(streamKey, stream);
+    const serverId = normalizeServerMessageId(payload);
+    if (!serverId) return;
+    const streamRoomId = normalizeIncomingRoomId(payload) || activeRoomIdRef.current;
+    const streamConversationId = normalizeIncomingConversationId(payload) || activeConversationIdRef.current;
+    if (!streamRoomId || !streamConversationId) return;
+    activeAiStreamRef.current = {
+      messageId: `ai-server-${serverId}`,
+      serverId,
+      roomId: streamRoomId,
+      conversationId: streamConversationId,
+      model: getAiModel(payload),
+      provider: getAiProvider(payload),
+      nickname: getAiAuthorName(payload),
+      avatarUrl: typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || AI_AVATAR_URL,
+      timestamp: normalizeIncomingTimestamp(payload),
+      timelineOrder: nextTimelineOrder(),
+      visible: false
+    };
     resetAssistantState();
   }
 
   function handleAiStreamDelta(streamId, payload = {}) {
     if (isNoReplyPayload(payload)) {
-      activeStreamsRef.current.delete(getStreamKey(streamId));
+      activeAiStreamRef.current = null;
       return;
     }
-    const streamKey = getStreamKey(streamId);
-    const stream = ensureStreamState(streamId, payload);
+    const stream = activeAiStreamRef.current;
     if (!stream) return;
     const content = getIncomingText(payload);
     if (!content) return;
-    const model = typeof payload.model === "string" && payload.model.trim() ? payload.model.trim() : stream.model;
+    const model = getAiModel(payload, stream.model);
+    const provider = getAiProvider(payload, stream.provider);
+    const nickname = getAiAuthorName(payload, stream.nickname || AI_DISPLAY_NAME);
+    const serverId = normalizeServerMessageId(payload) || stream.serverId || "";
     stream.model = model;
-    stream.modelLabel = getModelDisplayName({ model }, stream.modelLabel || assistantModelLabelRef.current || "DeepSeek");
-    activeStreamsRef.current.set(streamKey, {
-      ...stream,
-      visible: true
-    });
+    stream.provider = provider;
+    stream.nickname = nickname;
+    stream.serverId = serverId;
+    stream.visible = true;
+    activeAiStreamRef.current = stream;
     resetAssistantState();
     updateMessagesForContext(stream.roomId, stream.conversationId, (prev) =>
       prev.some((message) => message.id === stream.messageId)
@@ -467,38 +563,42 @@ export default function useWebSocket({
             message.id === stream.messageId
               ? {
                   ...message,
+                  serverId: serverId || message.serverId || "",
                   text: `${message.text || ""}${content}`,
-                  nickname: stream.modelLabel,
+                  nickname,
                   model,
+                  provider,
                   status: message.status === "failed" ? "failed" : "streaming"
                 }
               : message
           )
-        : [...prev, buildStreamMessage(streamId, stream, content)]
+        : [...prev, buildStreamMessage(serverId || stream.messageId, stream, content)]
     );
   }
 
   function handleAiStreamEnd(streamId, payload = {}) {
-    const streamKey = getStreamKey(streamId);
+    const stream = activeAiStreamRef.current;
     if (isNoReplyPayload(payload)) {
-      const stream = activeStreamsRef.current.get(streamKey);
       if (stream) {
         updateMessagesForContext(stream.roomId, stream.conversationId, (prev) =>
           prev.filter((message) => message.id !== stream.messageId)
         );
       }
-      activeStreamsRef.current.delete(streamKey);
+      activeAiStreamRef.current = null;
       return;
     }
-    const stream = activeStreamsRef.current.get(streamKey) || ensureStreamState(streamId, payload);
     if (!stream) return;
-    const serverMessageId = payload.message_id ?? payload.messageId;
+    const serverMessageId = normalizeServerMessageId(payload) || stream.serverId || "";
     const userId = normalizeIncomingUserId(payload);
-    const model = typeof payload.model === "string" && payload.model.trim() ? payload.model.trim() : stream.model;
-    const modelLabel = getModelDisplayName({ model }, stream.modelLabel || assistantModelLabelRef.current || "DeepSeek");
+    const model = getAiModel(payload, stream.model);
+    const provider = getAiProvider(payload, stream.provider);
+    const nickname = getAiAuthorName(payload, stream.nickname || AI_DISPLAY_NAME);
+    const avatarUrl = typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || stream.avatarUrl || AI_AVATAR_URL;
     const finalText = getIncomingText(payload);
     stream.model = model;
-    stream.modelLabel = modelLabel;
+    stream.provider = provider;
+    stream.nickname = nickname;
+    stream.serverId = serverMessageId;
     updateMessagesForContext(stream.roomId, stream.conversationId, (prev) =>
       prev.some((message) => message.id === stream.messageId)
         ? prev.map((message) =>
@@ -507,9 +607,12 @@ export default function useWebSocket({
                   ...message,
                   serverId: serverMessageId || message.serverId || "",
                   userId: userId || message.userId || "",
-                  nickname: modelLabel,
+                  nickname,
+                  avatarUrl,
                   text: finalText || message.text,
                   model,
+                  provider,
+                  senderType: "ai",
                   status: "sent",
                   source: "server"
                 }
@@ -519,35 +622,42 @@ export default function useWebSocket({
           ? [
               ...prev,
               {
-                ...buildStreamMessage(streamId, stream, finalText, "sent"),
+                ...buildStreamMessage(serverMessageId || stream.messageId, stream, finalText, "sent"),
                 serverId: serverMessageId || "",
-                userId: userId || ""
+                userId: userId || "",
+                nickname,
+                avatarUrl,
+                model,
+                provider,
+                senderType: "ai",
+                source: "server"
               }
             ]
           : prev
     );
-    activeStreamsRef.current.delete(streamKey);
+    activeAiStreamRef.current = null;
     resetAssistantState();
   }
 
   function handleAiStreamError(streamId, payload = {}) {
-    const streamKey = getStreamKey(streamId);
-    const stream = activeStreamsRef.current.get(streamKey);
+    const stream = activeAiStreamRef.current;
     if (!stream) return;
-    const model = typeof payload.model === "string" && payload.model.trim() ? payload.model.trim() : stream.model;
+    const model = getAiModel(payload, stream.model);
+    const provider = getAiProvider(payload, stream.provider);
+    const nickname = getAiAuthorName(payload, stream.nickname || AI_DISPLAY_NAME);
     if (!stream.visible) {
-      activeStreamsRef.current.delete(streamKey);
+      activeAiStreamRef.current = null;
       resetAssistantState();
       return;
     }
     updateMessagesForContext(stream.roomId, stream.conversationId, (prev) =>
       prev.map((message) =>
         message.id === stream.messageId
-          ? { ...message, model, status: "failed" }
+          ? { ...message, model, provider, nickname, status: "failed" }
           : message
       )
     );
-    activeStreamsRef.current.delete(streamKey);
+    activeAiStreamRef.current = null;
     resetAssistantState();
   }
 
@@ -596,6 +706,7 @@ export default function useWebSocket({
     if (nicknameChanged) {
       messageCacheRef.current.clear();
       activeStreamsRef.current.clear();
+      activeAiStreamRef.current = null;
       nicknameRef.current = nickname;
     }
     clearAllPendingTimers();
@@ -619,6 +730,7 @@ export default function useWebSocket({
     setReconnectAttempt(0);
     if (!nickname) {
       activeStreamsRef.current.clear();
+      activeAiStreamRef.current = null;
       setConnectionState("idle");
     }
   }, [nickname, activeRoomId, activeConversationId]);
@@ -654,7 +766,7 @@ export default function useWebSocket({
       });
 
     return () => controller.abort();
-  }, [enabled, nickname, normalizedUserId, activeRoomId, activeConversationId]);
+  }, [enabled, nickname, normalizedUserId, activeRoomId, activeConversationId, historyRefreshKey]);
 
   useEffect(() => {
     if (!enabled || !nickname) {
@@ -689,11 +801,17 @@ export default function useWebSocket({
 
         ws.onopen = () => {
           if (cancelled) return;
+          const wasReconnect = reconnectAttemptRef.current > 0;
           opened = true;
           reconnectAttemptRef.current = 0;
           setReconnectAttempt(0);
           setConnectionState("connected");
           setLastError("");
+          if (wasReconnect) {
+            window.setTimeout(() => {
+              if (!cancelled) setHistoryRefreshKey((value) => value + 1);
+            }, 250);
+          }
         };
 
         ws.onmessage = async (event) => {

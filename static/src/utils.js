@@ -111,7 +111,7 @@ export function normalizeAuthConversations(data) {
           : typeof item?.name === "string" && item.name.trim()
             ? item.name.trim()
           : id
-            ? `讨论室 ${id}`
+            ? `对话 ${id}`
             : "";
       return { id, name };
     })
@@ -551,6 +551,19 @@ function normalizeNumericId(value) {
   return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : 0;
 }
 
+function normalizeTokenCount(value) {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) return "0";
+    return String(Math.trunc(value));
+  }
+  if (typeof value === "bigint") {
+    return value >= 0n ? value.toString() : "0";
+  }
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!/^\d+$/.test(text)) return "0";
+  return text.replace(/^0+(?=\d)/, "");
+}
+
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
 }
@@ -633,6 +646,23 @@ export async function createConversation(roomId, title, model) {
 export async function fetchConversationModel(conversationId, signal) {
   const data = await apiRequest(`/api/conversations/${conversationId}/model`, { signal });
   return { provider: data?.provider || "", model: data?.model || "" };
+}
+
+export async function fetchAiUsage(signal) {
+  const data = await apiRequest("/api/me/ai-usage", { signal });
+  return {
+    promptTokens: normalizeTokenCount(data?.prompt_tokens ?? data?.promptTokens),
+    completionTokens: normalizeTokenCount(data?.completion_tokens ?? data?.completionTokens),
+    totalTokens: normalizeTokenCount(data?.total_tokens ?? data?.totalTokens),
+    requestCount: normalizeTokenCount(data?.api_requests ?? data?.apiRequests ?? data?.request_count ?? data?.requestCount),
+    models: Array.isArray(data?.models)
+      ? data.models
+      : Array.isArray(data?.usage_by_model)
+        ? data.usage_by_model
+        : Array.isArray(data?.usageByModel)
+          ? data.usageByModel
+          : []
+  };
 }
 
 export async function renameRoom(roomId, name) {

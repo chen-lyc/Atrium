@@ -111,7 +111,7 @@ AiClientStatus DeepSeek::chat(const AiChatRequest &request, uint64_t &ai_id, std
             }
             if (ret == AiClientStatus::InvalidResponse) return false;
 
-            if (data.content.empty()) continue;
+            if (data.content.empty() && data.total_tokens == 0) continue;
 
             if (start_sent) {
                 onChunk(data);

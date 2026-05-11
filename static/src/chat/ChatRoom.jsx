@@ -9,6 +9,25 @@ import MessageFlight from "./MessageFlight.jsx";
 import WorkspacePanel from "./WorkspacePanel.jsx";
 
 const NOTE_TOAST_MS = 2200;
+const CHAT_SURFACE_STORAGE_KEY = "atrium.chat.surface";
+
+function readStoredChatSurface() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(CHAT_SURFACE_STORAGE_KEY) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredChatSurface(nextSurface) {
+  try {
+    const current = readStoredChatSurface();
+    window.localStorage.setItem(CHAT_SURFACE_STORAGE_KEY, JSON.stringify({ ...current, ...nextSurface }));
+  } catch {
+    // UI position persistence is best-effort only.
+  }
+}
 
 function HeaderStatus({ modelLabel, connectionState }) {
   const connectionLabel = STATUS_LABEL[connectionState] || STATUS_LABEL.idle;
@@ -379,7 +398,11 @@ export default function ChatRoom({
   const [contextMenu, setContextMenu] = useState(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
+  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(() => readStoredChatSurface().workspacePanelOpen === true);
+  const [workspacePanelTab, setWorkspacePanelTab] = useState(() => {
+    const tab = readStoredChatSurface().workspacePanelTab;
+    return ["room", "ai", "members", "contacts"].includes(tab) ? tab : "room";
+  });
   const [roomMemoryOpen, setRoomMemoryOpen] = useState(false);
   const [createConversationOpen, setCreateConversationOpen] = useState(false);
   const [noteToast, setNoteToast] = useState(null);
@@ -628,7 +651,10 @@ export default function ChatRoom({
               <button
                 type="button"
                 className="header-icon-button focus-ring"
-                onClick={() => setWorkspacePanelOpen(true)}
+                onClick={() => {
+                  setWorkspacePanelOpen(true);
+                  writeStoredChatSurface({ workspacePanelOpen: true, workspacePanelTab });
+                }}
                 disabled={readOnly}
                 aria-label="打开房间、成员与笔记"
                 title="打开房间、成员与笔记"
@@ -728,11 +754,19 @@ export default function ChatRoom({
 
       <WorkspacePanel
         isOpen={workspacePanelOpen && !readOnly}
-        onClose={() => setWorkspacePanelOpen(false)}
+        onClose={() => {
+          setWorkspacePanelOpen(false);
+          writeStoredChatSurface({ workspacePanelOpen: false, workspacePanelTab });
+        }}
         currentUserId={currentUserId}
         room={room}
         rooms={rooms || []}
         readOnly={readOnly}
+        activeTab={workspacePanelTab}
+        onTabChange={(tab) => {
+          setWorkspacePanelTab(tab);
+          writeStoredChatSurface({ workspacePanelOpen: true, workspacePanelTab: tab });
+        }}
         onRoomsChanged={onRoomsChanged}
         onConversationSelect={onConversationSelect}
         activeConversationModelLabel={activeConversationModelLabel}
@@ -740,6 +774,7 @@ export default function ChatRoom({
         onRoomSelect={(id) => {
           onRoomSelect(id);
           setWorkspacePanelOpen(false);
+          writeStoredChatSurface({ workspacePanelOpen: false, workspacePanelTab });
         }}
       />
 

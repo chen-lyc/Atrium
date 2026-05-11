@@ -468,11 +468,11 @@ MysqlPool::QueryResult join_public_room(uint64_t user_id) {
     return MysqlPool::getInstance().executeQuery(sql, params);
 }
 
-MysqlPool::QueryResult create_conversation(uint64_t room_id, uint64_t created_by, uint64_t &conversation_id) {
+MysqlPool::QueryResult create_conversation(uint64_t room_id, const std::string &title, uint64_t created_by, uint64_t &conversation_id) {
     static const string sql =
         "INSERT INTO conversations (room_id, title, created_by, created_at_ms) "
-        "VALUES (?, '个人讨论室', ?, ?)";
-    MysqlPool::MysqlParams params{room_id, created_by, now_ms()};
+        "VALUES (?, ?, ?, ?)";
+    MysqlPool::MysqlParams params{room_id, title, created_by, now_ms()};
     return MysqlPool::getInstance().executeQuery(sql, params, &conversation_id);
 }
 
@@ -1092,18 +1092,22 @@ MysqlPool::QueryResult complete_message_content(uint64_t message_id, const std::
 
 MysqlPool::QueryResult get_recent_messages(uint64_t conversation_id, std::optional<chatdb::Cursor> cursor, int limit, std::vector<std::vector<std::string>> &rows) {
     static const string first_page_sql =
-        "SELECT m.id, m.send_id, p.display_name, p.avatar_url, m.type, m.content, m.send_time_ms "
+        "SELECT m.id, m.send_id, p.display_name, p.avatar_url, m.type, m.content, m.send_time_ms, "
+        "m.conversation_id, m.client_message_id, p.kind, ai.provider, ai.model "
         "FROM messages m JOIN participants p ON p.id = m.send_id "
+        "LEFT JOIN ai ON ai.id = m.send_id "
         "WHERE m.conversation_id = ? AND m.deleted_at_ms IS NULL "
         "ORDER BY m.send_time_ms DESC, m.id DESC LIMIT ?";
     static const string before_cursor_sql =
-        "SELECT m.id, m.send_id, p.display_name, p.avatar_url, m.type, m.content, m.send_time_ms "
+        "SELECT m.id, m.send_id, p.display_name, p.avatar_url, m.type, m.content, m.send_time_ms, "
+        "m.conversation_id, m.client_message_id, p.kind, ai.provider, ai.model "
         "FROM messages m JOIN participants p ON p.id = m.send_id "
+        "LEFT JOIN ai ON ai.id = m.send_id "
         "WHERE m.conversation_id = ? AND (m.send_time_ms, m.id) < (?, ?) "
         "AND m.deleted_at_ms IS NULL "
         "ORDER BY m.send_time_ms DESC, m.id DESC LIMIT ?";
 
-    size_t col_count = 7;
+    size_t col_count = 12;
     if (cursor == nullopt) {
         MysqlPool::MysqlParams params{conversation_id, limit};
         return MysqlPool::getInstance().executeQuery(first_page_sql, params, rows, col_count);
@@ -1112,4 +1116,53 @@ MysqlPool::QueryResult get_recent_messages(uint64_t conversation_id, std::option
         return MysqlPool::getInstance().executeQuery(before_cursor_sql, params, rows, col_count);
     }
     return MysqlPool::QueryResult::SqlError;
+}
+
+MysqlPool::QueryResult accumulate_user_ai_tokens(uint64_t user_id, uint64_t model_id, const AiSseData &data) {
+    static const string select_sql =
+        "SELECT input_cached_tokens, input_uncached_tokens, output_tokens FROM user_ai_tokens WHERE user_id = ? AND date = CURDATE() AND model_id = ?";
+    static const string insert_sql =
+        "INSERT INTO user_ai_tokens (user_id, model_id, date, input_cached_tokens, input_uncached_tokens, output_tokens, request_count) VALUES (?, ?, CURDATE(), ?, ?, ?, 1)";
+    static const string update_sql =
+        "UPDATE user_ai_tokens SET input_cached_tokens = input_cached_tokens + ?, input_uncached_tokens = input_uncached_tokens + ?, output_tokens = output_tokens + ?, request_count = request_count + 1 WHERE user_id = ? AND date = CURDATE() AND model_id = ?";
+
+    uint64_t input_cached = data.prompt_cache_hit_tokens > 0 ? data.prompt_cache_hit_tokens : data.cached_tokens;
+    uint64_t input_uncached = data.prompt_cache_miss_tokens;
+
+    MysqlPool::MysqlParams params{user_id, model_id};
+    vector<vector<string>> rows;
+    size_t col_count = 3;
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(select_sql, params, rows, col_count);
+    if (ret == MysqlPool::QueryResult::Success) {
+        params = {input_cached, input_uncached, data.completion_tokens, user_id, model_id};
+        ret = MysqlPool::getInstance().executeQuery(update_sql, params);
+        if (ret != MysqlPool::QueryResult::Success) return MysqlPool::QueryResult::ServerError;
+        return MysqlPool::QueryResult::Success;
+    }
+    if (ret == MysqlPool::QueryResult::NotFound) {
+        params = {user_id, model_id, input_cached, input_uncached, data.completion_tokens};
+        ret = MysqlPool::getInstance().executeQuery(insert_sql, params);
+        if (ret != MysqlPool::QueryResult::Success) return MysqlPool::QueryResult::ServerError;
+        return MysqlPool::QueryResult::Success;
+    }
+    return MysqlPool::QueryResult::ServerError;
+}
+
+MysqlPool::QueryResult get_user_ai_tokens(uint64_t user_id, uint64_t &prompt_tokens, uint64_t &completion_tokens, uint64_t &total_tokens) {
+    static const string sql =
+        "SELECT COALESCE(SUM(input_cached_tokens + input_uncached_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(total_tokens), 0) FROM user_ai_tokens WHERE user_id = ? AND date = CURDATE()";
+    MysqlPool::MysqlParams params{user_id};
+    vector<vector<string>> rows;
+    size_t col_count = 3;
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, rows, col_count);
+    if (ret != MysqlPool::QueryResult::Success) return ret;
+    if (rows.empty() || rows[0].size() < col_count) return MysqlPool::QueryResult::NotFound;
+    try {
+        prompt_tokens = stoull(rows[0][0]);
+        completion_tokens = stoull(rows[0][1]);
+        total_tokens = stoull(rows[0][2]);
+    } catch (const exception &e) {
+        return MysqlPool::QueryResult::ServerError;
+    }
+    return MysqlPool::QueryResult::Success;
 }

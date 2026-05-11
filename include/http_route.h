@@ -72,6 +72,7 @@ RouteResult handle_login(RequestContext &ctx);
 RouteResult handle_register(RequestContext &ctx);
 RouteResult handle_me(RequestContext &ctx);
 RouteResult handle_update_me(RequestContext &ctx);
+RouteResult handle_me_ai_usage(RequestContext &ctx);
 RouteResult handle_search_users(RequestContext &ctx);
 RouteResult handle_list_rooms(RequestContext &ctx);
 RouteResult handle_list_room_conversations(RequestContext &ctx);

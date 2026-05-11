@@ -11,6 +11,7 @@ import {
   deleteRoom,
   fetchFriendRequests,
   fetchFriends,
+  fetchAiUsage,
   fetchMyRoomInvitations,
   fetchRoomInvitations,
   fetchRoomMembers,
@@ -29,6 +30,31 @@ const ROLE_LABELS = {
   2: "成员"
 };
 const MANAGER_ROLES = new Set([0, 1]);
+const EMPTY_AI_USAGE = Object.freeze({
+  promptTokens: "0",
+  completionTokens: "0",
+  totalTokens: "0",
+  requestCount: "0",
+  models: []
+});
+const CHART_HEIGHT = 118;
+const CHART_WIDTH = 260;
+const MAX_VISIBLE_USAGE_MODELS = 5;
+const OTHER_USAGE_COLOR = "#a8adb1";
+const AI_USAGE_COLOR_RULES = [
+  { test: /deepseek/i, color: "#7cc7f4" },
+  { test: /qwen|通义/i, color: "#ad9cf2" },
+  { test: /chatgpt|openai|gpt/i, color: "#8fa79b" },
+  { test: /claude|anthropic/i, color: "#d8b887" },
+  { test: /kimi|moonshot/i, color: "#8fb8d6" },
+  { test: /doubao|豆包/i, color: "#d9a0a0" }
+];
+const AI_USAGE_FALLBACK_COLORS = ["#7cc7f4", "#ad9cf2", "#8fa79b", "#d8b887", "#8fb8d6"];
+const TOKEN_USAGE_COLORS = Object.freeze({
+  hit: "#9ed8ff",
+  input: "#57aeff",
+  output: "#096fe8"
+});
 
 function getRoleLabel(role) {
   return ROLE_LABELS[Number(role)] || "成员";
@@ -51,6 +77,384 @@ function RowAction({ children, kind = "secondary", busy = false, disabled = fals
 
 function EmptyLine({ children }) {
   return <div className="workspace-empty">{children}</div>;
+}
+
+function formatTokenCount(value) {
+  const text = typeof value === "string" && /^\d+$/.test(value) ? value : "0";
+  return text.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function formatUsagePercent(value, total) {
+  if (!total) return "0%";
+  const percent = (value / total) * 100;
+  if (percent > 0 && percent < 1) return "<1%";
+  return `${Math.round(percent)}%`;
+}
+
+function toChartNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value === "string" && value.trim()) {
+    const numericValue = Number(value.replace(/,/g, ""));
+    if (Number.isFinite(numericValue) && numericValue >= 0) return numericValue;
+  }
+  return 0;
+}
+
+function getIsoDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getMonthDays() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const count = new Date(year, month + 1, 0).getDate();
+  return Array.from({ length: count }, (_, index) => getIsoDate(new Date(year, month, index + 1)));
+}
+
+function formatShortDate(date) {
+  const [, month = "", day = ""] = String(date).split("-");
+  return `${Number(month) || 0}-${Number(day) || 0}`;
+}
+
+function readFirst(item, keys, fallback = "") {
+  for (const key of keys) {
+    const value = item?.[key];
+    if (value != null && value !== "") return value;
+  }
+  return fallback;
+}
+
+function normalizeUsageDay(item, fallbackDate, fallback = {}) {
+  const promptTokens = toChartNumber(readFirst(item, ["prompt_tokens", "promptTokens", "input_tokens", "inputTokens"], fallback.promptTokens ?? 0));
+  const cachedInputTokens = toChartNumber(readFirst(item, [
+    "cached_prompt_tokens",
+    "cachedPromptTokens",
+    "input_cached_tokens",
+    "inputCachedTokens",
+    "cache_hit_tokens",
+    "cacheHitTokens"
+  ], fallback.cachedInputTokens ?? 0));
+  const explicitUncached = readFirst(item, [
+    "uncached_prompt_tokens",
+    "uncachedPromptTokens",
+    "input_uncached_tokens",
+    "inputUncachedTokens"
+  ], fallback.uncachedInputTokens ?? null);
+  const uncachedInputTokens = explicitUncached == null
+    ? Math.max(0, promptTokens - cachedInputTokens)
+    : toChartNumber(explicitUncached);
+  const completionTokens = toChartNumber(readFirst(item, ["completion_tokens", "completionTokens", "output_tokens", "outputTokens"], fallback.completionTokens ?? 0));
+  const totalTokens = toChartNumber(readFirst(item, ["total_tokens", "totalTokens"], fallback.totalTokens ?? cachedInputTokens + uncachedInputTokens + completionTokens));
+
+  return {
+    date: String(readFirst(item, ["date", "day", "usage_date", "usageDate"], fallbackDate)),
+    requestCount: toChartNumber(readFirst(item, ["api_requests", "apiRequests", "request_count", "requestCount", "requests", "calls"], 0)),
+    cachedInputTokens,
+    uncachedInputTokens,
+    completionTokens,
+    totalTokens
+  };
+}
+
+function getUsageModelColor(model, index) {
+  const name = String(model || "");
+  const matched = AI_USAGE_COLOR_RULES.find((rule) => rule.test.test(name));
+  return matched?.color || AI_USAGE_FALLBACK_COLORS[index % AI_USAGE_FALLBACK_COLORS.length];
+}
+
+function normalizeUsageModel(item, monthDays, index = 0) {
+  const rawDays = Array.isArray(item?.days)
+    ? item.days
+    : Array.isArray(item?.daily)
+      ? item.daily
+      : Array.isArray(item?.series)
+        ? item.series
+        : [];
+  const modelDayFallback = normalizeUsageDay(item, getIsoDate(new Date()));
+  const effectiveRawDays = rawDays.length ? rawDays : modelDayFallback.totalTokens ? [{ date: modelDayFallback.date }] : [];
+  const dayFallback = effectiveRawDays.length <= 1 ? modelDayFallback : {};
+  const daysByDate = new Map(effectiveRawDays.map((day) => {
+    const normalized = normalizeUsageDay(day, undefined, dayFallback);
+    return [normalized.date, normalized];
+  }));
+  const days = monthDays.map((date) => daysByDate.get(date) || normalizeUsageDay({}, date));
+  const requestCount = toChartNumber(readFirst(item, ["api_requests", "apiRequests", "request_count", "requestCount", "requests", "calls"], 0)) ||
+    days.reduce((sum, day) => sum + day.requestCount, 0);
+  const totalTokens = toChartNumber(readFirst(item, ["total_tokens", "totalTokens"], 0)) ||
+    days.reduce((sum, day) => sum + day.totalTokens, 0);
+
+  return {
+    id: `${String(readFirst(item, ["id", "model", "model_name", "modelName", "name"], "ai"))}-${index}`,
+    model: String(readFirst(item, ["model", "model_name", "modelName", "name"], "AI 用量")),
+    requestCount,
+    totalTokens,
+    days
+  };
+}
+
+function normalizeUsageModels(usage, currentModelLabel) {
+  const monthDays = getMonthDays();
+  const rawModels = Array.isArray(usage?.models)
+    ? usage.models
+    : Array.isArray(usage?.usage_by_model)
+      ? usage.usage_by_model
+      : Array.isArray(usage?.usageByModel)
+        ? usage.usageByModel
+        : [];
+
+  if (rawModels.length) return rawModels.map((item, index) => normalizeUsageModel(item, monthDays, index));
+
+  const today = getIsoDate(new Date());
+  const day = normalizeUsageDay({
+    date: today,
+    prompt_tokens: usage?.promptTokens,
+    completion_tokens: usage?.completionTokens,
+    total_tokens: usage?.totalTokens,
+    request_count: usage?.requestCount
+  }, today);
+  const days = monthDays.map((date) => date === today ? day : normalizeUsageDay({}, date));
+  return [{
+    id: `${currentModelLabel || "today-summary"}-0`,
+    model: currentModelLabel || "今日汇总",
+    requestCount: day.requestCount,
+    totalTokens: day.totalTokens,
+    days
+  }];
+}
+
+function addUsageDays(models) {
+  const baseDays = models[0]?.days || getMonthDays().map((date) => normalizeUsageDay({}, date));
+  return baseDays.map((day, index) => models.reduce((sum, model) => {
+    const nextDay = model.days[index] || normalizeUsageDay({}, day.date);
+    return {
+      date: day.date,
+      requestCount: sum.requestCount + nextDay.requestCount,
+      cachedInputTokens: sum.cachedInputTokens + nextDay.cachedInputTokens,
+      uncachedInputTokens: sum.uncachedInputTokens + nextDay.uncachedInputTokens,
+      completionTokens: sum.completionTokens + nextDay.completionTokens,
+      totalTokens: sum.totalTokens + nextDay.totalTokens
+    };
+  }, normalizeUsageDay({}, day.date)));
+}
+
+function mergeUsageModels(models, label, id, color = OTHER_USAGE_COLOR) {
+  const days = addUsageDays(models);
+  return {
+    id,
+    model: label,
+    requestCount: models.reduce((sum, model) => sum + model.requestCount, 0),
+    totalTokens: models.reduce((sum, model) => sum + model.totalTokens, 0),
+    days,
+    color
+  };
+}
+
+function prepareUsageModels(models) {
+  return models
+    .map((model, index) => ({ ...model, color: getUsageModelColor(model.model, index) }))
+    .sort((a, b) => b.totalTokens - a.totalTokens);
+}
+
+function getVisibleUsageModels(models) {
+  if (models.length <= MAX_VISIBLE_USAGE_MODELS) return models;
+  const visible = models.slice(0, MAX_VISIBLE_USAGE_MODELS);
+  const rest = models.slice(MAX_VISIBLE_USAGE_MODELS);
+  return [...visible, mergeUsageModels(rest, `其他 ${rest.length} 个 AI`, "__other-ai-usage", OTHER_USAGE_COLOR)];
+}
+
+function getTodayTokens(models) {
+  const today = getIsoDate(new Date());
+  return models.reduce((sum, model) => {
+    const day = model.days.find((item) => item.date === today);
+    return sum + (day?.totalTokens || 0);
+  }, 0);
+}
+
+function getNiceChartMax(values) {
+  const rawMax = Math.max(0, ...values);
+  if (!rawMax) return 1;
+  const paddedMax = rawMax * 1.25;
+  const magnitude = 10 ** Math.floor(Math.log10(paddedMax));
+  const normalized = paddedMax / magnitude;
+  const niceStep = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return niceStep * magnitude;
+}
+
+function UsageStackedTokenChart({ models, selectedModel }) {
+  const [activeIndex, setActiveIndex] = useState(null);
+  const activeModels = selectedModel ? [selectedModel] : models;
+  const detailModel = selectedModel || (activeModels.length === 1 ? activeModels[0] : null);
+  const days = detailModel?.days || activeModels[0]?.days || getMonthDays().map((date) => normalizeUsageDay({}, date));
+  const totals = days.map((_, index) => {
+    if (detailModel) return detailModel.days[index]?.totalTokens || 0;
+    return activeModels.reduce((sum, model) => sum + (model.days[index]?.totalTokens || 0), 0);
+  });
+  const maxValue = getNiceChartMax(totals);
+  const activeDay = activeIndex == null ? null : days[activeIndex];
+  const barStep = CHART_WIDTH / Math.max(days.length, 1);
+  const barWidth = Math.max(2, Math.min(8, barStep * 0.58));
+
+  function getRows(index) {
+    if (detailModel) {
+      const day = detailModel.days[index] || normalizeUsageDay({}, days[index]?.date);
+      const rows = [
+        { key: "output", label: "输出", value: day.completionTokens, color: TOKEN_USAGE_COLORS.output, opacity: 0.92 },
+        { key: "input", label: "输入（未命中缓存）", value: day.uncachedInputTokens, color: TOKEN_USAGE_COLORS.input, opacity: 0.72 },
+        { key: "hit", label: "输入（命中缓存）", value: day.cachedInputTokens, color: TOKEN_USAGE_COLORS.hit, opacity: 0.92 }
+      ];
+      const sum = rows.reduce((total, row) => total + row.value, 0);
+      if (!sum && day.totalTokens) {
+        return [{ key: detailModel.id, label: detailModel.model, value: day.totalTokens, color: detailModel.color, opacity: 0.82 }];
+      }
+      return rows;
+    }
+
+    return activeModels.map((model) => ({
+      key: model.id,
+      label: model.model,
+      value: model.days[index]?.totalTokens || 0,
+      color: model.color,
+      opacity: 0.78
+    }));
+  }
+
+  return (
+    <div className="workspace-usage-chart">
+      <div className="workspace-chart-axis is-top">{formatTokenCount(String(Math.ceil(maxValue)))}</div>
+      <div className="workspace-chart-axis is-bottom">0</div>
+      <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} role="img" aria-label="Token 用量趋势">
+        <line x1="0" x2={CHART_WIDTH} y1="0" y2="0" />
+        <line x1="0" x2={CHART_WIDTH} y1={CHART_HEIGHT} y2={CHART_HEIGHT} />
+        {days.map((day, index) => {
+          const x = index * barStep + (barStep - barWidth) / 2;
+          let y = CHART_HEIGHT;
+          const rows = getRows(index);
+          return (
+            <g key={day.date} onMouseEnter={() => setActiveIndex(index)} onMouseLeave={() => setActiveIndex(null)}>
+              {rows.map((row) => {
+                const height = maxValue ? (row.value / maxValue) * CHART_HEIGHT : 0;
+                y -= height;
+                return (
+                  <rect
+                    key={row.key}
+                    x={x}
+                    y={y}
+                    width={barWidth}
+                    height={height}
+                    rx="1.5"
+                    fill={row.color}
+                    opacity={row.opacity}
+                  />
+                );
+              })}
+            </g>
+          );
+        })}
+      </svg>
+      {activeDay ? (
+        <div className="workspace-token-tooltip" style={{ left: `${Math.min(72, Math.max(28, (activeIndex / Math.max(days.length - 1, 1)) * 100))}%` }}>
+          <strong>{activeDay.date}</strong>
+          <b>{formatTokenCount(String(totals[activeIndex] || 0))} tokens</b>
+          {(detailModel ? getRows(activeIndex).slice().reverse() : getRows(activeIndex)).filter((row) => row.value > 0).map((row) => (
+            <span key={row.key} className="workspace-token-tooltip-row">
+              <i style={{ background: row.color, opacity: row.opacity }} />
+              <span className="workspace-token-tooltip-label">{row.label}</span>
+              <span className="workspace-token-tooltip-value">{formatTokenCount(String(row.value))} tokens</span>
+            </span>
+          ))}
+          {totals[activeIndex] ? null : <span>没有用量</span>}
+        </div>
+      ) : null}
+      <div className="workspace-chart-labels">
+        <span>{formatShortDate(days[0]?.date || "")}</span>
+        <span>{formatShortDate(days[days.length - 1]?.date || "")}</span>
+      </div>
+    </div>
+  );
+}
+
+function WorkspaceAiUsage({ usage, state, onRefresh, currentModelLabel }) {
+  const [selectedModelId, setSelectedModelId] = useState("");
+  const isLoading = state === "loading";
+  const isError = state === "error";
+  const usageModels = useMemo(() => prepareUsageModels(normalizeUsageModels(usage, currentModelLabel)), [usage, currentModelLabel]);
+  const visibleModels = useMemo(() => getVisibleUsageModels(usageModels), [usageModels]);
+  const selectedModel = visibleModels.find((model) => model.id === selectedModelId) || null;
+  const totalTokens = usageModels.reduce((sum, model) => sum + model.totalTokens, 0);
+  const todayTokens = getTodayTokens(usageModels);
+  const chartLabel = selectedModel?.model || (visibleModels.length === 1 ? visibleModels[0]?.model : "全部 AI");
+  const chartTokens = selectedModel?.totalTokens ?? totalTokens;
+
+  useEffect(() => {
+    if (selectedModelId && !visibleModels.some((model) => model.id === selectedModelId)) {
+      setSelectedModelId("");
+    }
+  }, [selectedModelId, visibleModels]);
+
+  return (
+    <section className={`workspace-ai-usage ${isError ? "is-error" : ""}`} aria-label="AI 用量">
+      <div className="workspace-ai-usage-head">
+        <div>
+          <span>AI 用量</span>
+          <strong>{isLoading ? "同步中" : selectedModel?.model || "本月账本"}</strong>
+        </div>
+        {isError ? <RowAction busy={isLoading} onClick={onRefresh}>重试</RowAction> : <span className="workspace-usage-sync">{isLoading ? "同步中" : "已同步"}</span>}
+      </div>
+      <div className="workspace-usage-summary">
+        <div>
+          <span>本月</span>
+          <strong>{isLoading ? "..." : formatTokenCount(String(totalTokens))}</strong>
+          <small>tokens</small>
+        </div>
+        <div>
+          <span>今日</span>
+          <strong>{isLoading ? "..." : formatTokenCount(String(todayTokens))}</strong>
+          <small>tokens</small>
+        </div>
+      </div>
+      <div className="workspace-usage-chart-block">
+        <div className="workspace-usage-chart-head">
+          <div>
+            <span>Tokens</span>
+            <strong>{isLoading ? "..." : formatTokenCount(String(chartTokens))}</strong>
+            <small>{chartLabel}</small>
+          </div>
+          {selectedModel ? (
+            <button type="button" className="workspace-usage-clear" onClick={() => setSelectedModelId("")}>
+              全部
+            </button>
+          ) : null}
+        </div>
+        <UsageStackedTokenChart models={visibleModels} selectedModel={selectedModel} />
+      </div>
+      <div className="workspace-usage-model-list" aria-label="AI 用量分布">
+        {visibleModels.map((model) => {
+          const selected = selectedModel?.id === model.id;
+          return (
+            <button
+              key={model.id}
+              type="button"
+              className={`workspace-usage-model-row ${selected ? "is-active" : ""}`}
+              style={{ "--usage-color": model.color, "--usage-share": `${totalTokens ? Math.max(2, (model.totalTokens / totalTokens) * 100) : 0}%` }}
+              aria-pressed={selected}
+              onClick={() => setSelectedModelId(selected ? "" : model.id)}
+            >
+              <span className="workspace-model-color" aria-hidden="true" />
+              <span className="workspace-model-name">{model.model}</span>
+              <span className="workspace-model-tokens">{isLoading ? "..." : formatTokenCount(String(model.totalTokens))}</span>
+              <span className="workspace-model-share">{formatUsagePercent(model.totalTokens, totalTokens)}</span>
+              <span className="workspace-model-share-bar" aria-hidden="true"><span /></span>
+            </button>
+          );
+        })}
+      </div>
+      {isError ? <div className="workspace-ai-usage-note">AI 用量暂时不可用</div> : null}
+    </section>
+  );
 }
 
 function WorkspaceRoomBrief({ room, members, conversations, modelLabel, modelLoading }) {
@@ -92,11 +496,13 @@ export default function WorkspacePanel({
   readOnly = false,
   activeConversationModelLabel = "",
   isConversationModelLoading = false,
+  activeTab = "room",
+  onTabChange = () => {},
   onRoomsChanged = async () => {},
   onConversationSelect = () => {},
   onRoomSelect = () => {}
 }) {
-  const [tab, setTab] = useState("room");
+  const [tab, setTab] = useState(() => ["room", "ai", "members", "contacts"].includes(activeTab) ? activeTab : "room");
   const [newRoomName, setNewRoomName] = useState("");
   const [renameValue, setRenameValue] = useState(room?.name || "");
   const [query, setQuery] = useState("");
@@ -107,6 +513,8 @@ export default function WorkspacePanel({
   const [sentFriendRequests, setSentFriendRequests] = useState([]);
   const [receivedRoomInvitations, setReceivedRoomInvitations] = useState([]);
   const [roomInvitations, setRoomInvitations] = useState([]);
+  const [aiUsage, setAiUsage] = useState(EMPTY_AI_USAGE);
+  const [aiUsageState, setAiUsageState] = useState("idle");
   const [panelState, setPanelState] = useState("idle");
   const [searchState, setSearchState] = useState("idle");
   const [actionKey, setActionKey] = useState("");
@@ -125,6 +533,17 @@ export default function WorkspacePanel({
   const isBaseRoom = room?.id === "personal" || room?.id === "public" || room?.roomId === 1;
   const friendIds = useMemo(() => new Set(friends.map((friend) => friend.userId)), [friends]);
   const roomMemberIds = useMemo(() => new Set(members.map((member) => member.userId)), [members]);
+
+  function handleTabChange(nextTab) {
+    setTab(nextTab);
+    onTabChange(nextTab);
+  }
+
+  useEffect(() => {
+    if (["room", "ai", "members", "contacts"].includes(activeTab) && activeTab !== tab) {
+      setTab(activeTab);
+    }
+  }, [activeTab, tab]);
 
   useEffect(() => {
     setRenameValue(room?.name || "");
@@ -145,8 +564,22 @@ export default function WorkspacePanel({
     if (!isOpen) return undefined;
     const controller = new AbortController();
     refreshPanel(controller.signal);
+    refreshAiUsage(controller.signal);
     return () => controller.abort();
   }, [isOpen, roomId]);
+
+  async function refreshAiUsage(signal) {
+    setAiUsageState("loading");
+    try {
+      const nextUsage = await fetchAiUsage(signal);
+      setAiUsage(nextUsage);
+      setAiUsageState("ready");
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      setAiUsage(EMPTY_AI_USAGE);
+      setAiUsageState("error");
+    }
+  }
 
   async function refreshPanel(signal) {
     if (!roomId) return;
@@ -360,14 +793,15 @@ export default function WorkspacePanel({
             <div className="workspace-tabs" role="tablist" aria-label="空间管理分类">
               {[
                 ["room", "空间"],
+                ["ai", "AI"],
                 ["members", "成员"],
                 ["contacts", "联系人"]
               ].map(([id, label]) => (
-                <button
-                  key={id}
-                  type="button"
-                  className={`workspace-tab ${tab === id ? "is-active" : ""}`}
-                  onClick={() => setTab(id)}
+	                <button
+	                  key={id}
+	                  type="button"
+	                  className={`workspace-tab ${tab === id ? "is-active" : ""}`}
+	                  onClick={() => handleTabChange(id)}
                   role="tab"
                   aria-selected={tab === id}
                   aria-controls={`workspace-panel-${id}`}
@@ -446,6 +880,29 @@ export default function WorkspacePanel({
                           <small>{item.note || "讨论室"}</small>
                         </button>
                       ))}
+                    </div>
+                  </section>
+                </div>
+              ) : null}
+
+              {tab === "ai" ? (
+                <div className="workspace-stack">
+                  <WorkspaceAiUsage
+                    usage={aiUsage}
+                    state={aiUsageState}
+                    onRefresh={() => refreshAiUsage()}
+                    currentModelLabel={activeConversationModelLabel}
+                  />
+
+                  <section className="workspace-section">
+                    <div className="workspace-section-title">当前对话</div>
+                    <div className="workspace-list">
+                      <div className="workspace-row">
+                        <div className="workspace-row-main">
+                          <span>{isConversationModelLoading ? "模型同步中" : activeConversationModelLabel || "未绑定 AI"}</span>
+                          <small>模型随当前对话切换</small>
+                        </div>
+                      </div>
                     </div>
                   </section>
                 </div>

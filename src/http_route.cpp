@@ -23,6 +23,8 @@ Router::Router() {
         {Method::GET, {"me"}, true, handle_me},
         {Method::HEAD, {"me"}, true, handle_me},
         {Method::PATCH, {"me"}, true, handle_update_me},
+        {Method::GET, {"me", "ai-usage"}, true, handle_me_ai_usage},
+        {Method::HEAD, {"me", "ai-usage"}, true, handle_me_ai_usage},
         {Method::GET, {"users", "search"}, true, handle_search_users},
         {Method::HEAD, {"users", "search"}, true, handle_search_users},
         {Method::GET, {"rooms"}, true, handle_list_rooms},
@@ -266,6 +268,33 @@ RouteResult handle_update_me(RequestContext &ctx) {
         "HTTP/1.1 200 OK\r\n"
         "Content-Length: 0\r\n"
         "\r\n";
+    return {RouteStatus::Success};
+}
+RouteResult handle_me_ai_usage(RequestContext &ctx) {
+    uint64_t prompt_tokens = 0;
+    uint64_t completion_tokens = 0;
+    uint64_t total_tokens = 0;
+    MysqlPool::QueryResult ret = get_user_ai_tokens(ctx.user_id, prompt_tokens, completion_tokens, total_tokens);
+    if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::NotFound) {
+        return {RouteStatus::ServerError};
+    }
+
+    json out;
+    out["prompt_tokens"] = prompt_tokens;
+    out["completion_tokens"] = completion_tokens;
+    out["total_tokens"] = total_tokens;
+    string body = out.dump();
+
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Content-Length: ";
+    ctx.conn.outbuf += std::to_string(body.size());
+    ctx.conn.outbuf +=
+        "\r\n"
+        "Connection: keep-alive\r\n"
+        "\r\n";
+    if (ctx.req.method == Method::GET) ctx.conn.outbuf += body;
     return {RouteStatus::Success};
 }
 RouteResult handle_search_users(RequestContext &ctx) {
@@ -559,11 +588,19 @@ RouteResult handle_conversation_messages(RequestContext &ctx) {
             json msg;
             msg["message_id"] = rows[i][0];
             msg["send_id"] = rows[i][1];
-            msg["username"] = rows[i][2];
+            msg["display_name"] = rows[i][2];
             msg["avatar_url"] = rows[i][3];
             msg["type"] = rows[i][4];
             msg["content"] = rows[i][5];
             msg["send_time_ms"] = rows[i][6];
+            msg["conversation_id"] = rows[i][7];
+            msg["client_message_id"] = rows[i][8];
+            string_view kind = rows[i][9];
+            if (kind == "2") msg["sender_type"] = "ai";
+            else if (kind == "3") msg["sender_type"] = "system";
+            else msg["sender_type"] = "user";
+            msg["provider"] = rows[i][10];
+            msg["model"] = rows[i][11];
             list.emplace_back(msg);
         }
         out["messages"] = std::move(list);

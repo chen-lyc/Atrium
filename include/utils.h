@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ai_client.h"
 #include "http_codec.h"
 #include "mysql_pool.h"
 #include <array>
@@ -84,7 +85,7 @@ MysqlPool::QueryResult join_public_room(uint64_t user_id);
 
 MysqlPool::QueryResult delete_room(uint64_t room_id);
 
-MysqlPool::QueryResult create_conversation(uint64_t room_id, uint64_t created_by, uint64_t &conversation_id);
+MysqlPool::QueryResult create_conversation(uint64_t room_id, const std::string &title, uint64_t created_by, uint64_t &conversation_id);
 MysqlPool::QueryResult create_conversation_with_title(uint64_t room_id, const std::string &title, uint64_t created_by, uint64_t &conversation_id);
 
 MysqlPool::QueryResult get_room_from_conversations(uint64_t &room_id, uint64_t conversation_id);
@@ -169,3 +170,6 @@ MysqlPool::QueryResult insert_message(chatdb::Message &msg, uint64_t &message_id
 MysqlPool::QueryResult insert_hidden_message(chatdb::Message &msg, uint64_t deleted_at_ms, uint64_t &message_id);
 MysqlPool::QueryResult complete_message_content(uint64_t message_id, const std::string &content);
 MysqlPool::QueryResult get_recent_messages(uint64_t conversation_id, std::optional<chatdb::Cursor> cursor, int limit, std::vector<std::vector<std::string>> &rows);
+
+MysqlPool::QueryResult accumulate_user_ai_tokens(uint64_t user_id, uint64_t model_id, const AiSseData &data);
+MysqlPool::QueryResult get_user_ai_tokens(uint64_t user_id, uint64_t &prompt_tokens, uint64_t &completion_tokens, uint64_t &total_tokens);

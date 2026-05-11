@@ -711,8 +711,6 @@ void Reactor::process(Connection &conn) {
     }
 }
 
-static std::atomic<uint64_t> g_stream_id = 0;
-
 void Reactor::AiReplyTask::process(DeepSeek &deepseek) {
     ConvAiTaskGuard guard(m_conversation_id);
     guard.setCompletedAiMessageId(m_ai_message_id);
@@ -742,12 +740,20 @@ void Reactor::AiReplyTask::process(DeepSeek &deepseek) {
 
     string ai_reply_end;
     json ai_reply_end_json;
-    ai_reply_end_json["model"] = m_ai_model;
-    ai_reply_end_json["user_id"] = m_ai_id;
+    ai_reply_end_json["room_id"] = m_room_id;
+    ai_reply_end_json["conversation_id"] = m_conversation_id;
     ai_reply_end_json["message_id"] = m_ai_message_id;
+    ai_reply_end_json["user_id"] = m_ai_id;
+    ai_reply_end_json["sender_type"] = "ai";
+    ai_reply_end_json["display_name"] = "deepseek";
+    ai_reply_end_json["avatar_url"] = "/avatars/deepseek-logo.svg";
+    ai_reply_end_json["type"] = static_cast<int>(chatdb::MessageType::TEXT);
+    ai_reply_end_json["content"] = m_ai_reply;
+    ai_reply_end_json["send_time_ms"] = now_ms();
+    ai_reply_end_json["provider"] = "deepseek";
+    ai_reply_end_json["model"] = m_ai_model;
 
     json ai_json;
-    ai_json["stream_id"] = m_stream_id;
     ai_json["type"] = static_cast<int>(chatdb::EventType::AiStreamEnd);
     ai_json["data"] = ai_reply_end_json;
     ai_reply_end = ai_json.dump();
@@ -763,13 +769,12 @@ void Reactor::AiReplyTask::onChunk(AiSseData &data) {
         json ai_reply;
         ai_reply["room_id"] = m_room_id;
         ai_reply["conversation_id"] = m_conversation_id;
+        ai_reply["message_id"] = m_ai_message_id;
         ai_reply["avatar_url"] = "/avatars/deepseek-logo.svg";
         ai_reply["model"] = m_ai_model;
         ai_reply["send_time_ms"] = now_ms();
 
         json ai_json;
-        m_stream_id = g_stream_id.fetch_add(1);
-        ai_json["stream_id"] = m_stream_id;
         ai_json["type"] = static_cast<int>(chatdb::EventType::AiStreamStart);
         ai_json["data"] = ai_reply;
         ai_reply_start = ai_json.dump();
@@ -785,13 +790,16 @@ void Reactor::AiReplyTask::onChunk(AiSseData &data) {
     ai_reply["content"] = data.content;
 
     json ai_json;
-    ai_json["stream_id"] = m_stream_id;
     ai_json["type"] = static_cast<int>(chatdb::EventType::AiStreamDelta);
     ai_json["data"] = ai_reply;
     reply = ai_json.dump();
     if (reply.empty()) return;
 
     broadcastAiReply(reply);
+
+    if (data.total_tokens > 0) {
+        accumulate_user_ai_tokens(m_user_id, m_ai_id, data);
+    }
 }
 
 void Reactor::AiReplyTask::sendError() {
@@ -801,7 +809,6 @@ void Reactor::AiReplyTask::sendError() {
     err["model"] = m_ai_model;
 
     json frame;
-    frame["stream_id"] = m_stream_id;
     frame["type"] = static_cast<int>(chatdb::EventType::AiStreamError);
     frame["data"] = err;
 

@@ -334,6 +334,31 @@ CREATE TABLE ai_usage (
   -- APP FK: ai_usage.user_id -> users.id
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4
 COMMENT = '用户每日 AI 调用次数 + 每日配额';
+
+CREATE TABLE user_ai_tokens (
+  user_id BIGINT UNSIGNED NOT NULL COMMENT '应用层外键：user_ai_tokens.user_id -> users.id',
+  date DATE NOT NULL,
+  model_id SMALLINT UNSIGNED NOT NULL COMMENT '应用层外键：ai_models.id',
+
+  input_cached_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '输入token：命中缓存',
+  input_uncached_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '输入token：未命中缓存',
+  output_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '输出token',
+
+  total_tokens BIGINT UNSIGNED
+    GENERATED ALWAYS AS (
+      input_cached_tokens + input_uncached_tokens + output_tokens
+    ) STORED,
+
+  request_count INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '当天该模型请求次数',
+
+  PRIMARY KEY (user_id, date, model_id),
+  KEY idx_model_date (model_id, date)
+
+  -- APP FK:
+  -- user_ai_tokens.user_id -> users.id
+  -- user_ai_tokens.model_id -> ai_models.id
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4
+COMMENT = '用户每日各模型 AI token 消耗统计';
 ```
 
 ## 编译与运行

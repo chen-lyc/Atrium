@@ -79,6 +79,32 @@ const REDUCED_LOGOUT_RITUAL = {
 };
 const SEND_FLIGHT_COOLDOWN_MS = 260;
 const MESSAGE_FLIGHT_TARGET_RETRY_FRAMES = 3;
+const CHAT_VIEW_STORAGE_KEY = "atrium.chat.view";
+
+function readStoredChatView() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(CHAT_VIEW_STORAGE_KEY) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredChatView(nextView) {
+  try {
+    window.localStorage.setItem(CHAT_VIEW_STORAGE_KEY, JSON.stringify(nextView));
+  } catch {
+    // Local storage can be unavailable in private or restricted browser modes.
+  }
+}
+
+function clearStoredChatView() {
+  try {
+    window.localStorage.removeItem(CHAT_VIEW_STORAGE_KEY);
+  } catch {
+    // Ignore storage cleanup failures; auth cookies still define server session state.
+  }
+}
 
 function getCharacterLength(value) {
   return Array.from(value).length;
@@ -240,6 +266,36 @@ function getDefaultActiveRoomId(rooms) {
 function getPersonalConversationIdFromRooms(rooms) {
   return rooms.find((room) => room.id === PERSONAL_ROOM_ID)?.conversationId || rooms[0]?.conversationId || DEFAULT_CONVERSATION_ID;
 }
+function getRoomConversationIds(room) {
+  return new Set([
+    room?.conversationId,
+    room?.mainConversationId,
+    ...(room?.conversations || []).map((conversation) => conversation.id)
+  ].map((value) => normalizeConversationId(value)).filter(Boolean));
+}
+function resolveStoredChatView(rooms, fallbackActiveRoomId = getDefaultActiveRoomId(rooms)) {
+  const stored = readStoredChatView();
+  const storedRoomId = typeof stored.activeRoomId === "string" ? stored.activeRoomId : "";
+  const storedBackendRoomId = normalizeConversationId(stored.backendRoomId ?? getCookieValue("room_id"));
+  const storedConversationId = normalizeConversationId(stored.conversationId ?? getConversationIdCookie());
+  const fallbackRoom = rooms.find((room) => room.id === fallbackActiveRoomId && room.isAvailable) ||
+    rooms.find((room) => room.id === PERSONAL_ROOM_ID) ||
+    rooms[0];
+  const preferredRoom =
+    rooms.find((room) => room.id === storedRoomId && room.isAvailable) ||
+    (storedBackendRoomId ? rooms.find((room) => room.roomId === storedBackendRoomId && room.isAvailable) : null) ||
+    (storedConversationId ? rooms.find((room) => getRoomConversationIds(room).has(storedConversationId) && room.isAvailable) : null) ||
+    fallbackRoom;
+  const activeRoomId = preferredRoom?.id || getDefaultActiveRoomId(rooms);
+  const roomConversationIds = getRoomConversationIds(preferredRoom);
+  const conversationId = storedConversationId && roomConversationIds.has(storedConversationId)
+    ? storedConversationId
+    : preferredRoom?.conversationId || DEFAULT_CONVERSATION_ID;
+  const conversationOverride = conversationId && conversationId !== preferredRoom?.conversationId
+    ? { roomId: activeRoomId, conversationId }
+    : null;
+  return { activeRoomId, conversationId, conversationOverride };
+}
 function syncRoomCookies(rooms, activeRoomId) {
   const personalRoom = rooms.find((room) => room.id === PERSONAL_ROOM_ID);
   const publicRoom = rooms.find((room) => room.id === PUBLIC_ROOM_ID);
@@ -248,6 +304,13 @@ function syncRoomCookies(rooms, activeRoomId) {
   if (publicRoom?.conversationId) setCookieValue("public_conversation_id", publicRoom.conversationId);
   if (activeRoom?.roomId) setCookieValue("room_id", activeRoom.roomId);
   if (activeRoom?.conversationId) setCookieValue("conversation_id", activeRoom.conversationId);
+}
+function syncActiveChatCookies(rooms, activeRoomId, conversationId) {
+  syncRoomCookies(rooms, activeRoomId);
+  const activeRoom = rooms.find((room) => room.id === activeRoomId) || rooms[0];
+  const normalizedConversationId = normalizeConversationId(conversationId);
+  if (activeRoom?.roomId) setCookieValue("room_id", activeRoom.roomId);
+  if (normalizedConversationId) setCookieValue("conversation_id", normalizedConversationId);
 }
 function getAuthRoute(pathname = window.location.pathname) {
   const normalizedPath = pathname.replace(/\/+$/, "") || "/";
@@ -349,11 +412,22 @@ export default function App() {
       setRoomRecords([]);
       setConversationModels({});
       setActiveRoomId(PERSONAL_ROOM_ID);
+      setConversationOverride(null);
+      clearStoredChatView();
       clearRoomTransition();
       syncAuthRoute("login", true, { replace: true });
       setMessageDraft(""); setDraftAttachment(null); setComposerError(""); setMessageFlight(null); setHiddenMessageId(null);
     }
   });
+
+  useEffect(() => {
+    if (!authedNickname || !activeRoom?.id || !activeConversationId) return;
+    writeStoredChatView({
+      activeRoomId: activeRoom.id,
+      backendRoomId: activeBackendRoomId,
+      conversationId: activeConversationId
+    });
+  }, [authedNickname, activeRoom?.id, activeBackendRoomId, activeConversationId]);
 
   function clearComposer() {
     setMessageDraft("");
@@ -421,14 +495,15 @@ export default function App() {
         }))
         : [];
     const nextRooms = createRoomList(nextRoomRecords, getPersonalConversationId());
-    const nextActiveRoomId = getDefaultActiveRoomId(nextRooms);
+    const restoredView = resolveStoredChatView(nextRooms);
     const nextPersonalId = getPersonalConversationIdFromRooms(nextRooms);
     setRoomRecords(nextRoomRecords);
     setConversationModels({});
     setPersonalConversationId(nextPersonalId);
-    setActiveRoomId(nextActiveRoomId);
-    syncRoomCookies(nextRooms, nextActiveRoomId);
-    return { session, rooms: nextRooms, activeRoomId: nextActiveRoomId, personalId: nextPersonalId };
+    setActiveRoomId(restoredView.activeRoomId);
+    setConversationOverride(restoredView.conversationOverride);
+    syncActiveChatCookies(nextRooms, restoredView.activeRoomId, restoredView.conversationId);
+    return { session, rooms: nextRooms, activeRoomId: restoredView.activeRoomId, personalId: nextPersonalId };
   }
 
   async function refreshRooms(preferredBackendRoomId = activeBackendRoomId) {
@@ -442,6 +517,15 @@ export default function App() {
       nextRooms.find((room) => room.id === PERSONAL_ROOM_ID) ||
       nextRooms[0];
     const nextActiveRoomId = preferredRoom?.id || getDefaultActiveRoomId(nextRooms);
+    const currentConversationId = normalizeConversationId(
+      conversationOverride && conversationOverride.roomId === nextActiveRoomId
+        ? conversationOverride.conversationId
+        : activeConversationId
+    );
+    const nextRoomConversationIds = getRoomConversationIds(preferredRoom);
+    const nextConversationId = currentConversationId && nextRoomConversationIds.has(currentConversationId)
+      ? currentConversationId
+      : preferredRoom?.conversationId || DEFAULT_CONVERSATION_ID;
     const nextPersonalId = getPersonalConversationIdFromRooms(nextRooms);
     setRoomRecords(nextRoomRecords);
     setConversationModels((current) => {
@@ -451,7 +535,8 @@ export default function App() {
     });
     setPersonalConversationId(nextPersonalId);
     setActiveRoomId(nextActiveRoomId);
-    syncRoomCookies(nextRooms, nextActiveRoomId);
+    setConversationOverride(nextConversationId !== preferredRoom?.conversationId ? { roomId: nextActiveRoomId, conversationId: nextConversationId } : null);
+    syncActiveChatCookies(nextRooms, nextActiveRoomId, nextConversationId);
     return preferredRoom || null;
   }
 
@@ -476,6 +561,7 @@ export default function App() {
         const authRoute = getAuthRoute();
         setAuthedNickname(""); setAuthedUserId(""); setWsEnabled(false); setAuthHandoffPending(false); setLocalSystemMessages([]);
         setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
+        setConversationOverride(null); clearStoredChatView();
         setAppStage(authRoute.mode); setAuthPanelOpen(authRoute.isPanelOpen);
         if (authRoute.path === "/chat" && window.location.pathname !== "/login") {
           window.history.replaceState({ path: "/login" }, "", "/login"); setAuthPanelOpen(true);
@@ -485,6 +571,7 @@ export default function App() {
         const authRoute = getAuthRoute();
         setAuthedNickname(""); setAuthedUserId(""); setWsEnabled(false); setAuthHandoffPending(false); setLocalSystemMessages([]);
         setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
+        setConversationOverride(null); clearStoredChatView();
         setAppStage(authRoute.mode); setAuthPanelOpen(authRoute.isPanelOpen);
         if (authRoute.path === "/chat" && window.location.pathname !== "/login") {
           window.history.replaceState({ path: "/login" }, "", "/login"); setAuthPanelOpen(true);
@@ -571,6 +658,7 @@ export default function App() {
     setAuthHandoffPending(false); setMessageFlight(null); setHiddenMessageId(null);
     clearRoomTransition();
     setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
+    setConversationOverride(null); clearStoredChatView();
     setConversationModels({});
     setAuthPanelOpen(true);
     setSceneTransition({ kind: "logout", authMode: "login", config: logoutRitualConfig });
@@ -578,6 +666,7 @@ export default function App() {
     ritualTimerRef.current = window.setTimeout(() => {
       setSceneTransition(null); setWsEnabled(false); setAuthedNickname(""); setAuthedUserId(""); setLocalSystemMessages([]);
       setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
+      setConversationOverride(null); clearStoredChatView();
       setConversationModels({});
       clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
       setAppStage("login"); setAuthPanelOpen(true);

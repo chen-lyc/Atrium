@@ -39,7 +39,6 @@ class Reactor {
         std::string m_ai_model;
         uint64_t m_ai_message_id;
         bool m_send_start_frame = false;
-        uint64_t m_stream_id;
     };
 
     Reactor(int index, std::vector<std::unique_ptr<Reactor>> &sub_reactors, size_t num_memory = 100);
