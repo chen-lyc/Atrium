@@ -1,4 +1,5 @@
 import { motion } from "framer-motion";
+import katex from "katex";
 import { EASE } from "../constants.js";
 
 const ANIMATION_PRESETS = {
@@ -57,7 +58,8 @@ const ANIMATION_PRESETS = {
   }
 };
 
-const INLINE_MARKDOWN_PATTERN = /(`[^`\n]+`|!\[[^\]\n]*\]\([^)]+\)|\[[^\]\n]+\]\((?:https?:\/\/|mailto:)[^)]+\)|\*\*[^*\n]+\*\*|\*[^*\n]+\*)/g;
+const INLINE_MARKDOWN_PATTERN = /(\\\([\s\S]*?\\\)|\$[^$\n]+?\$|`[^`\n]+`|!\[[^\]\n]*\]\([^)]+\)|\[[^\]\n]+\]\((?:https?:\/\/|mailto:)[^)]+\)|\*\*[^*\n]+\*\*|\*[^*\n]+\*)/g;
+const BLOCK_MATH_PATTERN = /(?:\\\[([\s\S]*?)\\\]|\$\$([\s\S]*?)\$\$)/g;
 const IMAGE_SRC_PATTERN = /^(data:image\/(?:png|jpeg|jpg|webp|gif);base64,|https?:\/\/)/i;
 
 function isSafeImageSrc(src) {
@@ -82,7 +84,15 @@ function renderInlineMarkdown(text, keyPrefix) {
     const token = match[0];
     const key = `${keyPrefix}-${match.index}`;
 
-    if (token.startsWith("![")) {
+    if (token.startsWith("\\(") || (token.startsWith("$") && !token.startsWith("$$"))) {
+      const formula = token.startsWith("\\(") ? token.slice(2, -2).trim() : token.slice(1, -1).trim();
+      try {
+        const html = katex.renderToString(formula, { throwOnError: false, displayMode: false });
+        nodes.push(<span key={key} className="message-latex-inline" dangerouslySetInnerHTML={{ __html: html }} />);
+      } catch {
+        nodes.push(<span key={key} className="message-latex-inline">{formula}</span>);
+      }
+    } else if (token.startsWith("![")) {
       const image = token.match(/^!\[([^\]\n]*)\]\(([^)]+)\)$/);
       const alt = image?.[1]?.trim() || "聊天图片";
       const src = image?.[2] || "";
@@ -176,10 +186,44 @@ function renderHeading(text, key) {
   );
 }
 
+function renderMarkdownTable(lines, key) {
+  const rows = [];
+  let headerRow = null;
+  let alignmentRow = null;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("|")) continue;
+    if (/^\|?\s*[-:]{3,}\s*(\|\s*[-:]{3,}\s*)*\|?$/.test(trimmed)) {
+      if (headerRow && !alignmentRow) { alignmentRow = trimmed; continue; }
+      continue;
+    }
+    const cells = trimmed.replace(/^\|/, "").replace(/\|$/, "").split("|").map((s) => s.trim());
+    if (!alignmentRow) { headerRow = cells; continue; }
+    rows.push(cells);
+  }
+  if (!headerRow || !headerRow.length) return null;
+  return (
+    <table key={key} className="message-table">
+      <thead>
+        <tr>{headerRow.map((cell, i) => <th key={`th-${i}`}>{renderInlineMarkdown(cell, `${key}-th-${i}`)}</th>)}</tr>
+      </thead>
+      <tbody>
+        {rows.map((row, ri) => (
+          <tr key={`tr-${ri}`}>{row.map((cell, ci) => <td key={`td-${ci}`}>{renderInlineMarkdown(cell, `${key}-td-${ri}-${ci}`)}</td>)}</tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function renderMarkdownBlock(block, key) {
   const lines = block.split("\n").filter((line) => line.trim());
   if (!lines.length) return null;
-  const heading = lines.length === 1 ? renderHeading(lines[0], key) : null;
+  const singleLine = lines.length === 1 ? lines[0] : "";
+  if (singleLine && /^\s*[-*_]{3,}\s*$/.test(singleLine)) {
+    return <hr key={key} className="message-hr" />;
+  }
+  const heading = singleLine ? renderHeading(singleLine, key) : null;
   if (heading) return heading;
   if (lines.every((line) => /^\s*[-*+]\s+/.test(line))) {
     return renderMarkdownList(lines, key, false);
@@ -189,6 +233,10 @@ function renderMarkdownBlock(block, key) {
   }
   if (lines.every((line) => /^\s*>\s?/.test(line))) {
     return renderBlockquote(lines, key);
+  }
+  if (lines.some((line) => line.trim().startsWith("|")) && lines.some((line) => /^\|?\s*[-:]{3,}\s*(\|\s*[-:]{3,}\s*)*\|?$/.test(line.trim()))) {
+    const table = renderMarkdownTable(lines, key);
+    if (table) return table;
   }
   return renderParagraph(block, key);
 }
@@ -200,15 +248,44 @@ function renderMessageContent(text) {
   let lastIndex = 0;
   let match;
 
+  function processTextWithMath(text) {
+    const parts = [];
+    let mathLastIndex = 0;
+    let mathMatch;
+    BLOCK_MATH_PATTERN.lastIndex = 0;
+    while ((mathMatch = BLOCK_MATH_PATTERN.exec(text)) !== null) {
+      if (mathMatch.index > mathLastIndex) {
+        parts.push({ type: "text", content: text.slice(mathLastIndex, mathMatch.index) });
+      }
+      parts.push({ type: "math", content: (mathMatch[1] || mathMatch[2] || "").trim() });
+      mathLastIndex = mathMatch.index + mathMatch[0].length;
+    }
+    if (mathLastIndex < text.length) {
+      parts.push({ type: "text", content: text.slice(mathLastIndex) });
+    }
+    return parts;
+  }
+
   function appendTextBlocks(part) {
-    part
-      .split(/\n{2,}/)
-      .map((block) => block.trim())
-      .filter(Boolean)
-      .forEach((block) => {
-        const renderedBlock = renderMarkdownBlock(block, `p-${nodes.length}`);
-        if (renderedBlock) nodes.push(renderedBlock);
-      });
+    processTextWithMath(part).forEach((segment) => {
+      if (segment.type === "math") {
+        try {
+          const html = katex.renderToString(segment.content, { throwOnError: false, displayMode: true });
+          nodes.push(<div key={`math-${nodes.length}`} className="message-latex-block" dangerouslySetInnerHTML={{ __html: html }} />);
+        } catch {
+          nodes.push(<div key={`math-${nodes.length}`} className="message-latex-block">{segment.content}</div>);
+        }
+        return;
+      }
+      segment.content
+        .split(/\n{2,}/)
+        .map((block) => block.trim())
+        .filter(Boolean)
+        .forEach((block) => {
+          const renderedBlock = renderMarkdownBlock(block, `p-${nodes.length}`);
+          if (renderedBlock) nodes.push(renderedBlock);
+        });
+    });
   }
 
   while ((match = fencePattern.exec(source)) !== null) {

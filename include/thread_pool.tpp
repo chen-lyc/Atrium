@@ -1,6 +1,5 @@
 #pragma once
 
-#include "ai_client.h"
 #include "thread_pool.h"
 #include <cstddef>
 using namespace std;
@@ -55,7 +54,6 @@ bool ThreadPool<T>::enqueue(unique_ptr<T> request) {
 
 template <typename T>
 void ThreadPool<T>::worker() {
-    DeepSeek deepseek;
     while (true) {
         unique_ptr<T> request;
         {
@@ -72,7 +70,7 @@ void ThreadPool<T>::worker() {
             m_workqueue.pop();
         }
         if (request) {
-            request->process(deepseek);
+            request->process();
         }
     }
 }

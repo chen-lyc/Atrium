@@ -45,7 +45,7 @@ export default function RegisterPage({ onSwitchLogin, onSuccess, disabled }) {
     <>
       <div className="auth-fields">
         <div className="auth-field">
-          <input id="register-nickname" name="username" className={`field-input ${fieldErrors.nickname ? "is-error" : ""}`} value={nickname} onChange={(e) => handleNicknameChange(e.target.value)} onKeyDown={handleKeyDown} placeholder="昵称" autoComplete="username" disabled={isLocked} />
+          <input id="register-nickname" name="username" className={`field-input ${fieldErrors.nickname ? "is-error" : ""}`} value={nickname} onChange={(e) => handleNicknameChange(e.target.value)} onKeyDown={handleKeyDown} placeholder="登录名" autoComplete="username" disabled={isLocked} />
           <InlineError message={fieldErrors.nickname} />
         </div>
         <div className="auth-field">

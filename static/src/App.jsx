@@ -9,9 +9,11 @@ import {
   createId, deleteSessionCookie, fetchCurrentUser,
   getApiErrorMessage,
   getConversationIdCookie, getCookieValue,
-  loadSessionRooms, deleteConversation, fetchConversationModel,
+  loadSessionRooms, deleteConversation, createConversation,
+  fetchAvailableAis, fetchThinkingAdapters, fetchRoomAiMembers, fetchConversationAiMembers,
+  syncConversationAiMembers, syncRoomAiMembers,
   setCookieValue, prepareImageAttachment, buildImageMarkdown,
-  normalizeAuthPayload, getModelDisplayName
+  normalizeAuthPayload, getModelDisplayName, updateCurrentUserProfile
 } from "./utils.js";
 import useWebSocket from "./useWebSocket.js";
 import { LoadingStage } from "./auth/AuthShell.jsx";
@@ -114,6 +116,28 @@ function normalizeConversationId(value) {
   const numericValue = Number(value);
   return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : 0;
 }
+function normalizeOptionalId(value) {
+  const numericValue = Number(value);
+  return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : 0;
+}
+function normalizeConversationRecord(conversation) {
+  const id = normalizeConversationId(conversation?.id ?? conversation?.conversation_id ?? conversation?.conversationId);
+  const name = typeof conversation?.title === "string" && conversation.title.trim()
+    ? conversation.title.trim()
+    : typeof conversation?.name === "string" && conversation.name.trim()
+      ? conversation.name.trim()
+      : "";
+  const createdBy = normalizeOptionalId(
+    conversation?.created_by ??
+    conversation?.createdBy ??
+    conversation?.creator_id ??
+    conversation?.creatorId ??
+    conversation?.owner_id ??
+    conversation?.ownerId
+  );
+  const isMain = conversation?.is_main === true || conversation?.isMain === true || Number(conversation?.is_main ?? conversation?.isMain) === 1;
+  return { id, name, createdBy, isMain };
+}
 function persistPersonalConversationId(conversationId) {
   const normalizedId = normalizeConversationId(conversationId);
   if (normalizedId) setCookieValue("personal_conversation_id", normalizedId);
@@ -129,18 +153,12 @@ function normalizeRoomRecord(room) {
   const roomId = normalizeConversationId(room?.roomId ?? room?.room_id ?? room?.id);
   const conversations = Array.isArray(room?.conversations)
     ? room.conversations
-        .map((conversation) => ({
-          id: normalizeConversationId(conversation?.id ?? conversation?.conversation_id ?? conversation?.conversationId),
-          name: typeof conversation?.title === "string" && conversation.title.trim()
-            ? conversation.title.trim()
-            : typeof conversation?.name === "string" && conversation.name.trim()
-              ? conversation.name.trim()
-              : ""
-        }))
+        .map(normalizeConversationRecord)
         .filter((conversation) => conversation.id)
     : [];
   const mainConversationId =
     normalizeConversationId(room?.mainConversationId ?? room?.main_conversation_id) ||
+    conversations.find((conversation) => conversation.isMain)?.id ||
     conversations[0]?.id ||
     normalizeConversationId(room?.conversationId ?? room?.conversation_id);
   const name = typeof room?.name === "string" && room.name.trim() ? room.name.trim() : "";
@@ -229,6 +247,18 @@ function createFallbackRoomList(personalConversationId) {
     createPublicRoom({ roomId: 1, name: "Atrium 大厅", mainConversationId: PUBLIC_CONVERSATION_ID }, PUBLIC_CONVERSATION_ID)
   ];
 }
+
+function getAiMemberDisplayName(member) {
+  return getModelDisplayName(member, member?.provider || (member?.aiId ? `AI ${member.aiId}` : "AI"));
+}
+
+function getAiTeamLabel(members = []) {
+  const normalizedMembers = Array.isArray(members) ? members.filter((member) => member?.aiId) : [];
+  if (!normalizedMembers.length) return "";
+  const firstName = getAiMemberDisplayName(normalizedMembers[0]);
+  return normalizedMembers.length === 1 ? firstName : `${firstName} + ${normalizedMembers.length - 1} 位 AI`;
+}
+
 function createRoomList(roomRecords, personalConversationId) {
   const records = Array.isArray(roomRecords)
     ? roomRecords
@@ -272,6 +302,26 @@ function getRoomConversationIds(room) {
     room?.mainConversationId,
     ...(room?.conversations || []).map((conversation) => conversation.id)
   ].map((value) => normalizeConversationId(value)).filter(Boolean));
+}
+function getAiMemberId(member) {
+  return normalizeOptionalId(member?.aiId ?? member?.ai_id ?? member?.id);
+}
+function mergeAiTeamMembers(primaryMembers = [], fallbackMembers = []) {
+  const seen = new Set();
+  const merged = [];
+  [...primaryMembers, ...fallbackMembers].forEach((member) => {
+    const aiId = getAiMemberId(member);
+    if (!aiId || seen.has(aiId)) return;
+    seen.add(aiId);
+    merged.push({ ...member, aiId, id: aiId });
+  });
+  return merged;
+}
+function isMainConversation(room, conversationId) {
+  const normalizedConversationId = normalizeConversationId(conversationId);
+  if (!room || !normalizedConversationId) return true;
+  const mainConversationId = normalizeConversationId(room.mainConversationId || room.conversationId);
+  return !mainConversationId || normalizedConversationId === mainConversationId;
 }
 function resolveStoredChatView(rooms, fallbackActiveRoomId = getDefaultActiveRoomId(rooms)) {
   const stored = readStoredChatView();
@@ -320,6 +370,16 @@ function getAuthRoute(pathname = window.location.pathname) {
   return { mode: "login", isPanelOpen: false, path: "/" };
 }
 
+function readSessionUsername(session) {
+  return typeof session?.username === "string" ? session.username.trim() : "";
+}
+
+function readSessionAvatarUrl(session) {
+  if (typeof session?.avatarUrl === "string" && session.avatarUrl.trim()) return session.avatarUrl.trim();
+  if (typeof session?.avatar_url === "string" && session.avatar_url.trim()) return session.avatar_url.trim();
+  return "";
+}
+
 export default function App() {
   const launchTimerRef = useRef(null);
   const launchFrameRef = useRef(null);
@@ -332,6 +392,7 @@ export default function App() {
   const composerFieldRef = useRef(null);
   const chatMessagesViewportRef = useRef(null);
   const roomSwitchTimerRef = useRef(null);
+  const sendingRef = useRef(false);
 
   const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches || false;
   const loginRitualConfig = prefersReducedMotion ? REDUCED_LOGIN_RITUAL : NORMAL_LOGIN_RITUAL;
@@ -340,6 +401,8 @@ export default function App() {
   const [appStage, setAppStage] = useState("loading");
   const [authPanelOpen, setAuthPanelOpen] = useState(false);
   const [authedNickname, setAuthedNickname] = useState("");
+  const [authedUsername, setAuthedUsername] = useState("");
+  const [authedAvatarUrl, setAuthedAvatarUrl] = useState("");
   const [authedUserId, setAuthedUserId] = useState("");
   const [authHandoffPending, setAuthHandoffPending] = useState(false);
   const [wsEnabled, setWsEnabled] = useState(false);
@@ -348,7 +411,11 @@ export default function App() {
   const [roomRecords, setRoomRecords] = useState([]);
   const [activeRoomId, setActiveRoomId] = useState(PERSONAL_ROOM_ID);
   const [conversationOverride, setConversationOverride] = useState(null);
-  const [conversationModels, setConversationModels] = useState({});
+  const [thinkingAdapters, setThinkingAdapters] = useState([]);
+  const [availableAis, setAvailableAis] = useState([]);
+  const [roomAiMembers, setRoomAiMembers] = useState({});
+  const [conversationAiMembers, setConversationAiMembers] = useState({});
+  const [aiConfigError, setAiConfigError] = useState({});
   const [messageDraft, setMessageDraft] = useState("");
   const [draftAttachment, setDraftAttachment] = useState(null);
   const [composerError, setComposerError] = useState("");
@@ -357,6 +424,7 @@ export default function App() {
   const [hiddenMessageId, setHiddenMessageId] = useState(null);
   const [sceneTransition, setSceneTransition] = useState(null);
   const [roomTransition, setRoomTransition] = useState(null);
+  const [draftConversation, setDraftConversation] = useState(null);
   const [isChatRuntimeReady, setChatRuntimeReady] = useState(false);
   const [ChatRoomComponent, setChatRoomComponent] = useState(null);
 
@@ -385,11 +453,17 @@ export default function App() {
     activeRoom.conversationId || personalRoom.conversationId;
   const activeRoomConversations = activeRoom.conversations || [];
   const activeBackendRoomId = activeRoom.roomId || personalRoom.roomId || 0;
-  const hasKnownConversationModel = Object.prototype.hasOwnProperty.call(conversationModels, activeConversationId);
-  const activeConversationModel = hasKnownConversationModel ? conversationModels[activeConversationId] : undefined;
-  const activeConversationModelLabel = getModelDisplayName(activeConversationModel, "");
-  const isConversationModelLoading = Boolean(authedNickname && activeConversationId && !hasKnownConversationModel);
-  const assistantExpected = activeConversationModel !== null;
+  const activeConversation = activeRoomConversations.find((item) => item.id === activeConversationId) || null;
+  const activeConversationIsMain = isMainConversation(activeRoom, activeConversationId);
+  const activeRoomAiMembers = roomAiMembers[activeBackendRoomId] || [];
+  const hasKnownConversationAiMembers = Object.prototype.hasOwnProperty.call(conversationAiMembers, activeConversationId);
+  const activeConversationAiMembers = !activeConversationIsMain && hasKnownConversationAiMembers ? conversationAiMembers[activeConversationId] : [];
+  const activeEffectiveAiMembers = activeConversationIsMain
+    ? activeRoomAiMembers
+    : mergeAiTeamMembers(activeConversationAiMembers, activeRoomAiMembers);
+  const activeConversationModelLabel = getAiTeamLabel(activeEffectiveAiMembers);
+  const isConversationModelLoading = Boolean(authedNickname && activeConversationId && !activeConversationIsMain && !hasKnownConversationAiMembers);
+  const assistantExpected = activeEffectiveAiMembers.length > 0;
   const shouldKeepSocketEnabled =
     Boolean(authedNickname) && (sceneTransition?.kind === "login" || sceneTransition?.kind === "logout" || (appStage === "chat" && sceneTransition?.kind !== "logout"));
 
@@ -407,10 +481,14 @@ export default function App() {
     enabled: shouldKeepSocketEnabled && wsEnabled,
     onAuthFailed: () => {
       clearRitualTimers(); setSceneTransition(null); deleteSessionCookie();
-      setAuthedNickname(""); setAuthedUserId(""); setWsEnabled(false); setAuthHandoffPending(false);
+      clearAuthIdentity(); setWsEnabled(false); setAuthHandoffPending(false);
       setLocalSystemMessages([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID);
       setRoomRecords([]);
-      setConversationModels({});
+      setRoomAiMembers({});
+      setConversationAiMembers({});
+      setAvailableAis([]);
+      setThinkingAdapters([]);
+      setAiConfigError({});
       setActiveRoomId(PERSONAL_ROOM_ID);
       setConversationOverride(null);
       clearStoredChatView();
@@ -433,6 +511,23 @@ export default function App() {
     setMessageDraft("");
     setDraftAttachment(null);
     setComposerError("");
+  }
+
+  function clearAuthIdentity() {
+    setAuthedNickname("");
+    setAuthedUsername("");
+    setAuthedAvatarUrl("");
+    setAuthedUserId("");
+  }
+
+  function commitAuthIdentity(session) {
+    const resolvedNickname = String(session?.nickname || "").trim();
+    const resolvedUsername = readSessionUsername(session) || resolvedNickname;
+    setAuthedNickname(resolvedNickname);
+    setAuthedUsername(resolvedUsername);
+    setAuthedAvatarUrl(readSessionAvatarUrl(session));
+    setAuthedUserId(session?.userId || "");
+    return { nickname: resolvedNickname, username: resolvedUsername };
   }
 
   function clearRitualTimers() {
@@ -498,7 +593,9 @@ export default function App() {
     const restoredView = resolveStoredChatView(nextRooms);
     const nextPersonalId = getPersonalConversationIdFromRooms(nextRooms);
     setRoomRecords(nextRoomRecords);
-    setConversationModels({});
+    setRoomAiMembers({});
+    setConversationAiMembers({});
+    setAiConfigError({});
     setPersonalConversationId(nextPersonalId);
     setActiveRoomId(restoredView.activeRoomId);
     setConversationOverride(restoredView.conversationOverride);
@@ -528,7 +625,7 @@ export default function App() {
       : preferredRoom?.conversationId || DEFAULT_CONVERSATION_ID;
     const nextPersonalId = getPersonalConversationIdFromRooms(nextRooms);
     setRoomRecords(nextRoomRecords);
-    setConversationModels((current) => {
+    setConversationAiMembers((current) => {
       const nextConversationIds = new Set(nextRooms.flatMap((room) => (room.conversations || []).map((conversation) => conversation.id)));
       if (activeConversationId) nextConversationIds.add(activeConversationId);
       return Object.fromEntries(Object.entries(current).filter(([id]) => nextConversationIds.has(Number(id))));
@@ -549,8 +646,7 @@ export default function App() {
         if (result.ok && typeof result.data?.nickname === "string" && result.data.nickname.trim()) {
           const { session } = applyAuthSession(result.data);
           setAuthHandoffPending(false); setLocalSystemMessages([]);
-          setAuthedNickname(session.nickname.trim());
-          setAuthedUserId(session.userId || "");
+          commitAuthIdentity(session);
           setWsEnabled(true); setAuthPanelOpen(false); setAppStage("chat");
           if (window.location.pathname !== "/chat") window.history.replaceState({ path: "/chat" }, "", "/chat");
           ensureChatRuntimeLoaded().catch((err) => {
@@ -559,8 +655,9 @@ export default function App() {
           return;
         }
         const authRoute = getAuthRoute();
-        setAuthedNickname(""); setAuthedUserId(""); setWsEnabled(false); setAuthHandoffPending(false); setLocalSystemMessages([]);
+        clearAuthIdentity(); setWsEnabled(false); setAuthHandoffPending(false); setLocalSystemMessages([]);
         setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
+        setRoomAiMembers({}); setConversationAiMembers({}); setThinkingAdapters([]); setAvailableAis([]); setAiConfigError({});
         setConversationOverride(null); clearStoredChatView();
         setAppStage(authRoute.mode); setAuthPanelOpen(authRoute.isPanelOpen);
         if (authRoute.path === "/chat" && window.location.pathname !== "/login") {
@@ -569,8 +666,9 @@ export default function App() {
       } catch (error) {
         if (cancelled) return;
         const authRoute = getAuthRoute();
-        setAuthedNickname(""); setAuthedUserId(""); setWsEnabled(false); setAuthHandoffPending(false); setLocalSystemMessages([]);
+        clearAuthIdentity(); setWsEnabled(false); setAuthHandoffPending(false); setLocalSystemMessages([]);
         setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
+        setRoomAiMembers({}); setConversationAiMembers({}); setThinkingAdapters([]); setAvailableAis([]); setAiConfigError({});
         setConversationOverride(null); clearStoredChatView();
         setAppStage(authRoute.mode); setAuthPanelOpen(authRoute.isPanelOpen);
         if (authRoute.path === "/chat" && window.location.pathname !== "/login") {
@@ -590,6 +688,8 @@ export default function App() {
       }
       const authRoute = getAuthRoute();
       clearRitualTimers(); setSceneTransition(null); setAuthHandoffPending(false); setLocalSystemMessages([]);
+      setRoomAiMembers({}); setConversationAiMembers({}); setThinkingAdapters([]); setAvailableAis([]);
+      setAiConfigError({});
       setWsEnabled(false); setAppStage(authRoute.mode); setAuthPanelOpen(authRoute.isPanelOpen);
       if (authRoute.path === "/chat" && window.location.pathname !== "/login") {
         window.history.replaceState({ path: "/login" }, "", "/login"); setAuthPanelOpen(true);
@@ -605,30 +705,70 @@ export default function App() {
   useEffect(() => { if (appStage === "chat") return; clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false); if (focusFrameRef.current != null) { window.cancelAnimationFrame(focusFrameRef.current); focusFrameRef.current = null; } }, [appStage]);
 
   useEffect(() => {
-    if (!authedNickname || !activeConversationId || hasKnownConversationModel) return undefined;
+    if (!authedNickname) return undefined;
     const controller = new AbortController();
-    fetchConversationModel(activeConversationId, controller.signal)
-      .then((modelInfo) => {
-        const hasModel = Boolean(modelInfo?.model || modelInfo?.provider);
-        setConversationModels((current) => ({
-          ...current,
-          [activeConversationId]: hasModel ? modelInfo : null
-        }));
+    setAiConfigError((current) => ({ ...current, thinking: "", models: "" }));
+    Promise.all([
+      fetchThinkingAdapters(controller.signal),
+      fetchAvailableAis(controller.signal)
+    ])
+      .then(([adapters, ais]) => {
+        setThinkingAdapters(adapters);
+        setAvailableAis(ais);
+        setAiConfigError((current) => ({ ...current, thinking: "", models: "" }));
+      })
+      .catch((error) => {
+        if (error?.name !== "AbortError") {
+          setThinkingAdapters([]);
+          setAvailableAis([]);
+          setAiConfigError((current) => ({ ...current, thinking: getApiErrorMessage(error, "AI 模型目录加载失败"), models: getApiErrorMessage(error, "AI 模型目录加载失败") }));
+        }
+      });
+    return () => controller.abort();
+  }, [authedNickname]);
+
+  useEffect(() => {
+    if (!authedNickname || !activeBackendRoomId) return undefined;
+    const controller = new AbortController();
+    setAiConfigError((current) => ({ ...current, room: "" }));
+    fetchRoomAiMembers(activeBackendRoomId, controller.signal)
+      .then((members) => {
+        setRoomAiMembers((current) => ({ ...current, [activeBackendRoomId]: members }));
+        setAiConfigError((current) => ({ ...current, room: "" }));
       })
       .catch((error) => {
         if (error?.name === "AbortError") return;
-        setConversationModels((current) => ({
-          ...current,
-          [activeConversationId]: null
-        }));
+        setRoomAiMembers((current) => ({ ...current, [activeBackendRoomId]: [] }));
+        setAiConfigError((current) => ({ ...current, room: getApiErrorMessage(error, "房间默认 AI 加载失败") }));
       });
     return () => controller.abort();
-  }, [authedNickname, activeConversationId, hasKnownConversationModel]);
+  }, [authedNickname, activeBackendRoomId]);
+
+  useEffect(() => {
+    if (!authedNickname || !activeConversationId) return undefined;
+    if (activeConversationIsMain) {
+      setAiConfigError((current) => ({ ...current, conversation: "" }));
+      return undefined;
+    }
+    const controller = new AbortController();
+    setAiConfigError((current) => ({ ...current, conversation: "" }));
+    fetchConversationAiMembers(activeConversationId, controller.signal)
+      .then((members) => {
+        setConversationAiMembers((current) => ({ ...current, [activeConversationId]: members }));
+        setAiConfigError((current) => ({ ...current, conversation: "" }));
+      })
+      .catch((error) => {
+        if (error?.name === "AbortError") return;
+        setConversationAiMembers((current) => ({ ...current, [activeConversationId]: [] }));
+        setAiConfigError((current) => ({ ...current, conversation: getApiErrorMessage(error, "当前对话 AI 加载失败") }));
+      });
+    return () => controller.abort();
+  }, [authedNickname, activeConversationId, activeConversationIsMain]);
 
   function beginLoginRitual(authData, config) {
     const { session } = applyAuthSession(authData);
     const resolved = session.nickname.trim();
-    setAuthedNickname(resolved); setAuthedUserId(session.userId || ""); setLocalSystemMessages([]);
+    commitAuthIdentity(session); setLocalSystemMessages([]);
     clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
     setWsEnabled(true); setAuthPanelOpen(false);
     setSceneTransition({ kind: "login", config });
@@ -659,23 +799,118 @@ export default function App() {
     clearRoomTransition();
     setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
     setConversationOverride(null); clearStoredChatView();
-    setConversationModels({});
+    setRoomAiMembers({});
+    setConversationAiMembers({});
+    setAvailableAis([]);
+    setThinkingAdapters([]);
+    setAiConfigError({});
     setAuthPanelOpen(true);
     setSceneTransition({ kind: "logout", authMode: "login", config: logoutRitualConfig });
     if (window.location.pathname !== "/login") window.history.replaceState({ path: "/login" }, "", "/login");
     ritualTimerRef.current = window.setTimeout(() => {
-      setSceneTransition(null); setWsEnabled(false); setAuthedNickname(""); setAuthedUserId(""); setLocalSystemMessages([]);
+      setSceneTransition(null); setWsEnabled(false); clearAuthIdentity(); setLocalSystemMessages([]);
       setRoomRecords([]); setPersonalConversationId(DEFAULT_CONVERSATION_ID); setActiveRoomId(PERSONAL_ROOM_ID);
       setConversationOverride(null); clearStoredChatView();
-      setConversationModels({});
+      setRoomAiMembers({});
+      setConversationAiMembers({});
+      setAvailableAis([]);
+      setThinkingAdapters([]);
+      setAiConfigError({});
       clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
       setAppStage("login"); setAuthPanelOpen(true);
     }, logoutRitualConfig.totalMs);
   }
 
+  async function handleProfileUpdate(changes) {
+    const payload = {};
+    if (Object.prototype.hasOwnProperty.call(changes, "username")) payload.username = String(changes.username || "").trim();
+    if (Object.prototype.hasOwnProperty.call(changes, "nickname")) payload.nickname = String(changes.nickname || "").trim();
+    if (Object.prototype.hasOwnProperty.call(changes, "avatar_url")) payload.avatar_url = String(changes.avatar_url || "").trim();
+    await updateCurrentUserProfile(payload);
+    const previousNickname = authedNickname;
+    const previousUsername = authedUsername;
+    let nextNickname = authedNickname;
+    let nextUsername = authedUsername;
+    let nextAvatarUrl = authedAvatarUrl;
+    if (Object.prototype.hasOwnProperty.call(payload, "nickname")) {
+      nextNickname = payload.nickname;
+      setAuthedNickname(payload.nickname);
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, "username")) {
+      nextUsername = payload.username;
+      setAuthedUsername(payload.username);
+      if (!Object.prototype.hasOwnProperty.call(payload, "nickname") && previousNickname === previousUsername) {
+        nextNickname = payload.username;
+        setAuthedNickname(payload.username);
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, "avatar_url")) {
+      nextAvatarUrl = payload.avatar_url;
+      setAuthedAvatarUrl(payload.avatar_url);
+    }
+    return {
+      nickname: nextNickname,
+      username: nextUsername,
+      avatarUrl: nextAvatarUrl
+    };
+  }
+
   function completeMessageFlight(messageId) {
     setHiddenMessageId((cur) => (cur === messageId ? null : cur));
     setMessageFlight((cur) => (cur && cur.id === messageId ? null : cur));
+  }
+
+  async function handleCreateConversationDraft() {
+    if (!activeBackendRoomId || !activeRoom?.id) return null;
+    let inheritedMembers = activeRoomAiMembers;
+    try {
+      if (!Object.prototype.hasOwnProperty.call(roomAiMembers, activeBackendRoomId)) {
+        inheritedMembers = await fetchRoomAiMembers(activeBackendRoomId);
+        setRoomAiMembers((current) => ({ ...current, [activeBackendRoomId]: inheritedMembers }));
+      }
+    } catch {
+      inheritedMembers = [];
+    }
+    setDraftConversation({ aiMembers: inheritedMembers });
+    clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
+    return { conversationId: 0, isDraft: true };
+  }
+
+  function handleDraftAiMembersChange(nextMembers) {
+    setDraftConversation((current) => current ? { ...current, aiMembers: nextMembers } : null);
+    return nextMembers;
+  }
+
+  async function handleConversationAiMembersChange(nextMembers) {
+    if (!activeConversationId || activeConversationIsMain) return [];
+    const previousMembers = conversationAiMembers[activeConversationId] || [];
+    setConversationAiMembers((current) => ({ ...current, [activeConversationId]: nextMembers }));
+    try {
+      const syncedMembers = await syncConversationAiMembers(activeConversationId, nextMembers);
+      setConversationAiMembers((current) => ({ ...current, [activeConversationId]: syncedMembers }));
+      setAiConfigError((current) => ({ ...current, conversation: "" }));
+      return syncedMembers;
+    } catch (error) {
+      setConversationAiMembers((current) => ({ ...current, [activeConversationId]: previousMembers }));
+      setAiConfigError((current) => ({ ...current, conversation: getApiErrorMessage(error, "当前对话 AI 保存失败") }));
+      throw error;
+    }
+  }
+
+  async function handleRoomAiMembersSave(nextMembers) {
+    if (!activeBackendRoomId) return [];
+    const previousMembers = roomAiMembers[activeBackendRoomId] || [];
+    setRoomAiMembers((current) => ({ ...current, [activeBackendRoomId]: nextMembers }));
+    try {
+      const syncedMembers = await syncRoomAiMembers(activeBackendRoomId, nextMembers);
+      setRoomAiMembers((current) => ({ ...current, [activeBackendRoomId]: syncedMembers }));
+      setAiConfigError((current) => ({ ...current, room: "" }));
+      return syncedMembers;
+    } catch (error) {
+      setRoomAiMembers((current) => ({ ...current, [activeBackendRoomId]: previousMembers }));
+      setAiConfigError((current) => ({ ...current, room: getApiErrorMessage(error, "房间默认 AI 保存失败") }));
+      throw error;
+    }
   }
 
   function scheduleMessageFlightTarget(messageId) {
@@ -715,6 +950,7 @@ export default function App() {
     setCookieValue("conversation_id", nextRoom.conversationId);
     setActiveRoomId(nextRoom.id);
     setConversationOverride(null);
+    setDraftConversation(null);
     clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
   }
 
@@ -729,6 +965,7 @@ export default function App() {
     });
     setCookieValue("conversation_id", conversationId);
     setConversationOverride({ roomId: activeRoom.id, conversationId });
+    setDraftConversation(null);
     clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
   }
 
@@ -767,7 +1004,8 @@ export default function App() {
     }
   }
 
-  function handleSend() {
+  async function handleSend() {
+    if (sendingRef.current) return;
     const trimmedMessage = messageDraft.trim();
     const imageMarkdown = buildImageMarkdown(draftAttachment);
     const outgoingMessage = [trimmedMessage, imageMarkdown].filter(Boolean).join("\n\n");
@@ -778,20 +1016,77 @@ export default function App() {
       return;
     }
     setComposerError("");
-    const sentMessage = sendChatMessage(outgoingMessage);
-    if (sentMessage) {
-      const composerField = composerFieldRef.current;
-      const composerRect = composerField?.getBoundingClientRect();
-      const now = window.performance?.now?.() ?? Date.now();
-      const shouldAnimateFlight = Boolean(composerRect) && !messageFlight && hiddenMessageId == null && now - lastSendFlightAtRef.current >= SEND_FLIGHT_COOLDOWN_MS;
-      clearComposer();
-      if (!shouldAnimateFlight) return;
-      lastSendFlightAtRef.current = now;
-      setMessageFlight({ id: sentMessage.id, text: flightText, transition: NORMAL_SEND_FLIGHT, startRect: { left: composerRect.left, top: composerRect.top + 6, width: Math.max(120, composerRect.width - 16) }, targetRect: null });
-      setHiddenMessageId(sentMessage.id);
-      scheduleMessageFlightTarget(sentMessage.id);
-      window.clearTimeout(launchTimerRef.current);
-      launchTimerRef.current = window.setTimeout(() => { completeMessageFlight(sentMessage.id); }, 1400);
+    sendingRef.current = true;
+
+    if (draftConversation) {
+      const savedMessage = outgoingMessage;
+      const savedFlight = flightText;
+      clearComposer(); setMessageFlight(null); setHiddenMessageId(null);
+      const nextTitle = activeRoomConversations.length
+        ? `新的讨论 ${activeRoomConversations.length + 1}`
+        : "新的讨论";
+      try {
+        const created = await createConversation(activeBackendRoomId, nextTitle);
+        if (!created?.conversationId) {
+          setComposerError("对话创建失败");
+          setMessageDraft(savedMessage);
+          sendingRef.current = false;
+          return;
+        }
+        try {
+          const syncedMembers = await syncConversationAiMembers(created.conversationId, draftConversation.aiMembers);
+          setConversationAiMembers((current) => ({ ...current, [created.conversationId]: syncedMembers }));
+          setAiConfigError((current) => ({ ...current, room: "", conversation: "" }));
+        } catch (error) {
+          setConversationAiMembers((current) => ({ ...current, [created.conversationId]: [] }));
+          setAiConfigError((current) => ({ ...current, conversation: getApiErrorMessage(error, "AI 团队继承失败") }));
+        }
+        setCookieValue("conversation_id", created.conversationId);
+        const sentMessage = sendChatMessage(savedMessage, created.conversationId);
+        if (!sentMessage) {
+          setComposerError("消息发送失败，请重试");
+          setMessageDraft(savedMessage);
+          sendingRef.current = false;
+          return;
+        }
+        setConversationOverride({ roomId: activeRoom.id, conversationId: created.conversationId });
+        setDraftConversation(null);
+        const composerField = composerFieldRef.current;
+        const composerRect = composerField?.getBoundingClientRect();
+        if (composerRect) {
+          setMessageFlight({ id: sentMessage.id, text: savedFlight, transition: NORMAL_SEND_FLIGHT, startRect: { left: composerRect.left, top: composerRect.top + 6, width: Math.max(120, composerRect.width - 16) }, targetRect: null });
+          setHiddenMessageId(sentMessage.id);
+          scheduleMessageFlightTarget(sentMessage.id);
+          window.clearTimeout(launchTimerRef.current);
+          launchTimerRef.current = window.setTimeout(() => { completeMessageFlight(sentMessage.id); }, 1400);
+        }
+      } catch (error) {
+        setComposerError(getApiErrorMessage(error, "对话创建失败"));
+        setMessageDraft(savedMessage);
+      } finally {
+        sendingRef.current = false;
+      }
+      return;
+    }
+
+    try {
+      const sentMessage = sendChatMessage(outgoingMessage);
+      if (sentMessage) {
+        const composerField = composerFieldRef.current;
+        const composerRect = composerField?.getBoundingClientRect();
+        const now = window.performance?.now?.() ?? Date.now();
+        const shouldAnimateFlight = Boolean(composerRect) && !messageFlight && hiddenMessageId == null && now - lastSendFlightAtRef.current >= SEND_FLIGHT_COOLDOWN_MS;
+        clearComposer();
+        if (!shouldAnimateFlight) return;
+        lastSendFlightAtRef.current = now;
+        setMessageFlight({ id: sentMessage.id, text: flightText, transition: NORMAL_SEND_FLIGHT, startRect: { left: composerRect.left, top: composerRect.top + 6, width: Math.max(120, composerRect.width - 16) }, targetRect: null });
+        setHiddenMessageId(sentMessage.id);
+        scheduleMessageFlightTarget(sentMessage.id);
+        window.clearTimeout(launchTimerRef.current);
+        launchTimerRef.current = window.setTimeout(() => { completeMessageFlight(sentMessage.id); }, 1400);
+      }
+    } finally {
+      sendingRef.current = false;
     }
   }
 
@@ -842,7 +1137,8 @@ export default function App() {
             transition={{ duration: isSceneTransitioning ? 0.2 : 0.3, ease: EASE }}
           >
             <ChatRoomComponent
-              nickname={authedNickname} connectionState={connectionState}
+              nickname={authedNickname} username={authedUsername} avatarUrl={authedAvatarUrl}
+              onProfileUpdate={handleProfileUpdate} connectionState={connectionState}
               messages={displayMessages} isHeaderScrolled={isHeaderScrolled}
               onScrolled={setHeaderScrolled} messageDraft={messageDraft}
               onMessageDraftChange={setMessageDraft} onSend={handleSend}
@@ -860,12 +1156,25 @@ export default function App() {
               room={activeRoom}
               roomTransition={roomTransition}
               activeConversationId={activeConversationId}
+              activeConversation={activeConversation}
+              isMainConversation={activeConversationIsMain}
               activeConversationModelLabel={activeConversationModelLabel}
               isConversationModelLoading={isConversationModelLoading}
+              roomAiMembers={activeRoomAiMembers}
+              conversationAiMembers={activeConversationAiMembers}
+              effectiveAiMembers={activeEffectiveAiMembers}
+              availableAis={availableAis}
+              thinkingAdapters={thinkingAdapters}
+              aiConfigError={aiConfigError}
               assistantState={assistantState}
               roomConversations={activeRoomConversations}
               onConversationSelect={handleConversationSelect}
+              draftConversation={draftConversation}
+              onDraftAiMembersChange={handleDraftAiMembersChange}
               onDeleteConversation={handleDeleteConversation}
+              onCreateConversationDraft={handleCreateConversationDraft}
+              onConversationAiMembersChange={handleConversationAiMembersChange}
+              onRoomAiMembersSave={handleRoomAiMembersSave}
               currentUserId={authedUserId}
               onRoomsChanged={refreshRooms}
               transitionMode={chatTransitionMode}

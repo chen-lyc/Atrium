@@ -1,12 +1,15 @@
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { AI_MODEL_OPTIONS, DEFAULT_AI_MODEL, EASE, STATUS_LABEL, TAP_TRANSITION } from "../constants.js";
-import { createConversation, getApiErrorMessage } from "../utils.js";
+import { EASE, STATUS_LABEL } from "../constants.js";
+import {
+  getApiErrorMessage
+} from "../utils.js";
 import Sidebar from "./Sidebar.jsx";
 import MessageList from "./MessageList.jsx";
 import MessageInput from "./MessageInput.jsx";
 import MessageFlight from "./MessageFlight.jsx";
 import WorkspacePanel from "./WorkspacePanel.jsx";
+import { AiModelSelector, AiSeatStrip, mergeAiMemberOptions } from "./AiTeamEditor.jsx";
 
 const NOTE_TOAST_MS = 2200;
 const CHAT_SURFACE_STORAGE_KEY = "atrium.chat.surface";
@@ -43,216 +46,48 @@ function HeaderStatus({ modelLabel, connectionState }) {
   );
 }
 
-function CreateConversationDialog({
-  isOpen,
-  room,
-  onClose,
-  onCreated,
-  readOnly = false
+function ConversationPrepPanel({
+  isVisible,
+  roomAiMembers = [],
+  conversationAiMembers = [],
+  availableAis = [],
+  thinkingAdapters = [],
+  readOnly = false,
+  onChangeTeam = async () => [],
+  loadError = ""
 }) {
-  const surfaceRef = useRef(null);
-  const titleInputRef = useRef(null);
-  const [title, setTitle] = useState("");
-  const [model, setModel] = useState(DEFAULT_AI_MODEL);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const roomTone = room?.tone === "public" ? "public" : "personal";
-  const roomName = room?.name || "当前空间";
-  const canSubmit = Boolean(title.trim()) && Boolean(room?.roomId) && !busy && !readOnly;
+  const availableMembers = mergeAiMemberOptions(availableAis, roomAiMembers, conversationAiMembers);
 
-  useEffect(() => {
-    if (!isOpen) return undefined;
-    setError("");
-    const frameId = window.requestAnimationFrame(() => titleInputRef.current?.focus({ preventScroll: true }));
-    function handleKeyDown(event) {
-      if (event.defaultPrevented) return;
-      if (event.key === "Escape" && !busy) onClose();
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.cancelAnimationFrame(frameId);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [isOpen, busy, onClose]);
-
-  useEffect(() => {
-    if (isOpen) return;
-    setBusy(false);
-    setError("");
-  }, [isOpen]);
-
-  async function handleSubmit(event) {
-    event.preventDefault();
-    const nextTitle = title.trim();
-    if (!nextTitle) {
-      setError("请先给这条对话起名");
-      return;
-    }
-    if (!room?.roomId) {
-      setError("当前空间暂时不能创建对话");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      const created = await createConversation(room.roomId, nextTitle, model);
-      if (!created?.conversationId) {
-        setError("新对话创建失败，请稍后重试");
-        return;
-      }
-      await onCreated(created);
-      setTitle("");
-      setModel(DEFAULT_AI_MODEL);
-    } catch (err) {
-      setError(getApiErrorMessage(err, "新对话创建失败，请稍后重试"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function handleDialogKeyDown(event) {
-    if (event.key === "Escape" && !busy) {
-      event.preventDefault();
-      onClose();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const focusable = Array.from(surfaceRef.current?.querySelectorAll(
-      'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'
-    ) || []);
-    if (!focusable.length) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-      return;
-    }
-    if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
+  if (!isVisible) return null;
 
   return (
-    <AnimatePresence>
-      {isOpen ? (
-        <motion.div
-          key="create-conversation"
-          className={`create-conversation-layer is-${roomTone}`}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.18, ease: EASE }}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="create-conversation-title"
-        >
-          <motion.form
-            ref={surfaceRef}
-            className="create-conversation-surface"
-            onSubmit={handleSubmit}
-            onKeyDown={handleDialogKeyDown}
-            initial={{ opacity: 0, y: 14, scale: 0.988 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 8, scale: 0.992 }}
-            transition={{ duration: 0.24, ease: EASE }}
-          >
-            <div className="create-conversation-header">
-              <div>
-                <span className="create-conversation-kicker">{roomName}</span>
-                <h2 id="create-conversation-title">开启新的 AI 对话</h2>
-                <p>模型会绑定在这条对话里，之后在当前对话中查看。</p>
-              </div>
-              <button
-                type="button"
-                className="create-conversation-close focus-ring"
-                onClick={onClose}
-                disabled={busy}
-                aria-label="关闭新对话界面"
-              >
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-                  <path d="M4 4l8 8M12 4l-8 8" />
-                </svg>
-              </button>
-            </div>
-
-            <label className="create-conversation-field" htmlFor="new-conversation-title">
-              <span>标题</span>
-              <input
-                id="new-conversation-title"
-                ref={titleInputRef}
-                className="create-conversation-input"
-                value={title}
-                onChange={(event) => setTitle(event.target.value)}
-                placeholder="例如：项目复盘、论文结构、下周计划"
-                maxLength={32}
-                disabled={busy || readOnly}
-                aria-describedby={error ? "create-conversation-error" : undefined}
-                aria-invalid={Boolean(error)}
-              />
-            </label>
-
-            <fieldset className="create-model-fieldset">
-              <legend>选择 AI 模型</legend>
-              <div className="create-model-grid">
-                {AI_MODEL_OPTIONS.map((option) => (
-                  <label key={option.value} className={`create-model-option ${model === option.value ? "is-selected" : ""}`}>
-                    <input
-                      className="create-model-radio"
-                      type="radio"
-                      name="conversation-model"
-                      value={option.value}
-                      checked={model === option.value}
-                      onChange={() => setModel(option.value)}
-                      disabled={busy || readOnly}
-                    />
-                    <span className="create-model-body">
-                      <span className="create-model-topline">
-                        <strong>{option.label}</strong>
-                        <small>{option.fit}</small>
-                      </span>
-                      <span>{option.description}</span>
-                    </span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-
-            <AnimatePresence initial={false}>
-              {error ? (
-                <motion.div
-                  id="create-conversation-error"
-                  className="create-conversation-error"
-                  initial={{ opacity: 0, y: -4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -4 }}
-                  transition={{ duration: 0.16, ease: EASE }}
-                  role="alert"
-                >
-                  {error}
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
-
-            <div className="create-conversation-actions">
-              <button type="button" className="create-secondary-action focus-ring" onClick={onClose} disabled={busy}>
-                取消
-              </button>
-              <motion.button
-                type="submit"
-                className="create-primary-action focus-ring"
-                disabled={!canSubmit}
-                whileTap={!canSubmit ? undefined : { scale: 0.985 }}
-                transition={TAP_TRANSITION}
-              >
-                {busy ? "创建中" : "创建 AI 对话"}
-              </motion.button>
-            </div>
-          </motion.form>
-        </motion.div>
-      ) : null}
-    </AnimatePresence>
+    <motion.section
+      className="conversation-prep"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 6 }}
+      transition={{ duration: 0.18, ease: EASE }}
+      aria-label="新对话 AI 阵容"
+    >
+      <div className="conversation-prep-seats">
+        <AiSeatStrip
+          members={conversationAiMembers}
+          thinkingAdapters={thinkingAdapters}
+          readOnly={readOnly}
+          onChange={onChangeTeam}
+          emptyText="无 AI"
+        />
+      </div>
+      <AiModelSelector
+        models={availableMembers}
+        members={conversationAiMembers}
+        thinkingAdapters={thinkingAdapters}
+        readOnly={readOnly}
+        onChange={onChangeTeam}
+        className="is-conversation-prep"
+      />
+      {loadError ? <div className="conversation-prep-error">{loadError}</div> : null}
+    </motion.section>
   );
 }
 
@@ -266,6 +101,8 @@ function RoomMemoryLayer({
   onSelect,
   onDelete,
   onCreate,
+  createBusy = false,
+  error = "",
   readOnly = false
 }) {
   const roomTone = room?.tone === "public" ? "public" : "personal";
@@ -348,13 +185,14 @@ function RoomMemoryLayer({
               type="button"
               className="room-memory-create focus-ring"
               onClick={onCreate}
-              disabled={readOnly}
+              disabled={readOnly || createBusy}
             >
-              <span>新建 AI 对话</span>
+              <span>{createBusy ? "创建中" : "新建讨论"}</span>
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
                 <path d="M7 2.5v9M2.5 7h9" />
               </svg>
             </button>
+            {error ? <div className="room-memory-error">{error}</div> : null}
           </motion.section>
         </motion.div>
       ) : null}
@@ -363,7 +201,8 @@ function RoomMemoryLayer({
 }
 
 export default function ChatRoom({
-  nickname, connectionState, messages,
+  nickname, username = "", avatarUrl = "", onProfileUpdate = async () => {},
+  connectionState, messages,
   isHeaderScrolled, onScrolled,
   messageDraft, onMessageDraftChange, onSend,
   messageAttachment = null, composerError = "",
@@ -376,11 +215,24 @@ export default function ChatRoom({
   room = null,
   roomTransition = null,
   activeConversationId = 0,
+  activeConversation = null,
+  isMainConversation = true,
   activeConversationModelLabel = "",
   isConversationModelLoading = false,
+  roomAiMembers = [],
+  conversationAiMembers = [],
+  effectiveAiMembers = [],
+  availableAis = [],
+  thinkingAdapters = [],
+  aiConfigError = {},
   assistantState = null,
   roomConversations = [],
   onConversationSelect = () => {}, onDeleteConversation = () => {},
+  draftConversation = null,
+  onDraftAiMembersChange = async () => [],
+  onCreateConversationDraft = async () => null,
+  onConversationAiMembersChange = async () => [],
+  onRoomAiMembersSave = async () => [],
   readOnly = false, suppressConnectionPulse = false,
   isFading = false, fadeDuration = 600,
   transitionMode = "idle", transitionConfig = null,
@@ -404,7 +256,8 @@ export default function ChatRoom({
     return ["room", "ai", "members", "contacts"].includes(tab) ? tab : "room";
   });
   const [roomMemoryOpen, setRoomMemoryOpen] = useState(false);
-  const [createConversationOpen, setCreateConversationOpen] = useState(false);
+  const [createConversationBusy, setCreateConversationBusy] = useState(false);
+  const [createConversationError, setCreateConversationError] = useState("");
   const [noteToast, setNoteToast] = useState(null);
   const noteToastTimerRef = useRef(null);
 
@@ -445,6 +298,7 @@ export default function ChatRoom({
 
   useEffect(() => {
     setRoomMemoryOpen(false);
+    setCreateConversationError("");
   }, [activeRoomId]);
 
   useEffect(() => {
@@ -516,11 +370,22 @@ export default function ChatRoom({
     setContextMenu(null);
   }
 
-  async function handleConversationCreated(created) {
-    await onRoomsChanged(room?.roomId);
-    onConversationSelect(created.conversationId);
-    setRoomMemoryOpen(false);
-    setCreateConversationOpen(false);
+  async function handleCreateConversationDraft() {
+    if (createConversationBusy || readOnly) return;
+    setCreateConversationBusy(true);
+    setCreateConversationError("");
+    try {
+      const created = await onCreateConversationDraft();
+      if (created?.conversationId || created?.isDraft) {
+        setRoomMemoryOpen(false);
+        if (created.warning) setCreateConversationError(created.warning);
+      }
+    } catch (err) {
+      setContextMenu(null);
+      setCreateConversationError(getApiErrorMessage(err, "新讨论创建失败"));
+    } finally {
+      setCreateConversationBusy(false);
+    }
   }
 
   function resolveSectionMotion(timing) {
@@ -550,7 +415,9 @@ export default function ChatRoom({
   const roomTone = room?.tone === "public" ? "public" : "personal";
   const roomPlaceLabel = room?.placeLabel || (roomTone === "public" ? "公共大厅" : "个人空间");
   const roomAtmosphere = room?.atmosphere || roomHint || "写下一个想法，让讨论从这里开始。";
-  const currentModelLabel = isConversationModelLoading ? "模型同步中" : activeConversationModelLabel;
+  const currentModelLabel = isConversationModelLoading ? "团队同步中" : activeConversationModelLabel;
+  const actualMessageCount = visibleMessages.filter((message) => message.nickname !== "__system__").length;
+  const shouldShowConversationPrep = false;
   const emptyTitle = room?.emptyTitle || (roomTone === "public" ? "大厅正在等待新的讨论" : "这里还很安静");
   const emptyHint = room?.emptyHint || roomHint || "写下一个想法，让讨论从这里开始。";
   const emptySuggestions = roomTone === "public"
@@ -558,16 +425,22 @@ export default function ChatRoom({
     : ["写下研究对象", "让 DeepSeek 接入推演", "保存待整理结论"];
   const composerPlaceholder = room?.composerPlaceholder || "输入消息，按 Enter 发送";
   const roomConversationCount = Math.max(roomConversations.length || 0, 1);
-  const activeConversation = roomConversations.find((item) => item.id === activeConversationId);
-  const activeConversationTitle = activeConversation?.name || (activeConversationId ? `对话 ${activeConversationId}` : "主对话");
+  const selectedConversation = activeConversation || roomConversations.find((item) => item.id === activeConversationId);
+  const activeConversationTitle = selectedConversation?.name || (activeConversationId ? `对话 ${activeConversationId}` : "主对话");
   const currentMoment =
-    workspacePanelOpen || createConversationOpen ? "tooling"
+    workspacePanelOpen ? "tooling"
       : roomMemoryOpen ? "switching"
         : !visibleMessages.length ? "arriving"
           : "thinking";
-  const stageInitial = resolvedTransitionMode === "idle" ? { opacity: 0.96, y: 2 } : messagesMotion.initial;
-  const stageAnimate = resolvedTransitionMode === "idle" ? { opacity: 1, y: 0 } : messagesMotion.animate;
-  const stageTransition = resolvedTransitionMode === "idle" ? { duration: 0.22, ease: EASE } : messagesMotion.transition;
+  const conversationTeamError =
+    createConversationError ||
+    aiConfigError?.conversation ||
+    aiConfigError?.room ||
+    aiConfigError?.thinking ||
+    "";
+  const stageInitial = resolvedTransitionMode === "idle" ? false : messagesMotion.initial;
+  const stageAnimate = resolvedTransitionMode === "idle" ? { opacity: 1 } : messagesMotion.animate;
+  const stageTransition = resolvedTransitionMode === "idle" ? { duration: 0 } : messagesMotion.transition;
 
   return (
     <div className={`shell is-moment-${currentMoment} ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}>
@@ -589,6 +462,9 @@ export default function ChatRoom({
       <div id="atrium-sidebar-panel" className={`sidebar-wrapper ${mobileSidebarOpen ? "is-open" : ""}`}>
         <Sidebar
           nickname={nickname}
+          username={username}
+          avatarUrl={avatarUrl}
+          onProfileUpdate={onProfileUpdate}
           onLogout={onLogout}
           shouldAnimateEntry={false}
           transitionMode={resolvedTransitionMode}
@@ -669,41 +545,71 @@ export default function ChatRoom({
         </motion.header>
 
         <motion.div
-          key={`${activeRoomId}-${activeConversationId || "main"}`}
+          key={draftConversation ? "draft" : `${activeRoomId}-${activeConversationId || "main"}`}
           className={`messages-stage is-${roomTone} ${roomTransition ? "is-switching" : ""}`}
           initial={stageInitial}
           animate={stageAnimate}
           transition={stageTransition}
         >
-          <MessageList
-            messages={visibleMessages}
-            assistantState={assistantState}
-            onScrolled={onScrolled}
-            hiddenMessageId={hiddenMessageId}
-            shouldAnimateEntry={false}
-            itemAnimationMode="calm"
-            isFading={isFading}
-            fadeDuration={fadeDuration}
-            viewportRef={messagesViewportRef}
-            renderEmpty={hideMessageContent ? () => null : () => (
-              <div className={`empty-state empty-state--room is-${roomTone}`}>
-                <div className="empty-copy">
-                  <div className="empty-kicker">{roomPlaceLabel}</div>
-                  <div className="empty-title">{emptyTitle}</div>
-                  <div className="empty-hint">{emptyHint}</div>
-                  <div className="empty-prompt-rail" aria-label="讨论起点">
-                    {emptySuggestions.map((item) => <span key={item}>{item}</span>)}
+          {draftConversation ? (
+            <div className="empty-state empty-state--ai-start">
+              <ConversationPrepPanel
+                isVisible={true}
+                roomAiMembers={roomAiMembers}
+                conversationAiMembers={draftConversation.aiMembers}
+                availableAis={availableAis}
+                thinkingAdapters={thinkingAdapters}
+                readOnly={readOnly}
+                onChangeTeam={onDraftAiMembersChange}
+                loadError={aiConfigError?.room || aiConfigError?.thinking || ""}
+              />
+            </div>
+          ) : (
+            <MessageList
+              messages={visibleMessages}
+              assistantState={assistantState}
+              onScrolled={onScrolled}
+              hiddenMessageId={hiddenMessageId}
+              shouldAnimateEntry={false}
+              itemAnimationMode="calm"
+              isFading={isFading}
+              fadeDuration={fadeDuration}
+              viewportRef={messagesViewportRef}
+              renderEmpty={hideMessageContent ? () => null : () => (
+                shouldShowConversationPrep ? (
+                  <div className="empty-state empty-state--ai-start">
+                    <ConversationPrepPanel
+                      isVisible={shouldShowConversationPrep}
+                      roomAiMembers={roomAiMembers}
+                      conversationAiMembers={conversationAiMembers}
+                      availableAis={availableAis}
+                      thinkingAdapters={thinkingAdapters}
+                      readOnly={readOnly}
+                      onChangeTeam={onConversationAiMembersChange}
+                      loadError={conversationTeamError}
+                    />
                   </div>
-                </div>
-              </div>
-            )}
-            onContextMenu={handleMessageContextMenu}
-            hasMoreHistory={hasMoreHistory && !hideMessageContent}
+                ) : (
+                  <div className={`empty-state empty-state--room is-${roomTone}`}>
+                    <div className="empty-copy">
+                      <div className="empty-kicker">{roomPlaceLabel}</div>
+                      <div className="empty-title">{emptyTitle}</div>
+                      <div className="empty-hint">{emptyHint}</div>
+                      <div className="empty-prompt-rail" aria-label="讨论起点">
+                        {emptySuggestions.map((item) => <span key={item}>{item}</span>)}
+                      </div>
+                    </div>
+                  </div>
+                )
+              )}
+              onContextMenu={handleMessageContextMenu}
+              hasMoreHistory={hasMoreHistory && !hideMessageContent}
             historyInitialLoading={historyInitialLoading && !hideMessageContent}
             historyLoading={historyLoading && !hideMessageContent}
             historyError={hideMessageContent ? "" : historyError}
             onLoadMoreHistory={onLoadMoreHistory}
-          />
+            />
+          )}
         </motion.div>
 
         <MessageInput
@@ -732,18 +638,9 @@ export default function ChatRoom({
           onClose={() => setRoomMemoryOpen(false)}
           onSelect={onConversationSelect}
           onDelete={onDeleteConversation}
-          onCreate={() => {
-            setRoomMemoryOpen(false);
-            setCreateConversationOpen(true);
-          }}
-          readOnly={readOnly}
-        />
-
-        <CreateConversationDialog
-          isOpen={createConversationOpen && !readOnly}
-          room={room}
-          onClose={() => setCreateConversationOpen(false)}
-          onCreated={handleConversationCreated}
+          onCreate={handleCreateConversationDraft}
+          createBusy={createConversationBusy}
+          error={createConversationError}
           readOnly={readOnly}
         />
       </main>
@@ -771,6 +668,16 @@ export default function ChatRoom({
         onConversationSelect={onConversationSelect}
         activeConversationModelLabel={activeConversationModelLabel}
         isConversationModelLoading={isConversationModelLoading}
+        activeConversation={activeConversation}
+        isMainConversation={isMainConversation}
+        roomAiMembers={roomAiMembers}
+        conversationAiMembers={conversationAiMembers}
+        effectiveAiMembers={effectiveAiMembers}
+        availableAis={availableAis}
+        thinkingAdapters={thinkingAdapters}
+        aiConfigError={aiConfigError}
+        onRoomAiMembersSave={onRoomAiMembersSave}
+        onConversationAiMembersChange={onConversationAiMembersChange}
         onRoomSelect={(id) => {
           onRoomSelect(id);
           setWorkspacePanelOpen(false);

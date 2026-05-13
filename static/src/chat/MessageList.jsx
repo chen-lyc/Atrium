@@ -78,7 +78,14 @@ export default function MessageList({
       setShowNewMsgBtn(true);
       return;
     }
-    viewport.scrollTop = viewport.scrollHeight;
+    const messageList = viewport.querySelector(".message-list");
+    if (messageList) {
+      const contentHeight = messageList.scrollHeight;
+      const fitsViewport = contentHeight <= viewport.clientHeight - 72;
+      viewport.scrollTop = fitsViewport ? 0 : viewport.scrollHeight;
+    } else {
+      viewport.scrollTop = viewport.scrollHeight;
+    }
   }, [messages.length, hasAssistantState, resolvedViewportRef, stickToBottom]);
 
   useEffect(() => {
@@ -87,9 +94,10 @@ export default function MessageList({
     const content = viewport.querySelector(".messages-inner");
     if (!content) return undefined;
     const observer = new ResizeObserver(() => {
-      if (stickToBottomRef.current) {
-        viewport.scrollTop = viewport.scrollHeight;
-      }
+      if (!stickToBottomRef.current) return;
+      const messageList = viewport.querySelector(".message-list");
+      if (messageList && messageList.scrollHeight <= viewport.clientHeight - 72) return;
+      viewport.scrollTop = viewport.scrollHeight;
     });
     observer.observe(content);
     return () => observer.disconnect();
@@ -152,7 +160,7 @@ export default function MessageList({
   ].filter(Boolean).join(" ");
 
   return (
-    <motion.div className={viewportClassName} ref={resolvedViewportRef} onScroll={handleScroll}>
+    <div className={viewportClassName} ref={resolvedViewportRef} onScroll={handleScroll}>
       <motion.div
         className={contentClassName}
         initial={initialProps}
@@ -163,25 +171,6 @@ export default function MessageList({
           ease: EASE
         }}
       >
-        <AnimatePresence initial={false}>
-          {!hasMessages ? (
-            <motion.div
-              key="empty-state"
-              className="empty-state-layer"
-              initial={{ opacity: 1 }}
-              animate={{ opacity: isFading ? 0 : 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: isFading ? fadeDuration / 1000 : 0.16, ease: EASE }}
-            >
-              {emptyHistoryState ? (
-                <div className={`history-empty-state ${historyError ? "is-error" : ""}`}>
-                  {historyError || "正在加载历史消息"}
-                </div>
-              ) : resolveEmpty(renderEmpty)}
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
-
         <ol className={listClassName} role="list">
           {hasMessages && (hasMoreHistory || historyLoading || historyError) ? (
             <li className="history-load-row">
@@ -211,6 +200,25 @@ export default function MessageList({
             {hasAssistantState ? <AssistantStatusRow key={`assistant-${assistantState.status}`} state={assistantState} /> : null}
           </AnimatePresence>
         </ol>
+
+        <AnimatePresence initial={false}>
+          {!hasMessages ? (
+            <motion.div
+              key="empty-state"
+              className="empty-state-layer"
+              initial={{ opacity: 1 }}
+              animate={{ opacity: isFading ? 0 : 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: isFading ? fadeDuration / 1000 : 0.16, ease: EASE }}
+            >
+              {emptyHistoryState ? (
+                <div className={`history-empty-state ${historyError ? "is-error" : ""}`}>
+                  {historyError || "正在加载历史消息"}
+                </div>
+              ) : resolveEmpty(renderEmpty)}
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
       </motion.div>
 
       <AnimatePresence>
@@ -234,6 +242,6 @@ export default function MessageList({
           </motion.button>
         ) : null}
       </AnimatePresence>
-    </motion.div>
+    </div>
   );
 }

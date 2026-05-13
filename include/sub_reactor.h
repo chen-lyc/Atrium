@@ -21,14 +21,17 @@ class Reactor {
   public:
     class AiReplyTask {
       public:
-        AiReplyTask(Reactor &reactor, uint64_t conversation_id, uint64_t trigger_message_id, uint64_t context_until_message_id, uint64_t user_id, uint64_t room_id, uint64_t ai_id, std::string ai_model, uint64_t ai_message_id) : m_reactor(reactor), m_conversation_id(conversation_id), m_trigger_message_id(trigger_message_id), m_context_until_message_id(context_until_message_id), m_user_id(user_id), m_room_id(room_id), m_ai_id(ai_id), m_ai_model(ai_model), m_ai_message_id(ai_message_id) {}
-        void process(DeepSeek &deepseek);
+        AiReplyTask(Reactor &reactor, std::string &provider, uint64_t conversation_id, uint64_t trigger_message_id, uint64_t context_until_message_id, uint64_t user_id, uint64_t room_id, uint64_t ai_id, std::string ai_model, uint64_t ai_message_id, size_t round = 0);
+        void process();
         void onChunk(AiSseData &data);
         void broadcastAiReply(const std::string reply);
         void sendError();
+        void dispatchToOtherAis();
 
       private:
         Reactor &m_reactor;
+        std::string m_provider;
+        std::unique_ptr<AiClient> m_client;
         uint64_t m_conversation_id;
         uint64_t m_trigger_message_id;
         uint64_t m_context_until_message_id;
@@ -39,6 +42,7 @@ class Reactor {
         std::string m_ai_model;
         uint64_t m_ai_message_id;
         bool m_send_start_frame = false;
+        size_t m_round = 0;
     };
 
     Reactor(int index, std::vector<std::unique_ptr<Reactor>> &sub_reactors, size_t num_memory = 100);

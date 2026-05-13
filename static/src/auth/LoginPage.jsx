@@ -39,7 +39,7 @@ export default function LoginPage({ onSwitchRegister, onSuccess, disabled }) {
     <>
       <div className="auth-fields">
         <div className="auth-field">
-          <input id="login-nickname" name="username" className={`field-input ${fieldErrors.nickname ? "is-error" : ""}`} value={nickname} onChange={(e) => handleNicknameChange(e.target.value)} onKeyDown={handleKeyDown} placeholder="昵称" autoComplete="username" disabled={isLocked} />
+          <input id="login-nickname" name="username" className={`field-input ${fieldErrors.nickname ? "is-error" : ""}`} value={nickname} onChange={(e) => handleNicknameChange(e.target.value)} onKeyDown={handleKeyDown} placeholder="登录名" autoComplete="username" disabled={isLocked} />
           <InlineError message={fieldErrors.nickname} />
         </div>
         <div className="auth-field">

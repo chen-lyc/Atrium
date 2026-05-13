@@ -183,7 +183,7 @@ CREATE TABLE users (
 
 CREATE TABLE ai (
   id BIGINT UNSIGNED NOT NULL COMMENT '应用层外键：ai.id = participants.id，kind=2',
-  provider VARCHAR(32) NOT NULL COMMENT '例如 deepseek / openai',
+  provider VARCHAR(32) NOT NULL COMMENT '例如 deepseek / chatgpt',
   model VARCHAR(64) NOT NULL COMMENT '例如 deepseek-chat / deepseek-reasoner',
   system_prompt TEXT,
 
@@ -200,7 +200,7 @@ CREATE TABLE rooms (
   main_conversation_id BIGINT UNSIGNED NOT NULL COMMENT '应用层外键：rooms.main_conversation_id -> conversations.id',
   owner_id BIGINT UNSIGNED NOT NULL COMMENT '应用层外键：owner_id -> users.id；0 表示系统创建',
   created_at_ms BIGINT UNSIGNED NOT NULL,
-  type TINYINT UNSIGNED NOT NULL DEFAULT 2 COMMENT '0=大厅/系统房间, 1=私聊, 2=普通房间',
+  type TINYINT UNSIGNED NOT NULL DEFAULT 2 COMMENT '0=大厅/系统房间, 1=个人房间, 2=普通房间',
 
   PRIMARY KEY (id)
 
@@ -249,12 +249,27 @@ VALUES (1, 1, 'Atrium 大厅', 0, 0);
 CREATE TABLE conversation_ai_members (
   conversation_id BIGINT UNSIGNED NOT NULL COMMENT '应用层外键：conversation_ai_members.conversation_id -> conversations.id',
   ai_id BIGINT UNSIGNED NOT NULL COMMENT '应用层外键：conversation_ai_members.ai_id -> ai.id',
+  adapter_url VARCHAR(255) DEFAULT NULL COMMENT '系统预设思维 adapter 文件路径',
+  custom_adapter_text TEXT DEFAULT NULL COMMENT '用户自定义思维描述',
 
   PRIMARY KEY (conversation_id, ai_id),
   KEY idx_ai (ai_id)
 
   -- APP FK: conversation_ai_members.conversation_id -> conversations.id
   -- APP FK: conversation_ai_members.ai_id -> ai.id
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE room_ai_members (
+  room_id BIGINT UNSIGNED NOT NULL COMMENT '应用层外键：room_ai_members.room_id -> rooms.id',
+  ai_id BIGINT UNSIGNED NOT NULL COMMENT '应用层外键：room_ai_members.ai_id -> ai.id',
+  adapter_url VARCHAR(255) DEFAULT NULL COMMENT '系统预设思维 adapter 文件路径',
+  custom_adapter_text TEXT DEFAULT NULL COMMENT '用户自定义思维描述',
+
+  PRIMARY KEY (room_id, ai_id),
+  KEY idx_ai (ai_id)
+
+  -- APP FK: room_ai_members.room_id -> rooms.id
+  -- APP FK: room_ai_members.ai_id -> ai.id
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 

@@ -25,6 +25,8 @@ Router::Router() {
         {Method::PATCH, {"me"}, true, handle_update_me},
         {Method::GET, {"me", "ai-usage"}, true, handle_me_ai_usage},
         {Method::HEAD, {"me", "ai-usage"}, true, handle_me_ai_usage},
+        {Method::GET, {"me", "ai-usage", "today"}, true, handle_me_ai_usage_today},
+        {Method::HEAD, {"me", "ai-usage", "today"}, true, handle_me_ai_usage_today},
         {Method::GET, {"users", "search"}, true, handle_search_users},
         {Method::HEAD, {"users", "search"}, true, handle_search_users},
         {Method::GET, {"rooms"}, true, handle_list_rooms},
@@ -63,6 +65,20 @@ Router::Router() {
         {Method::GET, {"friends"}, true, handle_list_friends},
         {Method::HEAD, {"friends"}, true, handle_list_friends},
         {Method::DELETE, {"friends", ":user_id"}, true, handle_delete_friend},
+        {Method::GET, {"ais"}, true, handle_list_ais},
+        {Method::HEAD, {"ais"}, true, handle_list_ais},
+        {Method::GET, {"thinking-adapters"}, true, handle_list_thinking_adapters},
+        {Method::HEAD, {"thinking-adapters"}, true, handle_list_thinking_adapters},
+        {Method::GET, {"rooms", ":room_id", "ai-members"}, true, handle_list_room_ai_members},
+        {Method::HEAD, {"rooms", ":room_id", "ai-members"}, true, handle_list_room_ai_members},
+        {Method::POST, {"rooms", ":room_id", "ai-members"}, true, handle_create_room_ai_member},
+        {Method::PATCH, {"rooms", ":room_id", "ai-members", ":ai_id"}, true, handle_update_room_ai_member},
+        {Method::DELETE, {"rooms", ":room_id", "ai-members", ":ai_id"}, true, handle_delete_room_ai_member},
+        {Method::GET, {"conversations", ":conv_id", "ai-members"}, true, handle_list_conversation_ai_members},
+        {Method::HEAD, {"conversations", ":conv_id", "ai-members"}, true, handle_list_conversation_ai_members},
+        {Method::POST, {"conversations", ":conv_id", "ai-members"}, true, handle_create_conversation_ai_member},
+        {Method::PATCH, {"conversations", ":conv_id", "ai-members", ":ai_id"}, true, handle_update_conversation_ai_member},
+        {Method::DELETE, {"conversations", ":conv_id", "ai-members", ":ai_id"}, true, handle_delete_conversation_ai_member},
     };
 }
 
@@ -220,13 +236,19 @@ RouteResult handle_me(RequestContext &ctx) {
 RouteResult handle_update_me(RequestContext &ctx) {
     // PATCH /api/me
     // 权限：登录用户改自己
-    // body: {"nickname"?: string, "avatar_url"?: string}
+    // body: {"username"?: string, "nickname"?: string, "avatar_url"?: string}
+    bool has_username = false;
     bool has_nickname = false;
     bool has_avatar_url = false;
+    string username;
     string nickname;
     string avatar_url;
     try {
         json in = json::parse(ctx.req.body);
+        if (in.contains("username")) {
+            username = in["username"];
+            has_username = true;
+        }
         if (in.contains("nickname")) {
             nickname = in["nickname"];
             has_nickname = true;
@@ -246,22 +268,39 @@ RouteResult handle_update_me(RequestContext &ctx) {
         return {RouteStatus::ServerError};
     }
 
+    if (has_username) {
+        if (!username.empty() && !is_valid_username(username)) {
+            return {RouteStatus::BadRequest};
+        }
+        ret = update_username(ctx.user_id, username);
+        if (ret == MysqlPool::QueryResult::AlreadyExists) {
+            return {RouteStatus::BadRequest};
+        }
+        if (ret != MysqlPool::QueryResult::Success) {
+            return {RouteStatus::ServerError};
+        }
+    }
+
     if (!has_nickname) {
         nickname = std::move(cur_nickname);
     }
     if (!has_avatar_url) {
         avatar_url = std::move(cur_avatar_url);
     }
-    if (nickname.size() < 1 || nickname.size() > 64) {
+    if (!has_username && !has_nickname && !has_avatar_url) {
         return {RouteStatus::BadRequest};
     }
-    if (avatar_url.size() > 255) {
-        return {RouteStatus::BadRequest};
-    }
-
-    ret = update_user_profile(ctx.user_id, nickname, avatar_url);
-    if (ret != MysqlPool::QueryResult::Success) {
-        return {RouteStatus::ServerError};
+    if (has_nickname || has_avatar_url) {
+        if (nickname.size() < 1 || nickname.size() > 64) {
+            return {RouteStatus::BadRequest};
+        }
+        if (avatar_url.size() > 255) {
+            return {RouteStatus::BadRequest};
+        }
+        ret = update_user_profile(ctx.user_id, nickname, avatar_url);
+        if (ret != MysqlPool::QueryResult::Success) {
+            return {RouteStatus::ServerError};
+        }
     }
 
     ctx.conn.outbuf +=
@@ -271,18 +310,80 @@ RouteResult handle_update_me(RequestContext &ctx) {
     return {RouteStatus::Success};
 }
 RouteResult handle_me_ai_usage(RequestContext &ctx) {
-    uint64_t prompt_tokens = 0;
-    uint64_t completion_tokens = 0;
-    uint64_t total_tokens = 0;
-    MysqlPool::QueryResult ret = get_user_ai_tokens(ctx.user_id, prompt_tokens, completion_tokens, total_tokens);
+    vector<pair<string, vector<DailyUsage>>> models;
+    MysqlPool::QueryResult ret = get_user_ai_usage_history(ctx.user_id, models);
     if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::NotFound) {
         return {RouteStatus::ServerError};
     }
 
     json out;
-    out["prompt_tokens"] = prompt_tokens;
-    out["completion_tokens"] = completion_tokens;
-    out["total_tokens"] = total_tokens;
+    uint64_t total_prompt = 0, total_completion = 0;
+    json models_json = json::array();
+    for (auto &[model_name, days] : models) {
+        json model_obj;
+        model_obj["model"] = model_name;
+        json days_json = json::array();
+        for (auto &d : days) {
+            json day;
+            day["date"] = d.date;
+            day["input_cached_tokens"] = d.input_cached_tokens;
+            day["input_uncached_tokens"] = d.input_uncached_tokens;
+            day["completion_tokens"] = d.output_tokens;
+            day["request_count"] = d.request_count;
+            total_prompt += d.input_cached_tokens + d.input_uncached_tokens;
+            total_completion += d.output_tokens;
+            days_json.emplace_back(std::move(day));
+        }
+        model_obj["days"] = std::move(days_json);
+        models_json.emplace_back(std::move(model_obj));
+    }
+    out["models"] = std::move(models_json);
+    out["prompt_tokens"] = total_prompt;
+    out["completion_tokens"] = total_completion;
+    out["total_tokens"] = total_prompt + total_completion;
+    string body = out.dump();
+
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Content-Length: ";
+    ctx.conn.outbuf += std::to_string(body.size());
+    ctx.conn.outbuf +=
+        "\r\n"
+        "Connection: keep-alive\r\n"
+        "\r\n";
+    if (ctx.req.method == Method::GET) ctx.conn.outbuf += body;
+    return {RouteStatus::Success};
+}
+
+RouteResult handle_me_ai_usage_today(RequestContext &ctx) {
+    vector<TodayUsage> models;
+    MysqlPool::QueryResult ret = get_user_ai_tokens_today(ctx.user_id, models);
+    if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::NotFound) {
+        return {RouteStatus::ServerError};
+    }
+
+    json out;
+    uint64_t total_prompt = 0, total_completion = 0;
+    json models_json = json::array();
+    for (auto &m : models) {
+        json model_obj;
+        model_obj["model"] = m.model;
+        json day;
+        day["date"] = m.date;
+        day["input_cached_tokens"] = m.input_cached_tokens;
+        day["input_uncached_tokens"] = m.input_uncached_tokens;
+        day["completion_tokens"] = m.output_tokens;
+        day["request_count"] = m.request_count;
+        total_prompt += m.input_cached_tokens + m.input_uncached_tokens;
+        total_completion += m.output_tokens;
+        model_obj["days"] = json::array({std::move(day)});
+        models_json.emplace_back(std::move(model_obj));
+    }
+    out["models"] = std::move(models_json);
+    out["prompt_tokens"] = total_prompt;
+    out["completion_tokens"] = total_completion;
+    out["total_tokens"] = total_prompt + total_completion;
     string body = out.dump();
 
     ctx.conn.outbuf +=
@@ -643,13 +744,15 @@ RouteResult handle_conversation_model(RequestContext &ctx) {
 
     string provider, model;
     ret = get_conversation_ai_model(conversation_id, provider, model);
-    if (ret != MysqlPool::QueryResult::Success) {
-        return {RouteStatus::NotFound};
-    }
 
     json out;
-    out["provider"] = std::move(provider);
-    out["model"] = std::move(model);
+    if (ret == MysqlPool::QueryResult::Success) {
+        out["provider"] = std::move(provider);
+        out["model"] = std::move(model);
+    } else {
+        out["provider"] = "";
+        out["model"] = "";
+    }
     string body = out.dump();
 
     ctx.conn.outbuf +=
@@ -1017,6 +1120,16 @@ RouteResult handle_create_room_invitation(RequestContext &ctx) {
         return {RouteStatus::ServerError};
     }
 
+    {
+        string room_name;
+        uint64_t main_conv_id = 0;
+        int room_type = 0;
+        ret = get_room_data(room_id, room_name, main_conv_id, room_type);
+        if (ret == MysqlPool::QueryResult::Success && static_cast<RoomType>(room_type) == RoomType::Personal) {
+            return {RouteStatus::BadRequest};
+        }
+    }
+
     ret = check_friendship(ctx.user_id, invitee_id);
     if (ret == MysqlPool::QueryResult::NotFound) {
         return {RouteStatus::BadRequest};
@@ -1097,6 +1210,15 @@ RouteResult handle_respond_room_invitation(RequestContext &ctx) {
     }
 
     if (status == "accepted") {
+        string room_name;
+        uint64_t main_conv_id = 0;
+        int room_type = 0;
+        MysqlPool::QueryResult type_ret = get_room_data(room_id, room_name, main_conv_id, room_type);
+        if (type_ret == MysqlPool::QueryResult::Success && static_cast<RoomType>(room_type) == RoomType::Personal) {
+            return {RouteStatus::BadRequest};
+        }
+
+        ret = accept_room_invitation(room_id, ctx.user_id, invitation_id);
         ret = accept_room_invitation(room_id, ctx.user_id, invitation_id);
         if (ret != MysqlPool::QueryResult::Success) {
             return {RouteStatus::ServerError};
@@ -1564,7 +1686,7 @@ RouteResult handle_delete_friend(RequestContext &ctx) {
 RouteResult handle_create_conversation(RequestContext &ctx) {
     // POST /api/rooms/:room_id/conversations
     // 权限：房间成员（任何角色）
-    // body: {"title": string}
+    // body: {"title": string, "ai_members"?: [{ai_id, adapter_url?, custom_adapter_text?}]}
     string id_value(ctx.params["room_id"]);
     uint64_t room_id = 0;
     try {
@@ -1594,11 +1716,21 @@ RouteResult handle_create_conversation(RequestContext &ctx) {
     }
 
     string title;
-    string model;
+    bool has_body_ai_members = false;
+    vector<RoomAiMemberInfo> ai_members;
     try {
         json in = json::parse(ctx.req.body);
         title = in["title"];
-        model = in.value("model", "deepseek-v4-flash");
+        if (in.contains("ai_members")) {
+            has_body_ai_members = true;
+            for (auto &item : in["ai_members"]) {
+                RoomAiMemberInfo m;
+                m.ai_id = item["ai_id"];
+                if (item.contains("adapter_url") && item["adapter_url"].is_string()) m.adapter_url = item["adapter_url"];
+                if (item.contains("custom_adapter_text") && item["custom_adapter_text"].is_string()) m.custom_adapter_text = item["custom_adapter_text"];
+                ai_members.emplace_back(std::move(m));
+            }
+        }
     } catch (const exception &e) {
         LOG_WARN("bad json in handle_create_conversation: %s", e.what());
         return {RouteStatus::BadRequest};
@@ -1607,6 +1739,12 @@ RouteResult handle_create_conversation(RequestContext &ctx) {
         return {RouteStatus::BadRequest};
     }
 
+    if (!has_body_ai_members) {
+        ret = get_room_ai_members(room_id, ai_members);
+        if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::NotFound) {
+            return {RouteStatus::ServerError};
+        }
+    }
     uint64_t conversation_id = 0;
     ret = MysqlPool::getInstance().executeTransaction([&](MysqlTxnContext &txn) -> MysqlPool::QueryResult {
         static const string conv_sql =
@@ -1620,27 +1758,14 @@ RouteResult handle_create_conversation(RequestContext &ctx) {
             return MysqlPool::QueryResult::ServerError;
         }
 
-        static const string ai_sql = "SELECT id FROM ai WHERE model = ?";
-        MysqlPool::MysqlParams ai_params{model};
-        vector<vector<string>> rows;
-        size_t col_count = 1;
-        ret = txn.executeQuery(ai_sql, ai_params, rows, col_count);
-        if (ret != MysqlPool::QueryResult::Success) {
-            return MysqlPool::QueryResult::ServerError;
-        }
-        uint64_t ai_id = 0;
-        try {
-            ai_id = stoull(rows[0][0]);
-        } catch (const exception &e) {
-            return MysqlPool::QueryResult::ServerError;
-        }
-
-        static const string mem_sql =
-            "INSERT INTO conversation_ai_members (conversation_id, ai_id) VALUES (?, ?)";
-        MysqlPool::MysqlParams mem_params{conversation_id, ai_id};
-        ret = txn.executeQuery(mem_sql, mem_params);
-        if (ret != MysqlPool::QueryResult::Success) {
-            return MysqlPool::QueryResult::ServerError;
+        for (auto &m : ai_members) {
+            static const string mem_sql =
+                "INSERT INTO conversation_ai_members (conversation_id, ai_id, adapter_url, custom_adapter_text) VALUES (?, ?, ?, ?)";
+            MysqlPool::MysqlParams mem_params{conversation_id, m.ai_id, m.adapter_url, m.custom_adapter_text};
+            ret = txn.executeQuery(mem_sql, mem_params);
+            if (ret != MysqlPool::QueryResult::Success) {
+                return MysqlPool::QueryResult::ServerError;
+            }
         }
 
         return MysqlPool::QueryResult::Success;
@@ -1757,6 +1882,401 @@ RouteResult handle_delete_message(RequestContext &ctx) {
 
     ret = soft_delete_message(message_id, now);
     if (ret != MysqlPool::QueryResult::Success) {
+        return {RouteStatus::ServerError};
+    }
+
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+    return {RouteStatus::Success};
+}
+
+RouteResult handle_list_ais(RequestContext &ctx) {
+    vector<AiInfo> ais;
+    MysqlPool::QueryResult ret = get_all_ais(ais);
+    if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::NotFound) {
+        return {RouteStatus::ServerError};
+    }
+
+    string body;
+    try {
+        json out = json::array();
+        for (auto &a : ais) {
+            json item;
+            item["id"] = a.id;
+            item["provider"] = a.provider;
+            item["model"] = a.model;
+            item["display_name"] = a.display_name;
+            item["avatar_url"] = a.avatar_url;
+            out.emplace_back(std::move(item));
+        }
+        body = out.dump();
+    } catch (const exception &e) {
+        return {RouteStatus::BadRequest};
+    }
+
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Content-Length: ";
+    ctx.conn.outbuf += std::to_string(body.size());
+    ctx.conn.outbuf +=
+        "\r\n"
+        "Connection: keep-alive\r\n"
+        "\r\n";
+    if (ctx.req.method == Method::GET) ctx.conn.outbuf += body;
+    return {RouteStatus::Success};
+}
+
+RouteResult handle_list_thinking_adapters(RequestContext &ctx) {
+    vector<string> names;
+    MysqlPool::QueryResult ret = list_thinking_adapters(names);
+    if (ret != MysqlPool::QueryResult::Success) {
+        return {RouteStatus::ServerError};
+    }
+
+    string body;
+    try {
+        json out = json::array();
+        for (auto &name : names) {
+            out.emplace_back(std::move(name));
+        }
+        body = out.dump();
+    } catch (const exception &e) {
+        return {RouteStatus::BadRequest};
+    }
+
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Content-Length: ";
+    ctx.conn.outbuf += std::to_string(body.size());
+    ctx.conn.outbuf +=
+        "\r\n"
+        "Connection: keep-alive\r\n"
+        "\r\n";
+    if (ctx.req.method == Method::GET) ctx.conn.outbuf += body;
+    return {RouteStatus::Success};
+}
+
+RouteResult handle_list_room_ai_members(RequestContext &ctx) {
+    string id_value(ctx.params["room_id"]);
+    uint64_t room_id = 0;
+    try { room_id = stoull(id_value); } catch (const exception &) { return {RouteStatus::BadRequest}; }
+
+    MysqlPool::QueryResult ret = verify_room_member(room_id, ctx.user_id);
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::BadRequest};
+
+    vector<RoomAiMemberInfo> members;
+    ret = get_room_ai_members(room_id, members);
+    if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::NotFound) {
+        return {RouteStatus::ServerError};
+    }
+
+    string body;
+    try {
+        json out = json::array();
+        for (auto &m : members) {
+            json item;
+            item["ai_id"] = m.ai_id;
+            item["provider"] = m.provider;
+            item["model"] = m.model;
+            if (!m.adapter_url.empty()) item["adapter_url"] = m.adapter_url;
+            if (!m.custom_adapter_text.empty()) item["custom_adapter_text"] = m.custom_adapter_text;
+            out.emplace_back(std::move(item));
+        }
+        body = out.dump();
+    } catch (const exception &e) {
+        return {RouteStatus::BadRequest};
+    }
+
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Content-Length: ";
+    ctx.conn.outbuf += std::to_string(body.size());
+    ctx.conn.outbuf +=
+        "\r\n"
+        "Connection: keep-alive\r\n"
+        "\r\n";
+    if (ctx.req.method == Method::GET) ctx.conn.outbuf += body;
+    return {RouteStatus::Success};
+}
+
+RouteResult handle_create_room_ai_member(RequestContext &ctx) {
+    string id_value(ctx.params["room_id"]);
+    uint64_t room_id = 0;
+    try { room_id = stoull(id_value); } catch (const exception &) { return {RouteStatus::BadRequest}; }
+
+    int role = -1;
+    MysqlPool::QueryResult ret = get_room_member_role(room_id, ctx.user_id, role);
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::BadRequest};
+    if (role != static_cast<int>(RoomRole::Owner) && role != static_cast<int>(RoomRole::Admin)) return {RouteStatus::BadRequest};
+
+    uint64_t ai_id = 0;
+    string adapter_url, custom_adapter_text;
+    try {
+        json in = json::parse(ctx.req.body);
+        ai_id = in["ai_id"];
+        if (in.contains("adapter_url") && in["adapter_url"].is_string()) adapter_url = in["adapter_url"];
+        if (in.contains("custom_adapter_text") && in["custom_adapter_text"].is_string()) custom_adapter_text = in["custom_adapter_text"];
+    } catch (const exception &) { return {RouteStatus::BadRequest}; }
+
+    if (!ai_id) return {RouteStatus::BadRequest};
+
+    ret = insert_room_ai_member(room_id, ai_id, adapter_url, custom_adapter_text);
+    if (ret == MysqlPool::QueryResult::AlreadyExists) return {RouteStatus::BadRequest};
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::ServerError};
+
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+    return {RouteStatus::Success};
+}
+
+RouteResult handle_update_room_ai_member(RequestContext &ctx) {
+    string room_id_str(ctx.params["room_id"]);
+    string ai_id_str(ctx.params["ai_id"]);
+    uint64_t room_id = 0, ai_id = 0;
+    try {
+        room_id = stoull(room_id_str);
+        ai_id = stoull(ai_id_str);
+    } catch (const exception &) { return {RouteStatus::BadRequest}; }
+
+    int role = -1;
+    MysqlPool::QueryResult ret = get_room_member_role(room_id, ctx.user_id, role);
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::BadRequest};
+    if (role != static_cast<int>(RoomRole::Owner) && role != static_cast<int>(RoomRole::Admin)) return {RouteStatus::BadRequest};
+
+    string adapter_url, custom_adapter_text;
+    try {
+        json in = json::parse(ctx.req.body);
+        if (in.contains("adapter_url")) {
+            if (in["adapter_url"].is_null()) adapter_url = "";
+            else adapter_url = in["adapter_url"];
+        }
+        if (in.contains("custom_adapter_text")) {
+            if (in["custom_adapter_text"].is_null()) custom_adapter_text = "";
+            else custom_adapter_text = in["custom_adapter_text"];
+        }
+    } catch (const exception &) { return {RouteStatus::BadRequest}; }
+
+    ret = update_room_ai_member(room_id, ai_id, adapter_url, custom_adapter_text);
+    if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::NotFound) {
+        return {RouteStatus::ServerError};
+    }
+
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+    return {RouteStatus::Success};
+}
+
+RouteResult handle_delete_room_ai_member(RequestContext &ctx) {
+    string room_id_str(ctx.params["room_id"]);
+    string ai_id_str(ctx.params["ai_id"]);
+    uint64_t room_id = 0, ai_id = 0;
+    try {
+        room_id = stoull(room_id_str);
+        ai_id = stoull(ai_id_str);
+    } catch (const exception &) { return {RouteStatus::BadRequest}; }
+
+    int role = -1;
+    MysqlPool::QueryResult ret = get_room_member_role(room_id, ctx.user_id, role);
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::BadRequest};
+    if (role != static_cast<int>(RoomRole::Owner) && role != static_cast<int>(RoomRole::Admin)) return {RouteStatus::BadRequest};
+
+    ret = delete_room_ai_member(room_id, ai_id);
+    if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::NotFound) {
+        return {RouteStatus::ServerError};
+    }
+
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+    return {RouteStatus::Success};
+}
+
+RouteResult handle_list_conversation_ai_members(RequestContext &ctx) {
+    string id_value(ctx.params["conv_id"]);
+    uint64_t conv_id = 0;
+    try { conv_id = stoull(id_value); } catch (const exception &) { return {RouteStatus::BadRequest}; }
+
+    MysqlPool::QueryResult ret = verify_conversation_member(conv_id, ctx.user_id);
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::BadRequest};
+
+    vector<AiMemberInfo> members;
+    ret = get_conversation_ai_members(conv_id, members);
+    if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::NotFound) {
+        return {RouteStatus::ServerError};
+    }
+
+    string body;
+    try {
+        json out = json::array();
+        for (auto &m : members) {
+            json item;
+            item["ai_id"] = m.ai_id;
+            item["provider"] = m.provider;
+            item["model"] = m.model;
+            if (!m.adapter_url.empty()) item["adapter_url"] = m.adapter_url;
+            if (!m.custom_adapter_text.empty()) item["custom_adapter_text"] = m.custom_adapter_text;
+            out.emplace_back(std::move(item));
+        }
+        body = out.dump();
+    } catch (const exception &e) {
+        return {RouteStatus::BadRequest};
+    }
+
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Content-Length: ";
+    ctx.conn.outbuf += std::to_string(body.size());
+    ctx.conn.outbuf +=
+        "\r\n"
+        "Connection: keep-alive\r\n"
+        "\r\n";
+    if (ctx.req.method == Method::GET) ctx.conn.outbuf += body;
+    return {RouteStatus::Success};
+}
+
+RouteResult handle_create_conversation_ai_member(RequestContext &ctx) {
+    string id_value(ctx.params["conv_id"]);
+    uint64_t conv_id = 0;
+    try { conv_id = stoull(id_value); } catch (const exception &) { return {RouteStatus::BadRequest}; }
+
+    MysqlPool::QueryResult ret = verify_conversation_member(conv_id, ctx.user_id);
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::BadRequest};
+    uint64_t room_id = 0, created_by = 0;
+    ret = get_conversation_data(conv_id, room_id, created_by);
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::BadRequest};
+    string room_name;
+    uint64_t main_conv_id = 0;
+    int room_type = 0;
+    ret = get_room_data(room_id, room_name, main_conv_id, room_type);
+    if (ret == MysqlPool::QueryResult::Success && static_cast<RoomType>(room_type) == RoomType::Atrium) {
+        return {RouteStatus::BadRequest};
+    }
+    if (conv_id == main_conv_id) return {RouteStatus::BadRequest};
+    if (ctx.user_id != created_by) {
+        int role = -1;
+        ret = get_room_member_role(room_id, ctx.user_id, role);
+        if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::BadRequest};
+        if (role != static_cast<int>(RoomRole::Owner) && role != static_cast<int>(RoomRole::Admin)) return {RouteStatus::BadRequest};
+    }
+
+    uint64_t ai_id = 0;
+    string adapter_url, custom_adapter_text;
+    try {
+        json in = json::parse(ctx.req.body);
+        ai_id = in["ai_id"];
+        if (in.contains("adapter_url") && in["adapter_url"].is_string()) adapter_url = in["adapter_url"];
+        if (in.contains("custom_adapter_text") && in["custom_adapter_text"].is_string()) custom_adapter_text = in["custom_adapter_text"];
+    } catch (const exception &) { return {RouteStatus::BadRequest}; }
+
+    if (!ai_id) return {RouteStatus::BadRequest};
+
+    ret = insert_conversation_ai_member(conv_id, ai_id, adapter_url, custom_adapter_text);
+    if (ret == MysqlPool::QueryResult::AlreadyExists) return {RouteStatus::BadRequest};
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::ServerError};
+
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+    return {RouteStatus::Success};
+}
+
+RouteResult handle_update_conversation_ai_member(RequestContext &ctx) {
+    string conv_id_str(ctx.params["conv_id"]);
+    string ai_id_str(ctx.params["ai_id"]);
+    uint64_t conv_id = 0, ai_id = 0;
+    try {
+        conv_id = stoull(conv_id_str);
+        ai_id = stoull(ai_id_str);
+    } catch (const exception &) { return {RouteStatus::BadRequest}; }
+
+    MysqlPool::QueryResult ret = verify_conversation_member(conv_id, ctx.user_id);
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::BadRequest};
+    uint64_t room_id = 0, created_by = 0;
+    ret = get_conversation_data(conv_id, room_id, created_by);
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::BadRequest};
+    string room_name;
+    uint64_t main_conv_id = 0;
+    int room_type = 0;
+    ret = get_room_data(room_id, room_name, main_conv_id, room_type);
+    if (ret == MysqlPool::QueryResult::Success && static_cast<RoomType>(room_type) == RoomType::Atrium) {
+        return {RouteStatus::BadRequest};
+    }
+    if (conv_id == main_conv_id) return {RouteStatus::BadRequest};
+    if (ctx.user_id != created_by) {
+        int role = -1;
+        ret = get_room_member_role(room_id, ctx.user_id, role);
+        if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::BadRequest};
+        if (role != static_cast<int>(RoomRole::Owner) && role != static_cast<int>(RoomRole::Admin)) return {RouteStatus::BadRequest};
+    }
+
+    string adapter_url, custom_adapter_text;
+    try {
+        json in = json::parse(ctx.req.body);
+        if (in.contains("adapter_url")) {
+            if (in["adapter_url"].is_null()) adapter_url = "";
+            else adapter_url = in["adapter_url"];
+        }
+        if (in.contains("custom_adapter_text")) {
+            if (in["custom_adapter_text"].is_null()) custom_adapter_text = "";
+            else custom_adapter_text = in["custom_adapter_text"];
+        }
+    } catch (const exception &) { return {RouteStatus::BadRequest}; }
+
+    ret = update_conversation_ai_member(conv_id, ai_id, adapter_url, custom_adapter_text);
+    if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::NotFound) {
+        return {RouteStatus::ServerError};
+    }
+
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+    return {RouteStatus::Success};
+}
+
+RouteResult handle_delete_conversation_ai_member(RequestContext &ctx) {
+    string conv_id_str(ctx.params["conv_id"]);
+    string ai_id_str(ctx.params["ai_id"]);
+    uint64_t conv_id = 0, ai_id = 0;
+    try {
+        conv_id = stoull(conv_id_str);
+        ai_id = stoull(ai_id_str);
+    } catch (const exception &) { return {RouteStatus::BadRequest}; }
+
+    MysqlPool::QueryResult ret = verify_conversation_member(conv_id, ctx.user_id);
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::BadRequest};
+    uint64_t room_id = 0, created_by = 0;
+    ret = get_conversation_data(conv_id, room_id, created_by);
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::BadRequest};
+    string room_name;
+    uint64_t main_conv_id = 0;
+    int room_type = 0;
+    ret = get_room_data(room_id, room_name, main_conv_id, room_type);
+    if (ret == MysqlPool::QueryResult::Success && static_cast<RoomType>(room_type) == RoomType::Atrium) {
+        return {RouteStatus::BadRequest};
+    }
+    if (conv_id == main_conv_id) return {RouteStatus::BadRequest};
+    if (ctx.user_id != created_by) {
+        int role = -1;
+        ret = get_room_member_role(room_id, ctx.user_id, role);
+        if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::BadRequest};
+        if (role != static_cast<int>(RoomRole::Owner) && role != static_cast<int>(RoomRole::Admin)) return {RouteStatus::BadRequest};
+    }
+
+    ret = delete_conversation_ai_member(conv_id, ai_id);
+    if (ret != MysqlPool::QueryResult::Success && ret != MysqlPool::QueryResult::NotFound) {
         return {RouteStatus::ServerError};
     }
 

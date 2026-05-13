@@ -514,25 +514,31 @@ void Reactor::process(Connection &conn) {
                         LOG_DEBUG("get some data from brower");
 
                         if (!conn.room_ids.contains(room_id)) {
+                            LOG_WARN("ws room_id not joined, fd=%d room_id=%llu", conn.fd, room_id);
                             sendError(conn, WS_PROTOCOLERROR);
                             return false;
                         }
                         uint64_t real_room_id = 0;
                         MysqlPool::QueryResult ret = get_room_from_conversations(real_room_id, conversation_id);
                         if (ret == MysqlPool::QueryResult::NotFound) {
+                            LOG_WARN("ws conversation not in room, conv=%llu room=%llu", conversation_id, room_id);
                             sendError(conn, WS_PROTOCOLERROR);
                             return false;
                         }
                         if (ret != MysqlPool::QueryResult::Success) {
+                            LOG_WARN("ws get_room_from_conversations ServerError, conv=%llu", conversation_id);
                             sendError(conn, WS_SERVERERROR);
                             return false;
                         }
                         if (real_room_id != room_id) {
+                            LOG_WARN("ws room mismatch, expected=%llu actual=%llu conv=%llu",
+                                room_id, real_room_id, conversation_id);
                             sendError(conn, WS_PROTOCOLERROR);
                             return false;
                         }
                         reactor_to_fds = ConnRoute::getInstance().queryByRoom(room_id);
                         if (reactor_to_fds.empty()) {
+                            LOG_WARN("ws empty reactor fds, room_id=%llu", room_id);
                             sendError(conn, WS_PROTOCOLERROR);
                             return false;
                         }
@@ -545,6 +551,8 @@ void Reactor::process(Connection &conn) {
                             now_ms(),
                             in["data"]["client_message_id"]};
                         if (msg.type >= static_cast<int>(chatdb::MessageType::SYSTEM) || msg.type < static_cast<int>(chatdb::MessageType::TEXT)) {
+                            LOG_WARN("invalid message type=%d, expected TEXT(1)/IMAGE(2)/FILE(3), conv=%llu",
+                                msg.type, conversation_id);
                             sendError(conn, WS_PROTOCOLERROR);
                             return false;
                         }
@@ -576,47 +584,37 @@ void Reactor::process(Connection &conn) {
                         payload_data = user_json.dump();
                         LOG_DEBUG("fd = %d websocket payload: %s", conn.fd, payload_data.c_str());
 
-                        auto launcher = [reactor_ptr = this, conversation_id = conversation_id, user_id = conn.user_id, room_id = room_id](uint64_t trigger_message_id, uint64_t context_until_message_id) {
-                            string provider;
-                            string ai_model;
-                            MysqlPool::QueryResult ret = get_conversation_ai_model(conversation_id, provider, ai_model);
-                            if (ret != MysqlPool::QueryResult::Success) {
-                                ConvAiScheduler::getInstance().finish(conversation_id, nullopt);
-                                return;
-                            }
+                        vector<AiMemberInfo> ai_members;
+                        MysqlPool::QueryResult members_ret = get_conversation_ai_members(conversation_id, ai_members);
+                        if (members_ret == MysqlPool::QueryResult::Success) {
+                            for (auto &m : ai_members) {
+                                const char *api_key_ptr = nullptr;
+                                if (m.provider == "deepseek") api_key_ptr = std::getenv("DEEPSEEK_API_KEY");
+                                else if (m.provider == "qwen") api_key_ptr = std::getenv("QWEN_API_KEY");
+                                if (!api_key_ptr || !api_key_ptr[0]) continue;
 
-                            const char *api_key = std::getenv("DEEPSEEK_API_KEY");
-                            if (!api_key || !api_key[0]) {
-                                ConvAiScheduler::getInstance().finish(conversation_id, nullopt);
-                                return;
-                            }
+                                auto launcher = [reactor_ptr = this, conversation_id = conversation_id, user_id = conn.user_id, room_id = room_id, ai_id = m.ai_id, provider = m.provider, ai_model = m.model](uint64_t trigger_message_id, uint64_t context_until_message_id) mutable {
+                                    chatdb::Message ai_msg{
+                                        conversation_id,
+                                        ai_id,
+                                        static_cast<int>(chatdb::MessageType::TEXT),
+                                        "",
+                                        now_ms(),
+                                        nullopt};
+                                    uint64_t ai_message_id = 0;
+                                    MysqlPool::QueryResult ret = insert_hidden_message(ai_msg, now_ms(), ai_message_id);
+                                    if (ret != MysqlPool::QueryResult::Success) {
+                                        LOG_WARN("insert hidden ai message failed, conversation_id = %llu", conversation_id);
+                                        ConvAiScheduler::getInstance().finish(conversation_id, ai_id, nullopt);
+                                        return;
+                                    }
 
-                            uint64_t ai_id = 0;
-                            ret = get_ai_id_by_model(ai_model, ai_id);
-                            if (ret != MysqlPool::QueryResult::Success) {
-                                ConvAiScheduler::getInstance().finish(conversation_id, nullopt);
-                                return;
+                                    unique_ptr<AiReplyTask> task = make_unique<AiReplyTask>(*reactor_ptr, provider, conversation_id, trigger_message_id, context_until_message_id, user_id, room_id, ai_id, ai_model, ai_message_id);
+                                    ThreadPool<Reactor::AiReplyTask>::getInstance().enqueue(std::move(task));
+                                };
+                                ConvAiScheduler::getInstance().submit(conversation_id, m.ai_id, message_id, launcher);
                             }
-
-                            chatdb::Message ai_msg{
-                                conversation_id,
-                                ai_id,
-                                static_cast<int>(chatdb::MessageType::TEXT),
-                                "",
-                                now_ms(),
-                                nullopt};
-                            uint64_t ai_message_id = 0;
-                            ret = insert_hidden_message(ai_msg, now_ms(), ai_message_id);
-                            if (ret != MysqlPool::QueryResult::Success) {
-                                LOG_WARN("insert hidden ai message failed, conversation_id = %llu", conversation_id);
-                                ConvAiScheduler::getInstance().finish(conversation_id, nullopt);
-                                return;
-                            }
-
-                            unique_ptr<AiReplyTask> task = make_unique<AiReplyTask>(*reactor_ptr, conversation_id, trigger_message_id, context_until_message_id, user_id, room_id, ai_id, ai_model, ai_message_id);
-                            ThreadPool<Reactor::AiReplyTask>::getInstance().enqueue(std::move(task));
-                        };
-                        ConvAiScheduler::getInstance().submit(conversation_id, message_id, launcher);
+                        }
                     } catch (const json::exception &e) {
                         LOG_WARN("bad json: %s", e.what());
                         sendError(conn, WS_PROTOCOLERROR);
@@ -711,11 +709,13 @@ void Reactor::process(Connection &conn) {
     }
 }
 
-void Reactor::AiReplyTask::process(DeepSeek &deepseek) {
-    ConvAiTaskGuard guard(m_conversation_id);
+void Reactor::AiReplyTask::process() {
+    ConvAiTaskGuard guard(m_conversation_id, m_ai_id);
     guard.setCompletedAiMessageId(m_ai_message_id);
 
-    const char *api_key = std::getenv("DEEPSEEK_API_KEY");
+    const char *api_key = nullptr;
+    if (m_provider == "deepseek") api_key = std::getenv("DEEPSEEK_API_KEY");
+    else if (m_provider == "qwen") api_key = std::getenv("QWEN_API_KEY");
     if (!api_key || !api_key[0]) return;
     LOG_DEBUG("build ai reply json to brower");
 
@@ -724,9 +724,31 @@ void Reactor::AiReplyTask::process(DeepSeek &deepseek) {
     function<void(AiSseData & data)> on_chunk([this](AiSseData &data) {
         this->onChunk(data);
     });
-    AiClientStatus state = deepseek.chat(ai_request, chat_ai_id, on_chunk);
-    if (state == AiClientStatus::NoReply) return;
-    if (state != AiClientStatus::Success) {
+    AiClientStatus state = m_client->chat(ai_request, chat_ai_id, on_chunk);
+    if (state == AiClientStatus::NoReply) {
+        LOG_DEBUG("ai reply NoReply, conv=%llu ai_id=%llu model=%s provider=%s",
+            m_conversation_id,
+            m_ai_id,
+            m_ai_model.c_str(),
+            m_provider.c_str());
+        return;
+    } else if (state != AiClientStatus::Success) {
+        static const array<const char *, 6> kStatusNames = {
+            "ModelNotRegistered",
+            "BuildRequestFailed",
+            "NetworkError",
+            "Unauthorized",
+            "ServerError",
+            "QuotaExceeded"};
+        const char *name = (static_cast<int>(state) >= 0 && static_cast<int>(state) < kStatusNames.size())
+            ? kStatusNames[static_cast<int>(state)]
+            : "Unknown";
+        LOG_WARN("ai reply failed, status=%s, conv=%llu ai_id=%llu model=%s provider=%s",
+            name,
+            m_conversation_id,
+            m_ai_id,
+            m_ai_model.c_str(),
+            m_provider.c_str());
         if (m_send_start_frame) sendError();
         return;
     }
@@ -745,12 +767,12 @@ void Reactor::AiReplyTask::process(DeepSeek &deepseek) {
     ai_reply_end_json["message_id"] = m_ai_message_id;
     ai_reply_end_json["user_id"] = m_ai_id;
     ai_reply_end_json["sender_type"] = "ai";
-    ai_reply_end_json["display_name"] = "deepseek";
-    ai_reply_end_json["avatar_url"] = "/avatars/deepseek-logo.svg";
+    ai_reply_end_json["display_name"] = m_client->display_name();
+    ai_reply_end_json["avatar_url"] = m_client->avatar_url();
     ai_reply_end_json["type"] = static_cast<int>(chatdb::MessageType::TEXT);
     ai_reply_end_json["content"] = m_ai_reply;
     ai_reply_end_json["send_time_ms"] = now_ms();
-    ai_reply_end_json["provider"] = "deepseek";
+    ai_reply_end_json["provider"] = m_client->provider();
     ai_reply_end_json["model"] = m_ai_model;
 
     json ai_json;
@@ -759,9 +781,62 @@ void Reactor::AiReplyTask::process(DeepSeek &deepseek) {
     ai_reply_end = ai_json.dump();
 
     broadcastAiReply(ai_reply_end);
+    dispatchToOtherAis();
+}
+
+void Reactor::AiReplyTask::dispatchToOtherAis() {
+    if (m_round >= 2) return;
+
+    vector<AiMemberInfo> other_ais;
+    MysqlPool::QueryResult ret = get_conversation_ai_members(m_conversation_id, other_ais);
+    if (ret != MysqlPool::QueryResult::Success) return;
+
+    for (auto &member : other_ais) {
+        if (member.ai_id == m_ai_id) continue;
+
+        const char *api_key = nullptr;
+        if (member.provider == "deepseek") api_key = std::getenv("DEEPSEEK_API_KEY");
+        else if (member.provider == "qwen") api_key = std::getenv("QWEN_API_KEY");
+        if (!api_key || !api_key[0]) continue;
+
+        auto launcher = [reactor_ptr = &m_reactor, conv_id = m_conversation_id, user_id = m_user_id, room_id = m_room_id, ai_id = member.ai_id, provider = member.provider, model = member.model, next_round = m_round + 1](uint64_t trigger_message_id, uint64_t context_until_message_id) mutable {
+            chatdb::Message ai_msg{
+                conv_id,
+                ai_id,
+                static_cast<int>(chatdb::MessageType::TEXT),
+                "",
+                now_ms(),
+                nullopt};
+            uint64_t msg_id = 0;
+            MysqlPool::QueryResult ret = insert_hidden_message(ai_msg, now_ms(), msg_id);
+            if (ret != MysqlPool::QueryResult::Success) {
+                ConvAiScheduler::getInstance().finish(conv_id, ai_id, nullopt);
+                return;
+            }
+            auto task = make_unique<AiReplyTask>(
+                *reactor_ptr,
+                provider,
+                conv_id,
+                trigger_message_id,
+                context_until_message_id,
+                user_id,
+                room_id,
+                ai_id,
+                model,
+                msg_id,
+                next_round);
+            ThreadPool<Reactor::AiReplyTask>::getInstance().enqueue(std::move(task));
+        };
+        ConvAiScheduler::getInstance().submit(m_conversation_id, member.ai_id, m_ai_message_id, launcher, true);
+    }
 }
 
 void Reactor::AiReplyTask::onChunk(AiSseData &data) {
+    if (data.content.empty()) {
+        if (data.total_tokens) accumulate_user_ai_tokens(m_user_id, m_ai_id, data);
+        return;
+    }
+
     m_ai_reply += data.content;
 
     if (!m_send_start_frame) {
@@ -770,7 +845,7 @@ void Reactor::AiReplyTask::onChunk(AiSseData &data) {
         ai_reply["room_id"] = m_room_id;
         ai_reply["conversation_id"] = m_conversation_id;
         ai_reply["message_id"] = m_ai_message_id;
-        ai_reply["avatar_url"] = "/avatars/deepseek-logo.svg";
+        ai_reply["avatar_url"] = m_client->avatar_url();
         ai_reply["model"] = m_ai_model;
         ai_reply["send_time_ms"] = now_ms();
 
@@ -1025,9 +1100,12 @@ FrameResult Reactor::checkFrame(Connection &conn) {
     if (conn.protocol == PROTO_WEBSOCKET) {
         FrameResult res = checkWebSocketFrame(conn.inbuf, conn.fd);
         if (res.status == FrameStatus::ProtocolError) {
+            LOG_WARN("ws frame protocol error, fd=%d", conn.fd);
             sendError(conn, WS_PROTOCOLERROR);
         }
         return res;
     }
     return {FrameStatus::ProtocolError, 0};
 }
+
+Reactor::AiReplyTask::AiReplyTask(Reactor &reactor, std::string &provider, uint64_t conversation_id, uint64_t trigger_message_id, uint64_t context_until_message_id, uint64_t user_id, uint64_t room_id, uint64_t ai_id, std::string ai_model, uint64_t ai_message_id, size_t round) : m_reactor(reactor), m_provider(provider), m_client(AiClient::create(m_provider)), m_conversation_id(conversation_id), m_trigger_message_id(trigger_message_id), m_context_until_message_id(context_until_message_id), m_user_id(user_id), m_room_id(room_id), m_ai_id(ai_id), m_ai_model(ai_model), m_ai_message_id(ai_message_id), m_round(round) {}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { EASE, TAP_TRANSITION } from "../constants.js";
 import {
@@ -12,6 +12,7 @@ import {
   fetchFriendRequests,
   fetchFriends,
   fetchAiUsage,
+  fetchTodayAiUsage,
   fetchMyRoomInvitations,
   fetchRoomInvitations,
   fetchRoomMembers,
@@ -21,8 +22,10 @@ import {
   respondFriendRequest,
   respondRoomInvitation,
   searchUsers,
+  syncRoomAiMembers,
   updateRoomMemberRole
 } from "../utils.js";
+import { AiModelSelector, AiRosterList, AiSeatStrip, ModalLayer, mergeAiMemberOptions } from "./AiTeamEditor.jsx";
 
 const ROLE_LABELS = {
   0: "房主",
@@ -58,6 +61,20 @@ const TOKEN_USAGE_COLORS = Object.freeze({
 
 function getRoleLabel(role) {
   return ROLE_LABELS[Number(role)] || "成员";
+}
+function normalizePositiveId(value) {
+  const numericValue = Number(value);
+  return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : 0;
+}
+function getAiMemberId(member) {
+  return normalizePositiveId(member?.aiId ?? member?.ai_id ?? member?.id);
+}
+function getAiSupplementMembers(primaryMembers = [], fallbackMembers = []) {
+  const primaryIds = new Set((primaryMembers || []).map(getAiMemberId).filter(Boolean));
+  return (fallbackMembers || []).filter((member) => {
+    const aiId = getAiMemberId(member);
+    return aiId && !primaryIds.has(aiId);
+  });
 }
 
 function RowAction({ children, kind = "secondary", busy = false, disabled = false, onClick }) {
@@ -459,7 +476,7 @@ function WorkspaceAiUsage({ usage, state, onRefresh, currentModelLabel }) {
 
 function WorkspaceRoomBrief({ room, members, conversations, modelLabel, modelLoading }) {
   const discussionCount = conversations.length || 1;
-  const resolvedModelLabel = modelLoading ? "模型同步中" : modelLabel || "未绑定 AI";
+  const resolvedModelLabel = modelLoading ? "团队同步中" : modelLabel || "未绑定 AI";
   return (
     <section className={`workspace-room-brief is-${room?.tone || "personal"}`} aria-label="房间概览">
       <div className="workspace-brief-copy">
@@ -496,6 +513,16 @@ export default function WorkspacePanel({
   readOnly = false,
   activeConversationModelLabel = "",
   isConversationModelLoading = false,
+  activeConversation = null,
+  isMainConversation = true,
+  roomAiMembers = [],
+  conversationAiMembers = [],
+  effectiveAiMembers = [],
+  availableAis = [],
+  thinkingAdapters = [],
+  aiConfigError = {},
+  onRoomAiMembersSave = async () => [],
+  onConversationAiMembersChange = async () => [],
   activeTab = "room",
   onTabChange = () => {},
   onRoomsChanged = async () => {},
@@ -503,7 +530,11 @@ export default function WorkspacePanel({
   onRoomSelect = () => {}
 }) {
   const [tab, setTab] = useState(() => ["room", "ai", "members", "contacts"].includes(activeTab) ? activeTab : "room");
+  const [createRoomOpen, setCreateRoomOpen] = useState(false);
+  const [aiAddOpen, setAiAddOpen] = useState(false);
+  const [conversationAiOpen, setConversationAiOpen] = useState(false);
   const [newRoomName, setNewRoomName] = useState("");
+  const [newRoomAiMembers, setNewRoomAiMembers] = useState([]);
   const [renameValue, setRenameValue] = useState(room?.name || "");
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
@@ -515,6 +546,7 @@ export default function WorkspacePanel({
   const [roomInvitations, setRoomInvitations] = useState([]);
   const [aiUsage, setAiUsage] = useState(EMPTY_AI_USAGE);
   const [aiUsageState, setAiUsageState] = useState("idle");
+  const historicalUsageRef = useRef(EMPTY_AI_USAGE);
   const [panelState, setPanelState] = useState("idle");
   const [searchState, setSearchState] = useState("idle");
   const [actionKey, setActionKey] = useState("");
@@ -530,9 +562,21 @@ export default function WorkspacePanel({
   const myRole = myMember ? Number(myMember.role) : null;
   const canManageRoom = myRole === 0;
   const canManageMembers = MANAGER_ROLES.has(myRole);
+  const conversationCreatorId = normalizePositiveId(activeConversation?.createdBy ?? activeConversation?.created_by);
+  const isConversationCreator = Boolean(conversationCreatorId && normalizedCurrentUserId && String(conversationCreatorId) === normalizedCurrentUserId);
+  const canEditConversationAi = !isMainConversation && (canManageMembers || isConversationCreator || !conversationCreatorId);
   const isBaseRoom = room?.id === "personal" || room?.id === "public" || room?.roomId === 1;
+  const isPersonalRoom = room?.id === "personal";
   const friendIds = useMemo(() => new Set(friends.map((friend) => friend.userId)), [friends]);
   const roomMemberIds = useMemo(() => new Set(members.map((member) => member.userId)), [members]);
+  const conversationSupplementMembers = useMemo(
+    () => getAiSupplementMembers(conversationAiMembers, roomAiMembers),
+    [conversationAiMembers, roomAiMembers]
+  );
+  const aiMemberOptions = useMemo(
+    () => mergeAiMemberOptions(availableAis, roomAiMembers, conversationAiMembers),
+    [availableAis, roomAiMembers, conversationAiMembers]
+  );
 
   function handleTabChange(nextTab) {
     setTab(nextTab);
@@ -540,8 +584,9 @@ export default function WorkspacePanel({
   }
 
   useEffect(() => {
-    if (["room", "ai", "members", "contacts"].includes(activeTab) && activeTab !== tab) {
-      setTab(activeTab);
+    let resolvedTab = activeTab;
+    if (["room", "ai", "members", "contacts"].includes(resolvedTab) && resolvedTab !== tab) {
+      setTab(resolvedTab);
     }
   }, [activeTab, tab]);
 
@@ -549,7 +594,12 @@ export default function WorkspacePanel({
     setRenameValue(room?.name || "");
     setNotice("");
     setError("");
+    setConversationAiOpen(false);
   }, [room?.roomId, room?.name]);
+
+  useEffect(() => {
+    setConversationAiOpen(false);
+  }, [activeConversation?.id, isMainConversation]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -571,12 +621,48 @@ export default function WorkspacePanel({
   async function refreshAiUsage(signal) {
     setAiUsageState("loading");
     try {
-      const nextUsage = await fetchAiUsage(signal);
-      setAiUsage(nextUsage);
+      if (!historicalUsageRef.current.models || !historicalUsageRef.current.models.length) {
+        const historyData = await fetchAiUsage(signal);
+        historicalUsageRef.current = historyData;
+      }
+      const historical = historicalUsageRef.current;
+
+      const today = await fetchTodayAiUsage(signal);
+      const todayDate = getIsoDate(new Date());
+
+      const modelByName = new Map();
+      for (const m of (historical.models || [])) {
+        const name = String(readFirst(m, ["model", "model_name", "modelName", "name"], "ai"));
+        if (name) modelByName.set(name, { ...m });
+      }
+      for (const tm of (today.models || [])) {
+        const name = String(readFirst(tm, ["model", "model_name", "modelName", "name"], "ai"));
+        if (!name) continue;
+        const existing = modelByName.get(name);
+        if (existing) {
+          const rawDays = Array.isArray(existing.days)
+            ? existing.days : Array.isArray(existing.daily) ? existing.daily : [];
+          const todayEntry = { ...tm };
+          const days = rawDays
+            .filter((d) => String(readFirst(d, ["date", "day", "usage_date", "usageDate"], "")) !== todayDate)
+            .concat(todayEntry);
+          modelByName.set(name, { ...existing, days });
+        } else {
+          modelByName.set(name, { ...tm });
+        }
+      }
+      const mergedModels = [...modelByName.values()];
+
+      setAiUsage({
+        promptTokens: historical.promptTokens,
+        completionTokens: historical.completionTokens,
+        totalTokens: historical.totalTokens,
+        requestCount: historical.requestCount,
+        models: mergedModels
+      });
       setAiUsageState("ready");
     } catch (err) {
       if (err?.name === "AbortError") return;
-      setAiUsage(EMPTY_AI_USAGE);
       setAiUsageState("error");
     }
   }
@@ -639,9 +725,17 @@ export default function WorkspacePanel({
       setError("请先给讨论室起名");
       return;
     }
-    const created = await runAction("create-room", async () => createRoom(name), "讨论室已创建");
+    const created = await runAction("create-room", async () => {
+      const nextRoom = await createRoom(name);
+      if (nextRoom?.roomId && newRoomAiMembers.length) {
+        await syncRoomAiMembers(nextRoom.roomId, newRoomAiMembers);
+      }
+      return nextRoom;
+    }, "讨论室已创建");
     if (created?.roomId) {
       setNewRoomName("");
+      setNewRoomAiMembers([]);
+      setCreateRoomOpen(false);
       const nextRoom = await onRoomsChanged(created.roomId);
       if (nextRoom?.id) onRoomSelect(nextRoom.id);
     }
@@ -834,16 +928,8 @@ export default function WorkspacePanel({
 
                   <section className="workspace-section">
                     <div className="workspace-section-title">新讨论室</div>
-                    <div className="workspace-inline-form">
-                      <input
-                        className="workspace-input"
-                        value={newRoomName}
-                        onChange={(event) => setNewRoomName(event.target.value)}
-                        placeholder="例如：项目复盘"
-                        maxLength={32}
-                        disabled={readOnly}
-                      />
-                      <RowAction kind="primary" busy={actionKey === "create-room"} disabled={readOnly} onClick={handleCreateRoom}>创建</RowAction>
+                    <div className="workspace-create-room-entry">
+                      <RowAction kind="primary" busy={actionKey === "create-room"} disabled={readOnly} onClick={() => setCreateRoomOpen(true)}>新建房间</RowAction>
                     </div>
                   </section>
 
@@ -895,13 +981,78 @@ export default function WorkspacePanel({
                   />
 
                   <section className="workspace-section">
-                    <div className="workspace-section-title">当前对话</div>
-                    <div className="workspace-list">
-                      <div className="workspace-row">
-                        <div className="workspace-row-main">
-                          <span>{isConversationModelLoading ? "模型同步中" : activeConversationModelLabel || "未绑定 AI"}</span>
-                          <small>模型随当前对话切换</small>
-                        </div>
+                    <div className="workspace-section-title">当前对话团队</div>
+                    <div className="workspace-ai-team">
+                      <div className="workspace-ai-team-head">
+                        <span>{effectiveAiMembers.length ? `${effectiveAiMembers.length} 位 AI` : "无 AI"}</span>
+                        <small>
+                          {isMainConversation
+                            ? "主对话使用房间 AI"
+                            : canEditConversationAi
+                              ? "本对话可单独调整"
+                              : "仅创建者、房主或协管可调整"}
+                        </small>
+                      </div>
+                      {aiConfigError?.conversation ? <div className="workspace-ai-team-warning">{aiConfigError.conversation}</div> : null}
+                      {isMainConversation ? (
+                        <AiRosterList
+                          members={roomAiMembers}
+                          thinkingAdapters={thinkingAdapters}
+                          readOnly={true}
+                          onChange={async () => roomAiMembers}
+                          emptyText="主对话未绑定 AI"
+                        />
+                      ) : (
+                        <>
+                          <AiRosterList
+                            members={conversationAiMembers}
+                            thinkingAdapters={thinkingAdapters}
+                            readOnly={readOnly || !canEditConversationAi}
+                            onChange={onConversationAiMembersChange}
+                            emptyText="本对话未单独添加 AI"
+                          />
+                          {conversationSupplementMembers.length ? (
+                            <div className="workspace-ai-supplement" aria-label="来自房间默认团队的 AI">
+                              <span>房间补位</span>
+                              <AiSeatStrip
+                                members={conversationSupplementMembers}
+                                thinkingAdapters={thinkingAdapters}
+                                readOnly={true}
+                                onChange={async () => conversationSupplementMembers}
+                                emptyText=""
+                              />
+                            </div>
+                          ) : null}
+                          <div className="workspace-ai-team-foot">
+                            <button type="button" className="workspace-ai-add focus-ring" onClick={() => setConversationAiOpen(true)} disabled={readOnly || !canEditConversationAi}>
+                              + 调整本对话 AI
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </section>
+
+                  <section className="workspace-section">
+                    <div className="workspace-section-title">房间默认团队</div>
+                    <div className="workspace-ai-team">
+                      <div className="workspace-ai-team-head">
+                        <span>{roomAiMembers.length ? `${roomAiMembers.length} 位 AI` : "无 AI"}</span>
+                        <small>{canManageRoom ? "新对话默认继承这里" : "只有房主可以修改房间默认"}</small>
+                      </div>
+                      {aiConfigError?.room ? <div className="workspace-ai-team-warning">{aiConfigError.room}</div> : null}
+                      {aiConfigError?.models ? <div className="workspace-ai-team-warning">{aiConfigError.models}</div> : null}
+                      <AiRosterList
+                        members={roomAiMembers}
+                        thinkingAdapters={thinkingAdapters}
+                        readOnly={readOnly || !canManageRoom}
+                        onChange={onRoomAiMembersSave}
+                        emptyText="房间默认阵容为空"
+                      />
+                      <div className="workspace-ai-team-foot">
+                        <button type="button" className="workspace-ai-add focus-ring" onClick={() => setAiAddOpen(true)} disabled={readOnly || !canManageRoom}>
+                          + 添加 AI
+                        </button>
                       </div>
                     </div>
                   </section>
@@ -938,35 +1089,39 @@ export default function WorkspacePanel({
                     </div>
                   </section>
 
-                  <section className="workspace-section">
-                    <div className="workspace-section-title">邀请好友</div>
-                    <div className="workspace-list">
-                      {inviteableFriends.length ? inviteableFriends.map((friend) => (
-                        <div key={friend.userId} className="workspace-row">
-                          <div className="workspace-row-main">
-                            <span>{friend.nickname}</span>
-                            <small>#{friend.userId}</small>
+                  {isPersonalRoom ? null : (
+                    <section className="workspace-section">
+                      <div className="workspace-section-title">邀请好友</div>
+                      <div className="workspace-list">
+                        {inviteableFriends.length ? inviteableFriends.map((friend) => (
+                          <div key={friend.userId} className="workspace-row">
+                            <div className="workspace-row-main">
+                              <span>{friend.nickname}</span>
+                              <small>#{friend.userId}</small>
+                            </div>
+                            <RowAction busy={actionKey === `invite-${friend.userId}`} disabled={!roomId} onClick={() => handleInviteFriend(friend.userId)}>邀请</RowAction>
                           </div>
-                          <RowAction busy={actionKey === `invite-${friend.userId}`} disabled={!roomId} onClick={() => handleInviteFriend(friend.userId)}>邀请</RowAction>
-                        </div>
-                      )) : <EmptyLine>没有可邀请的好友</EmptyLine>}
-                    </div>
-                  </section>
+                        )) : <EmptyLine>没有可邀请的好友</EmptyLine>}
+                      </div>
+                    </section>
+                  )}
 
-                  <section className="workspace-section">
-                    <div className="workspace-section-title">已发房间邀请</div>
-                    <div className="workspace-list">
-                      {roomInvitations.length ? roomInvitations.map((invitation) => (
-                        <div key={invitation.invitationId} className="workspace-row">
-                          <div className="workspace-row-main">
-                            <span>{invitation.inviteeNickname || `用户 ${invitation.inviteeId}`}</span>
-                            <small>等待回应</small>
+                  {isPersonalRoom ? null : (
+                    <section className="workspace-section">
+                      <div className="workspace-section-title">已发房间邀请</div>
+                      <div className="workspace-list">
+                        {roomInvitations.length ? roomInvitations.map((invitation) => (
+                          <div key={invitation.invitationId} className="workspace-row">
+                            <div className="workspace-row-main">
+                              <span>{invitation.inviteeNickname || `用户 ${invitation.inviteeId}`}</span>
+                              <small>等待回应</small>
+                            </div>
+                            <RowAction busy={actionKey === `room-invitation-cancel-${invitation.invitationId}`} onClick={() => handleCancelRoomInvitation(invitation.invitationId)}>撤回</RowAction>
                           </div>
-                          <RowAction busy={actionKey === `room-invitation-cancel-${invitation.invitationId}`} onClick={() => handleCancelRoomInvitation(invitation.invitationId)}>撤回</RowAction>
-                        </div>
-                      )) : <EmptyLine>没有待回应的房间邀请</EmptyLine>}
-                    </div>
-                  </section>
+                        )) : <EmptyLine>没有待回应的房间邀请</EmptyLine>}
+                      </div>
+                    </section>
+                  )}
                 </div>
               ) : null}
 
@@ -1067,6 +1222,84 @@ export default function WorkspacePanel({
               ) : null}
             </div>
           </motion.aside>
+          <ModalLayer
+            isOpen={createRoomOpen}
+            title="新建房间"
+            subtitle="先命名房间，再配置默认 AI 阵容"
+            onClose={() => setCreateRoomOpen(false)}
+          >
+            <div className="ai-create-room">
+              <label className="ai-create-room-name">
+                <span>房间名</span>
+                <input
+                  className="workspace-input"
+                  value={newRoomName}
+                  onChange={(event) => setNewRoomName(event.target.value)}
+                  placeholder="例如：项目复盘"
+                  maxLength={32}
+                  disabled={readOnly || actionKey === "create-room"}
+                />
+              </label>
+              <div className="ai-create-room-main">
+                <AiModelSelector
+                  models={aiMemberOptions}
+                  members={newRoomAiMembers}
+                  thinkingAdapters={thinkingAdapters}
+                  readOnly={readOnly || actionKey === "create-room"}
+                  onChange={async (nextMembers) => {
+                    setNewRoomAiMembers(nextMembers);
+                    return nextMembers;
+                  }}
+                  className="is-room-create"
+                />
+              </div>
+              <div className="ai-create-room-seats">
+                <AiSeatStrip
+                  members={newRoomAiMembers}
+                  thinkingAdapters={thinkingAdapters}
+                  readOnly={readOnly || actionKey === "create-room"}
+                  onChange={async (nextMembers) => {
+                    setNewRoomAiMembers(nextMembers);
+                    return nextMembers;
+                  }}
+                  emptyText="无 AI"
+                />
+              </div>
+              <div className="ai-create-room-actions">
+                <RowAction busy={actionKey === "create-room"} disabled={readOnly || !newRoomName.trim()} onClick={handleCreateRoom}>创建</RowAction>
+              </div>
+            </div>
+          </ModalLayer>
+          <ModalLayer
+            isOpen={conversationAiOpen}
+            title="调整本对话 AI"
+            subtitle="只影响当前普通对话，房间默认团队会继续补位"
+            onClose={() => setConversationAiOpen(false)}
+          >
+            <AiModelSelector
+              models={aiMemberOptions}
+              members={conversationAiMembers}
+              thinkingAdapters={thinkingAdapters}
+              readOnly={readOnly || !canEditConversationAi}
+              onChange={onConversationAiMembersChange}
+              className="is-workspace-modal"
+            />
+          </ModalLayer>
+          <ModalLayer
+            isOpen={aiAddOpen}
+            title="添加 AI"
+            subtitle="修改房间默认阵容"
+            onClose={() => setAiAddOpen(false)}
+          >
+            <AiModelSelector
+              models={aiMemberOptions}
+              members={roomAiMembers}
+              thinkingAdapters={thinkingAdapters}
+              readOnly={readOnly || !canManageRoom}
+              onChange={onRoomAiMembersSave}
+              className="is-workspace-modal"
+            />
+          </ModalLayer>
         </>
       ) : null}
     </AnimatePresence>

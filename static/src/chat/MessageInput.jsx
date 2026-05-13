@@ -9,7 +9,7 @@ export default function MessageInput({
   shouldAnimateEntry, entryDelay, entryDuration = 0.3, entryOffsetY = 20,
   transitionMode = "idle", motionTiming = null, readOnly = false,
   attachment = null, error = "", placeholder = "输入消息，按 Enter 发送",
-  onPasteImage, onRemoveAttachment
+  onPasteImage, onRemoveAttachment, topSlot = null
 }) {
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -93,6 +93,7 @@ export default function MessageInput({
   return (
     <motion.section className="composer" initial={initial} animate={animate} transition={transition}>
       <div className="composer-inner">
+        {topSlot ? <div className="composer-top-slot">{topSlot}</div> : null}
         <div className="composer-row">
           <div className="composer-field" ref={composerFieldRef}>
             <div className="composer-input-shell">

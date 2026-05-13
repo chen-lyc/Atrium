@@ -1,4 +1,4 @@
-import { AI_MODEL_LABELS, DEFAULT_CONVERSATION_ID } from "./constants.js";
+import { AI_MODEL_LABELS, DEFAULT_CONVERSATION_ID, THINKING_MODE_OPTIONS } from "./constants.js";
 
 const MAX_IMAGE_SOURCE_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_DATA_URL_BYTES = 5 * 1024 * 1024;
@@ -213,7 +213,6 @@ export function findPendingLocalMatch(prevMessages, incomingMessage) {
     .map((message, index) => ({ message, index }))
     .find(({ message }) => {
       if (!message.isSelf || message.source !== "local") return false;
-      if (hasIncomingServerId && message.status !== "pending") return false;
       if (message.nickname !== incomingMessage.nickname || message.text !== incomingMessage.text) return false;
       const timeGap = Math.abs(
         getTimestampValue(incomingMessage.timestamp) - getTimestampValue(message.timestamp)
@@ -226,7 +225,13 @@ export function mergeIncomingMessage(prevMessages, incomingMessage) {
   if (!incomingMessage.isSelf) {
     return [...prevMessages, incomingMessage];
   }
-  const matchIndex = findPendingLocalMatch(prevMessages, incomingMessage);
+  let matchIndex = findPendingLocalMatch(prevMessages, incomingMessage);
+  if (matchIndex == null) {
+    const incomingText = incomingMessage.text;
+    matchIndex = prevMessages.findIndex(
+      (m) => m.isSelf && (m.source === "local" || m.serverId) && m.text === incomingText
+    );
+  }
   if (matchIndex == null) {
     return [...prevMessages, incomingMessage];
   }
@@ -327,9 +332,28 @@ function hasInvalidControlCharacter(value) {
 }
 
 export function validateAuthNickname(nickname) {
-  if (!nickname) return "请输入昵称";
-  if (hasInvalidControlCharacter(nickname)) return "昵称包含无效字符";
-  if (getUtf8ByteLength(nickname) > 32) return "昵称不能超过 32 字节";
+  if (!nickname) return "请输入登录名";
+  if (hasInvalidControlCharacter(nickname)) return "登录名包含无效字符";
+  if (getUtf8ByteLength(nickname) > 32) return "登录名不能超过 32 字节";
+  return "";
+}
+
+export function validateAuthUsername(username) {
+  if (!username) return "请输入登录名";
+  if (hasInvalidControlCharacter(username)) return "登录名包含无效字符";
+  if (getUtf8ByteLength(username) > 32) return "登录名不能超过 32 字节";
+  return "";
+}
+
+export function validateProfileNickname(nickname) {
+  if (!nickname) return "请输入显示名";
+  if (hasInvalidControlCharacter(nickname)) return "显示名包含无效字符";
+  if (getUtf8ByteLength(nickname) > 64) return "显示名不能超过 64 字节";
+  return "";
+}
+
+export function validateProfileAvatarUrl(avatarUrl) {
+  if (getUtf8ByteLength(avatarUrl || "") > 255) return "头像地址不能超过 255 字节";
   return "";
 }
 
@@ -351,17 +375,17 @@ async function readResponseText(response) {
 export async function resolveAuthFailure(response, mode) {
   const responseText = await readResponseText(response);
   if (response.status === 400) {
-    if (responseText === "invalid_username") return { field: "nickname", message: "昵称不合法", networkError: "" };
+    if (responseText === "invalid_username") return { field: "nickname", message: "登录名不合法", networkError: "" };
     if (responseText === "invalid_password") return { field: "password", message: "密码不合法", networkError: "" };
     if (responseText === "invalid_encode") return { field: null, message: "", networkError: "请求格式异常，请重试" };
-    if (responseText === "missing username or password") return { field: null, message: "", networkError: "请完整填写昵称和密码" };
+    if (responseText === "missing username or password") return { field: null, message: "", networkError: "请完整填写登录名和密码" };
     return { field: null, message: "", networkError: "输入格式不正确，请检查后重试" };
   }
   if (mode === "login" && response.status === 401) {
-    return { field: "password", message: "昵称或密码错误", networkError: "" };
+    return { field: "password", message: "登录名或密码错误", networkError: "" };
   }
   if (mode === "register" && response.status === 409) {
-    return { field: "nickname", message: "昵称已被占用", networkError: "" };
+    return { field: "nickname", message: "登录名已被占用", networkError: "" };
   }
   if (response.status >= 500) {
     return { field: null, message: "", networkError: "服务器开小差了，请稍后再试" };
@@ -379,13 +403,29 @@ function normalizeAuthNickname(data) {
   return "";
 }
 
+function normalizeAuthUsername(data) {
+  if (typeof data?.username === "string" && data.username.trim()) return data.username.trim();
+  return "";
+}
+
+function normalizeAuthAvatarUrl(data) {
+  if (typeof data?.avatar_url === "string" && data.avatar_url.trim()) return data.avatar_url.trim();
+  if (typeof data?.avatarUrl === "string" && data.avatarUrl.trim()) return data.avatarUrl.trim();
+  return "";
+}
+
 export function normalizeAuthPayload(data, fallbackNickname = "") {
   const nickname = normalizeAuthNickname(data) || String(fallbackNickname || "").trim();
+  const username = normalizeAuthUsername(data);
+  const avatarUrl = normalizeAuthAvatarUrl(data);
   const userId = normalizeAuthUserId(data);
   return {
     ...(data && typeof data === "object" ? data : {}),
     userId,
+    username,
     nickname,
+    avatarUrl,
+    avatar_url: avatarUrl,
     rooms: normalizeAuthRooms(data),
     conversations: normalizeAuthConversations(data)
   };
@@ -624,6 +664,64 @@ function normalizeRoomInvitation(item, direction = "received") {
   };
 }
 
+export function normalizeAiMember(item) {
+  const aiId = normalizeNumericId(item?.ai_id ?? item?.aiId ?? item?.id);
+  const provider = normalizeText(item?.provider);
+  const model = normalizeText(item?.model);
+  const displayName = normalizeText(item?.display_name ?? item?.displayName);
+  const avatarUrl = normalizeText(item?.avatar_url ?? item?.avatarUrl);
+  const adapterUrl = normalizeText(item?.adapter_url ?? item?.adapterUrl);
+  const customAdapterText =
+    typeof item?.custom_adapter_text === "string"
+      ? item.custom_adapter_text
+      : typeof item?.customAdapterText === "string"
+        ? item.customAdapterText
+        : "";
+  return {
+    aiId,
+    id: aiId,
+    provider,
+    model,
+    displayName,
+    avatarUrl,
+    adapterUrl,
+    customAdapterText
+  };
+}
+
+export function getThinkingModeFromMember(member) {
+  if (member?.customAdapterText && String(member.customAdapterText).trim()) return "custom";
+  const adapterUrl = normalizeText(member?.adapterUrl ?? member?.adapter_url);
+  if (!adapterUrl) return "default";
+  const matched = THINKING_MODE_OPTIONS.find((option) => option.adapterAliases.includes(adapterUrl));
+  return matched?.key || "default";
+}
+
+export function getThinkingModeLabel(member) {
+  const key = typeof member === "string" ? member : getThinkingModeFromMember(member);
+  return THINKING_MODE_OPTIONS.find((option) => option.key === key)?.label || "默认";
+}
+
+export function resolveThinkingAdapterUrl(thinkingKey, availableAdapters = []) {
+  const option = THINKING_MODE_OPTIONS.find((item) => item.key === thinkingKey);
+  if (!option || option.key === "default" || option.isCustom) return "";
+  const available = new Set((Array.isArray(availableAdapters) ? availableAdapters : []).filter(Boolean));
+  return option.adapterAliases.find((alias) => available.has(alias)) || option.adapterAliases[0] || "";
+}
+
+function buildAiMemberBody(member) {
+  const aiId = normalizeNumericId(member?.aiId ?? member?.ai_id ?? member?.id);
+  const body = {
+    ai_id: aiId,
+    adapter_url: member?.adapterUrl ? String(member.adapterUrl) : null,
+    custom_adapter_text:
+      typeof member?.customAdapterText === "string" && member.customAdapterText.trim()
+        ? member.customAdapterText
+        : null
+  };
+  return body;
+}
+
 export async function createRoom(roomName) {
   const data = await apiRequest("/api/rooms", {
     method: "POST",
@@ -635,12 +733,114 @@ export async function createRoom(roomName) {
   };
 }
 
-export async function createConversation(roomId, title, model) {
+export async function createConversation(roomId, title) {
   const data = await apiRequest(`/api/rooms/${roomId}/conversations`, {
     method: "POST",
-    body: { title, model }
+    body: { title }
   });
   return { conversationId: normalizeNumericId(data?.conversation_id ?? data?.conversationId) };
+}
+
+export async function fetchThinkingAdapters(signal) {
+  const data = await apiRequest("/api/thinking-adapters", { signal });
+  return Array.isArray(data) ? data.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim()) : [];
+}
+
+export async function fetchAvailableAis(signal) {
+  const data = await apiRequest("/api/ais", { signal });
+  return Array.isArray(data) ? data.map(normalizeAiMember).filter((member) => member.aiId) : [];
+}
+
+export async function fetchRoomAiMembers(roomId, signal) {
+  if (!roomId) return [];
+  const data = await apiRequest(`/api/rooms/${roomId}/ai-members`, { signal });
+  return Array.isArray(data) ? data.map(normalizeAiMember).filter((member) => member.aiId) : [];
+}
+
+export async function fetchConversationAiMembers(conversationId, signal) {
+  if (!conversationId) return [];
+  const data = await apiRequest(`/api/conversations/${conversationId}/ai-members`, { signal });
+  return Array.isArray(data) ? data.map(normalizeAiMember).filter((member) => member.aiId) : [];
+}
+
+export async function addRoomAiMember(roomId, member) {
+  await apiRequest(`/api/rooms/${roomId}/ai-members`, {
+    method: "POST",
+    body: buildAiMemberBody(member),
+    parseJson: false
+  });
+}
+
+export async function updateRoomAiMember(roomId, member) {
+  await apiRequest(`/api/rooms/${roomId}/ai-members/${member.aiId}`, {
+    method: "PATCH",
+    body: buildAiMemberBody(member),
+    parseJson: false
+  });
+}
+
+export async function removeRoomAiMember(roomId, aiId) {
+  await apiRequest(`/api/rooms/${roomId}/ai-members/${aiId}`, { method: "DELETE", parseJson: false });
+}
+
+export async function addConversationAiMember(conversationId, member) {
+  await apiRequest(`/api/conversations/${conversationId}/ai-members`, {
+    method: "POST",
+    body: buildAiMemberBody(member),
+    parseJson: false
+  });
+}
+
+export async function updateConversationAiMember(conversationId, member) {
+  await apiRequest(`/api/conversations/${conversationId}/ai-members/${member.aiId}`, {
+    method: "PATCH",
+    body: buildAiMemberBody(member),
+    parseJson: false
+  });
+}
+
+export async function removeConversationAiMember(conversationId, aiId) {
+  await apiRequest(`/api/conversations/${conversationId}/ai-members/${aiId}`, { method: "DELETE", parseJson: false });
+}
+
+async function syncAiMemberSet(currentMembers, nextMembers, addMember, updateMember, removeMember) {
+  const currentById = new Map((currentMembers || []).map((member) => [member.aiId, member]));
+  const nextById = new Map((nextMembers || []).map((member) => [member.aiId, member]).filter(([aiId]) => aiId));
+
+  await Promise.all(
+    [...currentById.keys()]
+      .filter((aiId) => !nextById.has(aiId))
+      .map((aiId) => removeMember(aiId))
+  );
+  await Promise.all(
+    [...nextById.values()].map((member) =>
+      currentById.has(member.aiId) ? updateMember(member) : addMember(member)
+    )
+  );
+}
+
+export async function syncRoomAiMembers(roomId, nextMembers) {
+  const currentMembers = await fetchRoomAiMembers(roomId);
+  await syncAiMemberSet(
+    currentMembers,
+    nextMembers,
+    (member) => addRoomAiMember(roomId, member),
+    (member) => updateRoomAiMember(roomId, member),
+    (aiId) => removeRoomAiMember(roomId, aiId)
+  );
+  return fetchRoomAiMembers(roomId);
+}
+
+export async function syncConversationAiMembers(conversationId, nextMembers) {
+  const currentMembers = await fetchConversationAiMembers(conversationId);
+  await syncAiMemberSet(
+    currentMembers,
+    nextMembers,
+    (member) => addConversationAiMember(conversationId, member),
+    (member) => updateConversationAiMember(conversationId, member),
+    (aiId) => removeConversationAiMember(conversationId, aiId)
+  );
+  return fetchConversationAiMembers(conversationId);
 }
 
 export async function fetchConversationModel(conversationId, signal) {
@@ -650,6 +850,23 @@ export async function fetchConversationModel(conversationId, signal) {
 
 export async function fetchAiUsage(signal) {
   const data = await apiRequest("/api/me/ai-usage", { signal });
+  return {
+    promptTokens: normalizeTokenCount(data?.prompt_tokens ?? data?.promptTokens),
+    completionTokens: normalizeTokenCount(data?.completion_tokens ?? data?.completionTokens),
+    totalTokens: normalizeTokenCount(data?.total_tokens ?? data?.totalTokens),
+    requestCount: normalizeTokenCount(data?.api_requests ?? data?.apiRequests ?? data?.request_count ?? data?.requestCount),
+    models: Array.isArray(data?.models)
+      ? data.models
+      : Array.isArray(data?.usage_by_model)
+        ? data.usage_by_model
+        : Array.isArray(data?.usageByModel)
+          ? data.usageByModel
+          : []
+  };
+}
+
+export async function fetchTodayAiUsage(signal) {
+  const data = await apiRequest("/api/me/ai-usage/today", { signal });
   return {
     promptTokens: normalizeTokenCount(data?.prompt_tokens ?? data?.promptTokens),
     completionTokens: normalizeTokenCount(data?.completion_tokens ?? data?.completionTokens),

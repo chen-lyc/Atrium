@@ -433,7 +433,15 @@ export default function useWebSocket({
     if (nextMessage.conversationId && nextMessage.conversationId !== activeConversationIdRef.current) {
       return;
     }
+    const incomingId = normalizeServerMessageId(payload);
     commitMessages((prev) => {
+      if (incomingId && prev.some((m) => normalizeServerMessageId({ message_id: m.serverId || m.id }) === incomingId)) {
+        if (nextMessage.isSelf) {
+          const matchIndex = findPendingLocalMatch(prev, nextMessage);
+          if (matchIndex != null) clearPendingResolveTimer(prev[matchIndex].id);
+        }
+        return prev;
+      }
       if (nextMessage.isSelf) {
         const matchIndex = findPendingLocalMatch(prev, nextMessage);
         if (matchIndex != null) {
@@ -909,18 +917,19 @@ export default function useWebSocket({
     };
   }, [url, nickname, normalizedUserId, enabled, activeRoomId]);
 
-  function sendChatMessage(text) {
+  function sendChatMessage(text, forceConversationId = 0) {
     const content = text.trim();
     const current = socketRef.current;
     if (!content || !nickname || !activeRoomId || !current || current.readyState !== WebSocket.OPEN) {
       return null;
     }
+    const effectiveConversationId = forceConversationId ? normalizeConversationId(forceConversationId) : activeConversationId;
 
     const localMessage = {
       id: createId("local"),
       clientMessageId: createId("client"),
       roomId: activeRoomId,
-      conversationId: activeConversationId,
+      conversationId: effectiveConversationId,
       messageType: MESSAGE_TYPE.TEXT,
       nickname,
       userId: normalizedUserId,
@@ -932,15 +941,19 @@ export default function useWebSocket({
       timelineOrder: nextTimelineOrder()
     };
 
-    commitMessages((prev) => [...prev, localMessage]);
+    if (forceConversationId && effectiveConversationId !== activeConversationId) {
+      updateMessagesForContext(activeRoomId, effectiveConversationId, (prev) => [...prev, localMessage]);
+    } else {
+      commitMessages((prev) => [...prev, localMessage]);
+    }
 
     try {
       current.send(JSON.stringify({
         type: 0,
         data: {
           room_id: activeRoomId,
-          conversation_id: localMessage.conversationId,
-          type: localMessage.messageType,
+          conversation_id: effectiveConversationId,
+          type: Number.isSafeInteger(localMessage.messageType) && localMessage.messageType >= 1 && localMessage.messageType <= 3 ? localMessage.messageType : MESSAGE_TYPE.TEXT,
           content,
           client_message_id: localMessage.clientMessageId
         }

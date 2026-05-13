@@ -118,15 +118,51 @@ MysqlPool::QueryResult accept_friend_request_transaction(uint64_t from_user_id, 
 MysqlPool::QueryResult delete_friendship(uint64_t user_a, uint64_t user_b);
 
 MysqlPool::QueryResult get_conversation_data(uint64_t conversation_id, uint64_t &room_id, uint64_t &created_by);
+struct AiMemberInfo {
+    uint64_t ai_id;
+    std::string provider;
+    std::string model;
+    std::string adapter_url;
+    std::string custom_adapter_text;
+};
+
+struct RoomAiMemberInfo {
+    uint64_t ai_id;
+    std::string provider;
+    std::string model;
+    std::string adapter_url;
+    std::string custom_adapter_text;
+};
+
 MysqlPool::QueryResult get_conversation_ai_model(uint64_t conversation_id, std::string &provider, std::string &model);
+MysqlPool::QueryResult get_conversation_ai_members(uint64_t conversation_id, std::vector<AiMemberInfo> &members);
+struct AiInfo {
+    uint64_t id;
+    std::string provider;
+    std::string model;
+    std::string display_name;
+    std::string avatar_url;
+};
+
+MysqlPool::QueryResult get_all_ais(std::vector<AiInfo> &ais);
 MysqlPool::QueryResult get_ai_id_by_model(const std::string &model, uint64_t &ai_id);
 MysqlPool::QueryResult insert_conversation_ai_member(uint64_t conversation_id, uint64_t ai_id);
+MysqlPool::QueryResult insert_conversation_ai_member(uint64_t conversation_id, uint64_t ai_id, const std::string &adapter_url, const std::string &custom_adapter_text);
+MysqlPool::QueryResult update_conversation_ai_member(uint64_t conversation_id, uint64_t ai_id, const std::string &adapter_url, const std::string &custom_adapter_text);
+MysqlPool::QueryResult delete_conversation_ai_member(uint64_t conversation_id, uint64_t ai_id);
+MysqlPool::QueryResult get_thinking_adapter_for_ai_in_conversation(uint64_t conversation_id, uint64_t ai_id, std::string &out);
+MysqlPool::QueryResult get_room_ai_members(uint64_t room_id, std::vector<RoomAiMemberInfo> &members);
+MysqlPool::QueryResult insert_room_ai_member(uint64_t room_id, uint64_t ai_id, const std::string &adapter_url, const std::string &custom_adapter_text);
+MysqlPool::QueryResult update_room_ai_member(uint64_t room_id, uint64_t ai_id, const std::string &adapter_url, const std::string &custom_adapter_text);
+MysqlPool::QueryResult delete_room_ai_member(uint64_t room_id, uint64_t ai_id);
+MysqlPool::QueryResult list_thinking_adapters(std::vector<std::string> &names);
 MysqlPool::QueryResult delete_conversation_row(uint64_t conversation_id);
 
 MysqlPool::QueryResult get_message_meta(uint64_t message_id, uint64_t &sender_id, uint64_t &send_time_ms);
 MysqlPool::QueryResult soft_delete_message(uint64_t message_id, uint64_t deleted_at_ms);
 
 MysqlPool::QueryResult get_user_profile(uint64_t user_id, std::string &username, std::string &nickname, std::string &avatar_url);
+MysqlPool::QueryResult update_username(uint64_t user_id, const std::string &username);
 MysqlPool::QueryResult update_user_profile(uint64_t user_id, const std::string &nickname, const std::string &avatar_url);
 MysqlPool::QueryResult search_users(const std::string &q, std::vector<std::vector<std::string>> &rows);
 
@@ -172,4 +208,23 @@ MysqlPool::QueryResult complete_message_content(uint64_t message_id, const std::
 MysqlPool::QueryResult get_recent_messages(uint64_t conversation_id, std::optional<chatdb::Cursor> cursor, int limit, std::vector<std::vector<std::string>> &rows);
 
 MysqlPool::QueryResult accumulate_user_ai_tokens(uint64_t user_id, uint64_t model_id, const AiSseData &data);
-MysqlPool::QueryResult get_user_ai_tokens(uint64_t user_id, uint64_t &prompt_tokens, uint64_t &completion_tokens, uint64_t &total_tokens);
+
+struct DailyUsage {
+    std::string date;
+    uint64_t input_cached_tokens;
+    uint64_t input_uncached_tokens;
+    uint64_t output_tokens;
+    uint64_t request_count;
+};
+
+struct TodayUsage {
+    std::string model;
+    std::string date;
+    uint64_t input_cached_tokens;
+    uint64_t input_uncached_tokens;
+    uint64_t output_tokens;
+    uint64_t request_count;
+};
+
+MysqlPool::QueryResult get_user_ai_tokens_today(uint64_t user_id, std::vector<TodayUsage> &models);
+MysqlPool::QueryResult get_user_ai_usage_history(uint64_t user_id, std::vector<std::pair<std::string, std::vector<DailyUsage>>> &models);

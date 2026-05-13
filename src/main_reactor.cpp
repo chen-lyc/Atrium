@@ -1,6 +1,6 @@
 #include "main_reactor.h"
-#include "logger.h"
 #include "ai_client.h"
+#include "logger.h"
 #include "server_utils.h"
 #include "thread_pool.h"
 #include <arpa/inet.h>
@@ -10,8 +10,9 @@
 using namespace std;
 
 MainReactor::MainReactor(int stopfd, const string &ip, int http_port, int protobuf_port, int n, int max_events) : m_num_reactors(n), m_max_events(max_events), m_stopfd(stopfd) {
-    DeepSeek::init();
     ThreadPool<Reactor::AiReplyTask>::getInstance().init();
+    DeepSeek::init();
+    Qwen::init();
 
     m_epollfd = epoll_create1(0);
     addfd(m_epollfd, stopfd);

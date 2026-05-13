@@ -6,8 +6,12 @@
 #include "redis_pool.h"
 #include <iomanip>
 #include <openssl/rand.h>
+#include <dirent.h>
+#include <fcntl.h>
 #include <optional>
 #include <sstream>
+#include <sys/stat.h>
+#include <unistd.h>
 using namespace std;
 using json = nlohmann::json;
 
@@ -483,10 +487,11 @@ MysqlPool::QueryResult delete_room(uint64_t room_id) {
         "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE room_id = ?)",
         "DELETE FROM conversation_ai_members WHERE conversation_id IN (SELECT id FROM conversations WHERE room_id = ?)",
         "DELETE FROM conversations WHERE room_id = ?",
+        "DELETE FROM room_ai_members WHERE room_id = ?",
         "DELETE FROM room_members WHERE room_id = ?",
         "DELETE FROM rooms WHERE id = ?"};
-    vector<MysqlPool::MysqlParams> params(6, MysqlPool::MysqlParams{room_id});
-    vector<MysqlPool::ExecuteResult> results(6, MysqlPool::ExecuteResult{MysqlPool::SqlResultMode::None, nullptr, dummy_rows, 0});
+    vector<MysqlPool::MysqlParams> params(7, MysqlPool::MysqlParams{room_id});
+    vector<MysqlPool::ExecuteResult> results(7, MysqlPool::ExecuteResult{MysqlPool::SqlResultMode::None, nullptr, dummy_rows, 0});
     return MysqlPool::getInstance().executeQuery(sqls, params, results);
 }
 
@@ -848,6 +853,12 @@ MysqlPool::QueryResult get_user_profile(uint64_t user_id, std::string &username,
     return MysqlPool::QueryResult::Success;
 }
 
+MysqlPool::QueryResult update_username(uint64_t user_id, const std::string &username) {
+    static const string sql = "UPDATE users SET username = ? WHERE id = ?";
+    MysqlPool::MysqlParams params{username, user_id};
+    return MysqlPool::getInstance().executeQuery(sql, params);
+}
+
 MysqlPool::QueryResult update_user_profile(uint64_t user_id, const std::string &nickname, const std::string &avatar_url) {
     static const string sql = "UPDATE participants SET display_name = ?, avatar_url = ? WHERE id = ?";
     MysqlPool::MysqlParams params{nickname, avatar_url, user_id};
@@ -936,6 +947,141 @@ MysqlPool::QueryResult get_conversation_ai_model(uint64_t conversation_id, std::
     return MysqlPool::QueryResult::Success;
 }
 
+MysqlPool::QueryResult get_conversation_ai_members(uint64_t conversation_id, std::vector<AiMemberInfo> &members) {
+    static const string sql =
+        "SELECT a.id, a.provider, a.model, cam.adapter_url, cam.custom_adapter_text "
+        "FROM conversation_ai_members cam "
+        "JOIN ai a ON a.id = cam.ai_id "
+        "WHERE cam.conversation_id = ?";
+    MysqlPool::MysqlParams params{conversation_id};
+    vector<vector<string>> rows;
+    size_t col_count = 5;
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, rows, col_count);
+    if (ret != MysqlPool::QueryResult::Success) return ret;
+    if (rows.empty()) return MysqlPool::QueryResult::NotFound;
+    for (auto &row : rows) {
+        if (row.size() < col_count) return MysqlPool::QueryResult::ServerError;
+        uint64_t ai_id = 0;
+        try {
+            ai_id = stoull(row[0]);
+        } catch (const exception &e) {
+            return MysqlPool::QueryResult::ServerError;
+        }
+        members.push_back({ai_id, std::move(row[1]), std::move(row[2]), std::move(row[3]), std::move(row[4])});
+    }
+    return MysqlPool::QueryResult::Success;
+}
+
+MysqlPool::QueryResult insert_conversation_ai_member(uint64_t conversation_id, uint64_t ai_id,
+                                                       const std::string &adapter_url, const std::string &custom_adapter_text) {
+    static const string sql =
+        "INSERT INTO conversation_ai_members (conversation_id, ai_id, adapter_url, custom_adapter_text) VALUES (?, ?, ?, ?)";
+    MysqlPool::MysqlParams params{conversation_id, ai_id, adapter_url, custom_adapter_text};
+    return MysqlPool::getInstance().executeQuery(sql, params);
+}
+
+MysqlPool::QueryResult update_conversation_ai_member(uint64_t conversation_id, uint64_t ai_id,
+                                                       const std::string &adapter_url, const std::string &custom_adapter_text) {
+    static const string sql =
+        "UPDATE conversation_ai_members SET adapter_url = ?, custom_adapter_text = ? WHERE conversation_id = ? AND ai_id = ?";
+    MysqlPool::MysqlParams params{adapter_url, custom_adapter_text, conversation_id, ai_id};
+    return MysqlPool::getInstance().executeQuery(sql, params);
+}
+
+MysqlPool::QueryResult delete_conversation_ai_member(uint64_t conversation_id, uint64_t ai_id) {
+    static const string sql = "DELETE FROM conversation_ai_members WHERE conversation_id = ? AND ai_id = ?";
+    MysqlPool::MysqlParams params{conversation_id, ai_id};
+    return MysqlPool::getInstance().executeQuery(sql, params);
+}
+
+MysqlPool::QueryResult get_room_ai_members(uint64_t room_id, std::vector<RoomAiMemberInfo> &members) {
+    static const string sql =
+        "SELECT a.id, a.provider, a.model, ram.adapter_url, ram.custom_adapter_text "
+        "FROM room_ai_members ram "
+        "JOIN ai a ON a.id = ram.ai_id "
+        "WHERE ram.room_id = ?";
+    MysqlPool::MysqlParams params{room_id};
+    vector<vector<string>> rows;
+    size_t col_count = 5;
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, rows, col_count);
+    if (ret != MysqlPool::QueryResult::Success) return ret;
+    if (rows.empty()) return MysqlPool::QueryResult::NotFound;
+    for (auto &row : rows) {
+        if (row.size() < col_count) return MysqlPool::QueryResult::ServerError;
+        uint64_t ai_id = 0;
+        try {
+            ai_id = stoull(row[0]);
+        } catch (const exception &e) {
+            return MysqlPool::QueryResult::ServerError;
+        }
+        members.push_back({ai_id, std::move(row[1]), std::move(row[2]), std::move(row[3]), std::move(row[4])});
+    }
+    return MysqlPool::QueryResult::Success;
+}
+
+MysqlPool::QueryResult insert_room_ai_member(uint64_t room_id, uint64_t ai_id,
+                                               const std::string &adapter_url, const std::string &custom_adapter_text) {
+    static const string sql =
+        "INSERT INTO room_ai_members (room_id, ai_id, adapter_url, custom_adapter_text) VALUES (?, ?, ?, ?)";
+    MysqlPool::MysqlParams params{room_id, ai_id, adapter_url, custom_adapter_text};
+    return MysqlPool::getInstance().executeQuery(sql, params);
+}
+
+MysqlPool::QueryResult update_room_ai_member(uint64_t room_id, uint64_t ai_id,
+                                               const std::string &adapter_url, const std::string &custom_adapter_text) {
+    static const string sql =
+        "UPDATE room_ai_members SET adapter_url = ?, custom_adapter_text = ? WHERE room_id = ? AND ai_id = ?";
+    MysqlPool::MysqlParams params{adapter_url, custom_adapter_text, room_id, ai_id};
+    return MysqlPool::getInstance().executeQuery(sql, params);
+}
+
+MysqlPool::QueryResult delete_room_ai_member(uint64_t room_id, uint64_t ai_id) {
+    static const string sql = "DELETE FROM room_ai_members WHERE room_id = ? AND ai_id = ?";
+    MysqlPool::MysqlParams params{room_id, ai_id};
+    return MysqlPool::getInstance().executeQuery(sql, params);
+}
+
+MysqlPool::QueryResult list_thinking_adapters(std::vector<std::string> &names) {
+    static const string dir_path = "config/prompt/shared/thinking";
+    DIR *dir = opendir(dir_path.c_str());
+    if (!dir) {
+        return MysqlPool::QueryResult::Success;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        string_view name(entry->d_name);
+        if (name.ends_with(".md")) {
+            string path = "config/prompt/shared/thinking/";
+            path += name;
+            names.emplace_back(std::move(path));
+        }
+    }
+    closedir(dir);
+    return MysqlPool::QueryResult::Success;
+}
+
+MysqlPool::QueryResult get_all_ais(std::vector<AiInfo> &ais) {
+    static const string sql =
+        "SELECT a.id, a.provider, a.model, p.display_name, p.avatar_url "
+        "FROM ai a JOIN participants p ON p.id = a.id";
+    vector<vector<string>> rows;
+    size_t col_count = 5;
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, {}, rows, col_count);
+    if (ret != MysqlPool::QueryResult::Success) return ret;
+    if (rows.empty()) return MysqlPool::QueryResult::NotFound;
+    for (auto &row : rows) {
+        if (row.size() < col_count) return MysqlPool::QueryResult::ServerError;
+        uint64_t id = 0;
+        try {
+            id = stoull(row[0]);
+        } catch (const exception &e) {
+            return MysqlPool::QueryResult::ServerError;
+        }
+        ais.push_back({id, std::move(row[1]), std::move(row[2]), std::move(row[3]), std::move(row[4])});
+    }
+    return MysqlPool::QueryResult::Success;
+}
+
 MysqlPool::QueryResult get_ai_id_by_model(const std::string &model, uint64_t &ai_id) {
     static const string sql = "SELECT id FROM ai WHERE model = ?";
     MysqlPool::MysqlParams params{model};
@@ -961,6 +1107,54 @@ MysqlPool::QueryResult insert_conversation_ai_member(uint64_t conversation_id, u
         "INSERT INTO conversation_ai_members (conversation_id, ai_id) VALUES (?, ?)";
     MysqlPool::MysqlParams params{conversation_id, ai_id};
     return MysqlPool::getInstance().executeQuery(sql, params);
+}
+
+MysqlPool::QueryResult get_thinking_adapter_for_ai_in_conversation(uint64_t conversation_id, uint64_t ai_id, std::string &out) {
+    static const string sql =
+        "SELECT adapter_url, custom_adapter_text "
+        "FROM conversation_ai_members "
+        "WHERE conversation_id = ? AND ai_id = ?";
+    MysqlPool::MysqlParams params{conversation_id, ai_id};
+    vector<vector<string>> rows;
+    size_t col_count = 2;
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, rows, col_count);
+    if (ret != MysqlPool::QueryResult::Success) return ret;
+    if (rows.empty() || rows[0].empty()) return MysqlPool::QueryResult::NotFound;
+
+    const string &adapter_url = rows[0][0];
+    const string &custom_text = rows[0][1];
+    if (!adapter_url.empty()) {
+        string full_path;
+        const string *path_ptr = &adapter_url;
+        if (adapter_url.find('/') == string::npos) {
+            full_path = "config/prompt/shared/thinking/" + adapter_url;
+            path_ptr = &full_path;
+        }
+        int file_fd = open(path_ptr->c_str(), O_RDONLY);
+        if (file_fd == -1) {
+            LOG_ERROR("open thinking adapter file failed, errno=%d, path=%s", errno, path_ptr->c_str());
+            return MysqlPool::QueryResult::ServerError;
+        }
+        struct stat st;
+        fstat(file_fd, &st);
+        size_t file_size = st.st_size;
+        out.assign(file_size, '\0');
+        size_t recvd = 0;
+        while (recvd < file_size) {
+            ssize_t n = read(file_fd, out.data() + recvd, file_size - recvd);
+            if (n <= 0) {
+                LOG_ERROR("read thinking adapter file failed, errno=%d, recvd=%zu, file_size=%zu",
+                    errno, recvd, file_size);
+                close(file_fd);
+                return MysqlPool::QueryResult::ServerError;
+            }
+            recvd += static_cast<size_t>(n);
+        }
+        close(file_fd);
+    } else if (!custom_text.empty()) {
+        out = custom_text;
+    }
+    return MysqlPool::QueryResult::Success;
 }
 
 MysqlPool::QueryResult delete_conversation_row(uint64_t conversation_id) {
@@ -1148,21 +1342,61 @@ MysqlPool::QueryResult accumulate_user_ai_tokens(uint64_t user_id, uint64_t mode
     return MysqlPool::QueryResult::ServerError;
 }
 
-MysqlPool::QueryResult get_user_ai_tokens(uint64_t user_id, uint64_t &prompt_tokens, uint64_t &completion_tokens, uint64_t &total_tokens) {
+MysqlPool::QueryResult get_user_ai_tokens_today(uint64_t user_id, vector<TodayUsage> &models) {
     static const string sql =
-        "SELECT COALESCE(SUM(input_cached_tokens + input_uncached_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(total_tokens), 0) FROM user_ai_tokens WHERE user_id = ? AND date = CURDATE()";
+        "SELECT a.model, ut.date, ut.input_cached_tokens, ut.input_uncached_tokens, ut.output_tokens, ut.request_count "
+        "FROM user_ai_tokens ut "
+        "JOIN ai a ON a.id = ut.model_id "
+        "WHERE ut.user_id = ? AND ut.date = CURDATE() "
+        "ORDER BY a.model";
     MysqlPool::MysqlParams params{user_id};
     vector<vector<string>> rows;
-    size_t col_count = 3;
+    size_t col_count = 6;
     MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, rows, col_count);
     if (ret != MysqlPool::QueryResult::Success) return ret;
-    if (rows.empty() || rows[0].size() < col_count) return MysqlPool::QueryResult::NotFound;
-    try {
-        prompt_tokens = stoull(rows[0][0]);
-        completion_tokens = stoull(rows[0][1]);
-        total_tokens = stoull(rows[0][2]);
-    } catch (const exception &e) {
-        return MysqlPool::QueryResult::ServerError;
+
+    for (auto &row : rows) {
+        if (row.size() < col_count) continue;
+        try {
+            TodayUsage t;
+            t.model = row[0];
+            t.date = row[1];
+            t.input_cached_tokens = stoull(row[2]);
+            t.input_uncached_tokens = stoull(row[3]);
+            t.output_tokens = stoull(row[4]);
+            t.request_count = stoull(row[5]);
+            models.emplace_back(std::move(t));
+        } catch (const exception &) { continue; }
     }
+    return MysqlPool::QueryResult::Success;
+}
+
+MysqlPool::QueryResult get_user_ai_usage_history(uint64_t user_id, vector<pair<string, vector<DailyUsage>>> &models) {
+    static const string sql =
+        "SELECT a.model, ut.date, ut.input_cached_tokens, ut.input_uncached_tokens, ut.output_tokens, ut.request_count "
+        "FROM user_ai_tokens ut "
+        "JOIN ai a ON a.id = ut.model_id "
+        "WHERE ut.user_id = ? "
+        "ORDER BY ut.date ASC";
+    MysqlPool::MysqlParams params{user_id};
+    vector<vector<string>> rows;
+    size_t col_count = 6;
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, rows, col_count);
+    if (ret != MysqlPool::QueryResult::Success) return ret;
+
+    map<string, vector<DailyUsage>> model_map;
+    for (auto &row : rows) {
+        if (row.size() < col_count) continue;
+        try {
+            DailyUsage d;
+            d.date = row[1];
+            d.input_cached_tokens = stoull(row[2]);
+            d.input_uncached_tokens = stoull(row[3]);
+            d.output_tokens = stoull(row[4]);
+            d.request_count = stoull(row[5]);
+            model_map[row[0]].emplace_back(std::move(d));
+        } catch (const exception &) { continue; }
+    }
+    models.assign(make_move_iterator(model_map.begin()), make_move_iterator(model_map.end()));
     return MysqlPool::QueryResult::Success;
 }

@@ -1,20 +1,48 @@
-#include "mysql_pool.h"
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "httplib.h"
 #include "ai_client.h"
 #include "json.hpp"
 #include "logger.h"
+#include "utils.h"
 using namespace std;
 using json = nlohmann::json;
 
-std::unordered_map<std::string, uint64_t> DeepSeek::m_model_id;
-
-void DeepSeek::init() {
-    loadOrRegisterAiModel("deepseek-v4-flash");
-    loadOrRegisterAiModel("deepseek-v4-pro");
+AiClient::AiClient(AiClientConfig config) : m_config(std::move(config)) {
+    for (auto &[model, adapter_path] : m_config.models) {
+        static const string sql = "SELECT id FROM ai WHERE model = ?";
+        MysqlPool::MysqlParams params{model};
+        vector<vector<string>> rows;
+        size_t col_count = 1;
+        MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, rows, col_count);
+        if (ret == MysqlPool::QueryResult::Success) {
+            uint64_t id = 0;
+            try {
+                id = stoull(rows[0][0]);
+            } catch (const exception &e) {
+                continue;
+            }
+            m_model_id.emplace(model, id);
+        }
+    }
 }
 
-AiClientStatus DeepSeek::chat(const AiChatRequest &request, uint64_t &ai_id, std::function<void(AiSseData &reply)> &onChunk) {
+void AiClient::registerModels(const AiClientConfig &config) {
+    for (auto &[model, adapter_path] : config.models) {
+        registerModel(model, adapter_path, config.common_prompt, config.display_name, config.avatar_url, config.provider);
+    }
+}
+
+std::unique_ptr<AiClient> AiClient::create(const std::string &provider) {
+    if (provider == "deepseek") {
+        return std::make_unique<DeepSeek>();
+    }
+    if (provider == "qwen") {
+        return std::make_unique<Qwen>();
+    }
+    throw std::runtime_error("unknown provider: " + provider);
+}
+
+AiClientStatus AiClient::chat(const AiChatRequest &request, uint64_t &ai_id, std::function<void(AiSseData &reply)> &onChunk) {
     auto it = m_model_id.find(request.model);
     if (it == m_model_id.end()) {
         return AiClientStatus::ModelNotRegistered;
@@ -41,11 +69,23 @@ AiClientStatus DeepSeek::chat(const AiChatRequest &request, uint64_t &ai_id, std
         json out;
         out["model"] = request.model;
         out["stream"] = true;
+        if (m_config.stream_include_usage) {
+            json stream_opts;
+            stream_opts["include_usage"] = true;
+            out["stream_options"] = stream_opts;
+        }
         json messages = json::array();
 
         string system_prompt;
         ret = getSystemPrompt(id, system_prompt);
-        if (ret == MysqlPool::QueryResult::Success && !system_prompt.empty()) {
+
+        string thinking_adapter;
+        if (get_thinking_adapter_for_ai_in_conversation(request.conversation_id, id, thinking_adapter) == MysqlPool::QueryResult::Success && !thinking_adapter.empty()) {
+            if (!system_prompt.empty()) system_prompt += "\n\n";
+            system_prompt += thinking_adapter;
+        }
+
+        if (!system_prompt.empty()) {
             json sys_msg;
             sys_msg["role"] = "system";
             sys_msg["content"] = std::move(system_prompt);
@@ -66,14 +106,15 @@ AiClientStatus DeepSeek::chat(const AiChatRequest &request, uint64_t &ai_id, std
         out["messages"] = messages;
         body = out.dump();
     } catch (const json::exception &e) {
-        LOG_WARN("DeepSeek chat failed: model = %s, step = build request body, error = %s",
+        LOG_WARN("%s chat failed: model = %s, step = build request body, error = %s",
+            m_config.provider.c_str(),
             std::string(request.model).c_str(),
             e.what());
         return AiClientStatus::BuildRequestFailed;
     }
 
     LOG_DEBUG("begin to be client");
-    httplib::SSLClient cli("api.deepseek.com");
+    httplib::SSLClient cli(m_config.base_url);
     cli.set_bearer_token_auth(request.api);
     cli.set_read_timeout(60, 0);
     httplib::Headers headers = {{"Content-Type", "application/json"}};
@@ -82,7 +123,11 @@ AiClientStatus DeepSeek::chat(const AiChatRequest &request, uint64_t &ai_id, std
     string pending;
     bool start_sent = false;
     static const string kNoReplyToken = "<NO_REPLY>";
-    httplib::Result res = cli.Post("/chat/completions", headers, body, "application/json", [&buffer, &pending, &start_sent, &onChunk, this](const char *data, size_t len) -> bool {
+    // NO_REPLY 检测的缓冲上限。
+    // 取 30 是为了覆盖 Qwen 等模型可能吐出的 tool_call 前缀
+    // 例如 "<tool_call>\n<NO_REPLY>" (22 字符)
+    static const size_t kNoReplyBufferLimit = 30;
+    httplib::Result res = cli.Post(m_config.api_path, headers, body, "application/json", [&buffer, &pending, &start_sent, &onChunk, this](const char *data, size_t len) -> bool {
         buffer.append(data, len);
         while (true) {
             size_t pos = buffer.find("\n\n");
@@ -113,14 +158,25 @@ AiClientStatus DeepSeek::chat(const AiChatRequest &request, uint64_t &ai_id, std
 
             if (data.content.empty() && data.total_tokens == 0) continue;
 
+            if (data.content.empty() && data.total_tokens > 0) {
+                onChunk(data);
+                continue;
+            }
+
             if (start_sent) {
                 onChunk(data);
                 continue;
             }
 
             pending += data.content;
-            if (pending.size() < kNoReplyToken.size()) continue;
-            if (pending == kNoReplyToken) return true;
+            if (pending.size() < kNoReplyBufferLimit) continue;
+            if (pending.find(kNoReplyToken) != string::npos) {
+                if (data.total_tokens) {
+                    data.content.clear();
+                    onChunk(data);
+                }
+                continue;
+            }
 
             AiSseData flush;
             flush.content = pending;
@@ -144,7 +200,7 @@ AiClientStatus DeepSeek::chat(const AiChatRequest &request, uint64_t &ai_id, std
     }
 }
 
-MysqlPool::QueryResult DeepSeek::getRecentMessages(std::vector<RecentMessage> &recent_messages, uint64_t conversation_id, uint64_t last_message_id, int limit) {
+MysqlPool::QueryResult AiClient::getRecentMessages(std::vector<RecentMessage> &recent_messages, uint64_t conversation_id, uint64_t last_message_id, int limit) {
     static const string sql =
         "SELECT m.send_id, p.display_name, m.content "
         "FROM messages m "
@@ -179,7 +235,7 @@ MysqlPool::QueryResult DeepSeek::getRecentMessages(std::vector<RecentMessage> &r
     return MysqlPool::QueryResult::Success;
 }
 
-MysqlPool::QueryResult DeepSeek::getSystemPrompt(uint64_t ai_id, std::string &prompt) {
+MysqlPool::QueryResult AiClient::getSystemPrompt(uint64_t ai_id, std::string &prompt) {
     static const string sql = "SELECT system_prompt FROM ai WHERE id = ?";
     MysqlPool::MysqlParams params{ai_id};
     vector<vector<string>> rows;
@@ -191,64 +247,7 @@ MysqlPool::QueryResult DeepSeek::getSystemPrompt(uint64_t ai_id, std::string &pr
     return MysqlPool::QueryResult::Success;
 }
 
-AiClientStatus DeepSeek::parseSseLine(std::string_view sse_line, AiSseData &data) {
-    size_t colon_pos = sse_line.find(':');
-    if (colon_pos == string::npos) {
-        return AiClientStatus::InvalidResponse;
-    }
-    size_t data_pos = sse_line.find_first_not_of(" \t", colon_pos + 1);
-    string_view chunk = sse_line.substr(data_pos);
-    if (chunk == "[DONE]") {
-        return AiClientStatus::SseDone;
-    }
-
-    try {
-        json chunk_json = json::parse(chunk);
-        const json &delta = chunk_json["choices"][0]["delta"];
-        string content;
-        if (delta["content"].is_string())
-            content = delta["content"];
-        if (!content.empty())
-            data.content = std::move(content);
-
-        if (!chunk_json["choices"][0]["finish_reason"].is_string()) return AiClientStatus::Success;
-        string finish_reason = chunk_json["choices"][0]["finish_reason"];
-        if (finish_reason == "stop") {
-            if (!chunk_json.contains("usage") || chunk_json["usage"].is_null()) {
-                return AiClientStatus::InvalidResponse;
-            }
-            const json &usage = chunk_json["usage"];
-
-            data.prompt_tokens =
-                usage.value("prompt_tokens", 0ULL);
-
-            data.completion_tokens =
-                usage.value("completion_tokens", 0ULL);
-
-            data.total_tokens =
-                usage.value("total_tokens", data.prompt_tokens + data.completion_tokens);
-
-            data.cached_tokens =
-                usage.value("prompt_tokens_details", json::object())
-                    .value("cached_tokens", 0ULL);
-
-            data.prompt_cache_hit_tokens =
-                usage.value("prompt_cache_hit_tokens", data.cached_tokens);
-
-            data.prompt_cache_miss_tokens =
-                usage.value("prompt_cache_miss_tokens",
-                    data.prompt_tokens >= data.prompt_cache_hit_tokens
-                        ? data.prompt_tokens - data.prompt_cache_hit_tokens
-                        : 0ULL);
-        }
-        return AiClientStatus::Success;
-    } catch (const json::exception &e) {
-        LOG_WARN("parse usage failed: ", e.what());
-        return AiClientStatus::InvalidResponse;
-    }
-}
-
-MysqlPool::QueryResult DeepSeek::checkAndIncrementUsage(uint64_t user_id) {
+MysqlPool::QueryResult AiClient::checkAndIncrementUsage(uint64_t user_id) {
     static const string select_sql =
         "SELECT count, daily_quota FROM ai_usage WHERE user_id = ? AND date = CURDATE()";
     static const string insert_sql =
@@ -289,11 +288,10 @@ MysqlPool::QueryResult DeepSeek::checkAndIncrementUsage(uint64_t user_id) {
     return MysqlPool::QueryResult::ServerError;
 }
 
-MysqlPool::QueryResult DeepSeek::readPromptFile(std::string &prompt) {
-    string prompt_path = "config/prompt/deepseek/prompt.md";
-    int file_fd = open(prompt_path.c_str(), O_RDONLY);
+MysqlPool::QueryResult AiClient::readPromptFile(const std::string &path, std::string &prompt) {
+    int file_fd = open(path.c_str(), O_RDONLY);
     if (file_fd == -1) {
-        LOG_ERROR("deepseek open prompt file failed, errno=%d, path=%s", errno, prompt_path.c_str());
+        LOG_ERROR("AiClient open prompt file failed, errno=%d, path=%s", errno, path.c_str());
         return MysqlPool::QueryResult::ServerError;
     }
     struct stat st;
@@ -304,7 +302,7 @@ MysqlPool::QueryResult DeepSeek::readPromptFile(std::string &prompt) {
     while (recvd < file_size) {
         ssize_t n = read(file_fd, prompt.data() + recvd, file_size - recvd);
         if (n <= 0) {
-            LOG_ERROR("deepseek read prompt file failed, errno=%d, recvd=%zu, file_size=%zu",
+            LOG_ERROR("AiClient read prompt file failed, errno=%d, recvd=%zu, file_size=%zu",
                 errno,
                 recvd,
                 file_size);
@@ -317,7 +315,7 @@ MysqlPool::QueryResult DeepSeek::readPromptFile(std::string &prompt) {
     return MysqlPool::QueryResult::Success;
 }
 
-bool DeepSeek::loadOrRegisterAiModel(const std::string &model) {
+bool AiClient::registerModel(const std::string &model, const std::string &adapter_path, const std::string &common_prompt, const std::string &display_name, const std::string &avatar_url, const std::string &provider) {
     MysqlPool::QueryResult ret = MysqlPool::getInstance().executeTransaction([&](MysqlTxnContext &txn) -> MysqlPool::QueryResult {
         const string sql = "SELECT id FROM ai WHERE model = ?";
         MysqlPool::MysqlParams params{model};
@@ -329,23 +327,27 @@ bool DeepSeek::loadOrRegisterAiModel(const std::string &model) {
             try {
                 id = stoull(rows[0][0]);
             } catch (const exception &e) {
-                LOG_ERROR("DeepSeek init failed: model = %s, step = parse ai id, raw_id = %s, error = %s",
+                LOG_ERROR("registerModel failed: model = %s, step = parse ai id, raw_id = %s, error = %s",
                     model.data(),
                     rows.empty() || rows[0].empty() ? "<empty>" : rows[0][0].data(),
                     e.what());
                 return MysqlPool::QueryResult::ServerError;
             }
-            m_model_id.emplace(model, id);
 
             string prompt_buf;
-            ret = readPromptFile(prompt_buf);
+            ret = readPromptFile(common_prompt, prompt_buf);
             if (ret != MysqlPool::QueryResult::Success) return ret;
+            string adapter_buf;
+            ret = readPromptFile(adapter_path, adapter_buf);
+            if (ret != MysqlPool::QueryResult::Success) return ret;
+            prompt_buf += "\n\n";
+            prompt_buf += std::move(adapter_buf);
 
             static const string up_sql = "UPDATE ai SET system_prompt = ? WHERE id = ?";
             MysqlPool::MysqlParams up_params{MysqlPool::Blob{prompt_buf.data(), prompt_buf.size()}, id};
             ret = txn.executeQuery(up_sql, up_params);
             if (ret != MysqlPool::QueryResult::Success) {
-                LOG_ERROR("deepseek update system_prompt failed, model = %s", model.c_str());
+                LOG_ERROR("registerModel update system_prompt failed, model = %s", model.c_str());
                 return MysqlPool::QueryResult::ServerError;
             }
 
@@ -353,49 +355,53 @@ bool DeepSeek::loadOrRegisterAiModel(const std::string &model) {
         } else if (ret == MysqlPool::QueryResult::NotFound) {
             string insert_participants_sql =
                 "INSERT INTO participants (kind, display_name, avatar_url) "
-                "VALUES (2, 'deepseek', '/avatars/deepseek-logo.svg')";
+                "VALUES (2, ?, ?)";
+            MysqlPool::MysqlParams p_params{display_name, avatar_url};
             uint64_t participant_id = 0;
-            MysqlPool::MysqlParams empty_params;
-            ret = txn.executeQuery(insert_participants_sql, empty_params, &participant_id);
+            ret = txn.executeQuery(insert_participants_sql, p_params, &participant_id);
             if (ret != MysqlPool::QueryResult::Success) {
-                LOG_ERROR("DeepSeek init failed: model = %s, step = insert participant, ret = %d",
+                LOG_ERROR("registerModel failed: model = %s, step = insert participant, ret = %d",
                     model.data(),
                     ret);
                 return MysqlPool::QueryResult::ServerError;
             }
             string insert_ai_sql =
                 "INSERT INTO ai (id, provider, model) "
-                "VALUES (?, 'deepseek', ?)";
-            MysqlPool::MysqlParams params{participant_id, model};
-            ret = txn.executeQuery(insert_ai_sql, params);
+                "VALUES (?, ?, ?)";
+            MysqlPool::MysqlParams ai_params{participant_id, provider, model};
+            ret = txn.executeQuery(insert_ai_sql, ai_params);
             if (ret != MysqlPool::QueryResult::Success) {
-                LOG_ERROR("DeepSeek init failed: model = %s, step = insert ai, ret = %d",
+                LOG_ERROR("registerModel failed: model = %s, step = insert ai, ret = %d",
                     model.data(),
                     ret);
                 return MysqlPool::QueryResult::ServerError;
             }
-            m_model_id.emplace(model, participant_id);
 
             string prompt_buf;
-            ret = readPromptFile(prompt_buf);
+            ret = readPromptFile(common_prompt, prompt_buf);
             if (ret != MysqlPool::QueryResult::Success) return ret;
+            string adapter_buf;
+            ret = readPromptFile(adapter_path, adapter_buf);
+            if (ret != MysqlPool::QueryResult::Success) return ret;
+            prompt_buf += "\n\n";
+            prompt_buf += std::move(adapter_buf);
 
             static const string up_sql = "UPDATE ai SET system_prompt = ? WHERE id = ?";
             MysqlPool::MysqlParams up_params{MysqlPool::Blob{prompt_buf.data(), prompt_buf.size()}, participant_id};
             ret = txn.executeQuery(up_sql, up_params);
             if (ret != MysqlPool::QueryResult::Success) {
-                LOG_ERROR("deepseek update system_prompt failed, model = %s", model.c_str());
+                LOG_ERROR("registerModel update system_prompt failed, model = %s", model.c_str());
                 return MysqlPool::QueryResult::ServerError;
             }
 
             return MysqlPool::QueryResult::Success;
         } else {
-            LOG_ERROR("DeepSeek init failed: model = %s, step = query ai, ret = %d",
+            LOG_ERROR("registerModel failed: model = %s, step = query ai, ret = %d",
                 model.data(),
                 ret);
             return MysqlPool::QueryResult::ServerError;
         }
-        LOG_ERROR("DeepSeek init failed in unknown error");
+        LOG_ERROR("registerModel failed in unknown error");
         return MysqlPool::QueryResult::ServerError;
     });
     return ret == MysqlPool::QueryResult::Success ? true : false;
