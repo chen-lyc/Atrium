@@ -96,6 +96,7 @@ RouteResult handle_cancel_friend_request(RequestContext &ctx);
 RouteResult handle_list_friends(RequestContext &ctx);
 RouteResult handle_delete_friend(RequestContext &ctx);
 RouteResult handle_create_conversation(RequestContext &ctx);
+RouteResult handle_rename_conversation(RequestContext &ctx);
 RouteResult handle_conversation_model(RequestContext &ctx);
 RouteResult handle_list_ais(RequestContext &ctx);
 RouteResult handle_delete_conversation(RequestContext &ctx);

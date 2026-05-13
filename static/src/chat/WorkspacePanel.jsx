@@ -957,17 +957,6 @@ export default function WorkspacePanel({
                     )}
                   </section>
 
-                  <section className="workspace-section">
-                    <div className="workspace-section-title">我的房间</div>
-                    <div className="workspace-mini-list">
-                      {rooms.map((item) => (
-                        <button key={item.id} type="button" className={`workspace-mini-room ${item.id === room?.id ? "is-active" : ""}`} onClick={() => onRoomSelect(item.id)}>
-                          <span>{item.name}</span>
-                          <small>{item.note || "讨论室"}</small>
-                        </button>
-                      ))}
-                    </div>
-                  </section>
                 </div>
               ) : null}
 

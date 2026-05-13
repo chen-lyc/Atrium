@@ -169,7 +169,8 @@ MysqlPool::QueryResult search_users(const std::string &q, std::vector<std::vecto
 MysqlPool::QueryResult get_room_members(uint64_t room_id, std::vector<std::vector<std::string>> &rows);
 MysqlPool::QueryResult get_user_ids_by_room(uint64_t room_id, std::vector<uint64_t> &ids);
 MysqlPool::QueryResult get_friends(uint64_t user_id, std::vector<std::vector<std::string>> &rows);
-MysqlPool::QueryResult get_list_conversations_by_room_id(uint64_t room_id, std::vector<uint64_t> &ids, std::vector<std::string> &titles);
+MysqlPool::QueryResult get_list_conversations_by_room_id(uint64_t room_id, std::vector<uint64_t> &ids, std::vector<std::string> &titles, std::vector<uint64_t> &created_at_ms);
+MysqlPool::QueryResult update_conversation_title(uint64_t conversation_id, const std::string &title);
 
 namespace chatdb {
 enum class EventType {

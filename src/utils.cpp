@@ -1239,11 +1239,11 @@ MysqlPool::QueryResult get_friends(uint64_t user_id, std::vector<std::vector<std
     return MysqlPool::getInstance().executeQuery(sql, params, rows, col_count);
 }
 
-MysqlPool::QueryResult get_list_conversations_by_room_id(uint64_t room_id, std::vector<uint64_t> &ids, std::vector<std::string> &titles) {
-    static const string sql = "SELECT id, title FROM conversations WHERE room_id = ?";
+MysqlPool::QueryResult get_list_conversations_by_room_id(uint64_t room_id, std::vector<uint64_t> &ids, std::vector<std::string> &titles, std::vector<uint64_t> &created_at_ms) {
+    static const string sql = "SELECT id, title, created_at_ms FROM conversations WHERE room_id = ? ORDER BY created_at_ms DESC";
     MysqlPool::MysqlParams params{room_id};
     vector<vector<string>> rows;
-    size_t col_count = 2;
+    size_t col_count = 3;
     MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, rows, col_count);
     if (ret == MysqlPool::QueryResult::ServerError) {
         return MysqlPool::QueryResult::ServerError;
@@ -1255,11 +1255,18 @@ MysqlPool::QueryResult get_list_conversations_by_room_id(uint64_t room_id, std::
         try {
             ids.emplace_back(stoull(rows[i][0]));
             titles.emplace_back(rows[i][1]);
+            created_at_ms.emplace_back(stoull(rows[i][2]));
         } catch (const exception &e) {
             LOG_WARN("parse conversations data failed: reason = %s", e.what());
         }
     }
     return MysqlPool::QueryResult::Success;
+}
+
+MysqlPool::QueryResult update_conversation_title(uint64_t conversation_id, const std::string &title) {
+    static const string sql = "UPDATE conversations SET title = ? WHERE id = ?";
+    MysqlPool::MysqlParams params{title, conversation_id};
+    return MysqlPool::getInstance().executeQuery(sql, params);
 }
 
 MysqlPool::QueryResult insert_message(chatdb::Message &msg, uint64_t &message_id) {

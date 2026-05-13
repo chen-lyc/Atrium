@@ -120,6 +120,10 @@ function normalizeOptionalId(value) {
   const numericValue = Number(value);
   return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : 0;
 }
+function normalizeOptionalCount(value) {
+  const numericValue = Number(value);
+  return Number.isSafeInteger(numericValue) && numericValue >= 0 ? numericValue : null;
+}
 function normalizeConversationRecord(conversation) {
   const id = normalizeConversationId(conversation?.id ?? conversation?.conversation_id ?? conversation?.conversationId);
   const name = typeof conversation?.title === "string" && conversation.title.trim()
@@ -136,7 +140,8 @@ function normalizeConversationRecord(conversation) {
     conversation?.ownerId
   );
   const isMain = conversation?.is_main === true || conversation?.isMain === true || Number(conversation?.is_main ?? conversation?.isMain) === 1;
-  return { id, name, createdBy, isMain };
+  const createdAtMs = normalizeOptionalId(conversation?.created_at_ms ?? conversation?.createdAtMs ?? conversation?.created_at ?? conversation?.createdAt);
+  return { id, name, createdBy, isMain, createdAtMs };
 }
 function persistPersonalConversationId(conversationId) {
   const normalizedId = normalizeConversationId(conversationId);
@@ -163,7 +168,8 @@ function normalizeRoomRecord(room) {
     normalizeConversationId(room?.conversationId ?? room?.conversation_id);
   const name = typeof room?.name === "string" && room.name.trim() ? room.name.trim() : "";
   const type = typeof room?.type === "number" ? room.type : 2;
-  return { roomId, name, mainConversationId, conversations, type };
+  const memberCount = normalizeOptionalCount(room?.memberCount ?? room?.member_count ?? room?.membersCount ?? room?.members_count);
+  return { roomId, name, mainConversationId, conversations, type, memberCount };
 }
 
 function getRoomConversationId(record, fallbackConversationId = DEFAULT_CONVERSATION_ID) {
@@ -191,6 +197,7 @@ function createPersonalRoom(record, fallbackConversationId = DEFAULT_CONVERSATIO
     conversations: record?.conversations || [],
     mainConversationId: normalizeConversationId(record?.mainConversationId) || conversationId,
     conversationId,
+    memberCount: record?.memberCount,
     type: 1,
     isAvailable: true
   };
@@ -213,6 +220,7 @@ function createPublicRoom(record, fallbackConversationId = PUBLIC_CONVERSATION_I
     conversations: record?.conversations || [],
     mainConversationId: normalizeConversationId(record?.mainConversationId) || conversationId,
     conversationId,
+    memberCount: record?.memberCount,
     type: 0,
     isAvailable: true
   };
@@ -236,6 +244,7 @@ function createGenericRoom(record, index) {
     conversations: record?.conversations || [],
     mainConversationId: normalizeConversationId(record?.mainConversationId) || getRoomConversationId(record),
     conversationId: getRoomConversationId(record),
+    memberCount: record?.memberCount,
     type: 2,
     isAvailable: true
   };
@@ -323,28 +332,10 @@ function isMainConversation(room, conversationId) {
   const mainConversationId = normalizeConversationId(room.mainConversationId || room.conversationId);
   return !mainConversationId || normalizedConversationId === mainConversationId;
 }
-function resolveStoredChatView(rooms, fallbackActiveRoomId = getDefaultActiveRoomId(rooms)) {
-  const stored = readStoredChatView();
-  const storedRoomId = typeof stored.activeRoomId === "string" ? stored.activeRoomId : "";
-  const storedBackendRoomId = normalizeConversationId(stored.backendRoomId ?? getCookieValue("room_id"));
-  const storedConversationId = normalizeConversationId(stored.conversationId ?? getConversationIdCookie());
-  const fallbackRoom = rooms.find((room) => room.id === fallbackActiveRoomId && room.isAvailable) ||
-    rooms.find((room) => room.id === PERSONAL_ROOM_ID) ||
-    rooms[0];
-  const preferredRoom =
-    rooms.find((room) => room.id === storedRoomId && room.isAvailable) ||
-    (storedBackendRoomId ? rooms.find((room) => room.roomId === storedBackendRoomId && room.isAvailable) : null) ||
-    (storedConversationId ? rooms.find((room) => getRoomConversationIds(room).has(storedConversationId) && room.isAvailable) : null) ||
-    fallbackRoom;
-  const activeRoomId = preferredRoom?.id || getDefaultActiveRoomId(rooms);
-  const roomConversationIds = getRoomConversationIds(preferredRoom);
-  const conversationId = storedConversationId && roomConversationIds.has(storedConversationId)
-    ? storedConversationId
-    : preferredRoom?.conversationId || DEFAULT_CONVERSATION_ID;
-  const conversationOverride = conversationId && conversationId !== preferredRoom?.conversationId
-    ? { roomId: activeRoomId, conversationId }
-    : null;
-  return { activeRoomId, conversationId, conversationOverride };
+function resolveStoredChatView(rooms) {
+  const preferredRoom = rooms.find((room) => room.id === PERSONAL_ROOM_ID && room.isAvailable) || rooms[0];
+  const activeRoomId = preferredRoom?.id || PERSONAL_ROOM_ID;
+  return { activeRoomId, conversationId: preferredRoom?.conversationId || DEFAULT_CONVERSATION_ID, conversationOverride: null };
 }
 function syncRoomCookies(rooms, activeRoomId) {
   const personalRoom = rooms.find((room) => room.id === PERSONAL_ROOM_ID);

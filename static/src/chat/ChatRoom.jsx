@@ -2,14 +2,17 @@ import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { EASE, STATUS_LABEL } from "../constants.js";
 import {
-  getApiErrorMessage
+  createRoom,
+  getApiErrorMessage,
+  renameConversation,
+  syncRoomAiMembers
 } from "../utils.js";
 import Sidebar from "./Sidebar.jsx";
 import MessageList from "./MessageList.jsx";
 import MessageInput from "./MessageInput.jsx";
 import MessageFlight from "./MessageFlight.jsx";
 import WorkspacePanel from "./WorkspacePanel.jsx";
-import { AiModelSelector, AiSeatStrip, mergeAiMemberOptions } from "./AiTeamEditor.jsx";
+import { AiModelSelector, AiSeatStrip, ModalLayer, mergeAiMemberOptions } from "./AiTeamEditor.jsx";
 
 const NOTE_TOAST_MS = 2200;
 const CHAT_SURFACE_STORAGE_KEY = "atrium.chat.surface";
@@ -91,115 +94,6 @@ function ConversationPrepPanel({
   );
 }
 
-function RoomMemoryLayer({
-  isOpen,
-  room,
-  roomName,
-  conversations = [],
-  activeConversationId,
-  onClose,
-  onSelect,
-  onDelete,
-  onCreate,
-  createBusy = false,
-  error = "",
-  readOnly = false
-}) {
-  const roomTone = room?.tone === "public" ? "public" : "personal";
-  const activeConversation = conversations.find((item) => item.id === activeConversationId);
-  const mainConversationId = room?.mainConversationId;
-
-  return (
-    <AnimatePresence>
-      {isOpen ? (
-        <motion.div
-          key="room-memory"
-          className={`room-memory-layer is-${roomTone}`}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.16, ease: EASE }}
-          role="region"
-          aria-labelledby="room-memory-title"
-        >
-          <motion.section
-            id="room-memory-panel"
-            className="room-memory-surface"
-            initial={{ opacity: 0, y: -6, scale: 0.995 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -4, scale: 0.998 }}
-            transition={{ duration: 0.18, ease: EASE }}
-          >
-            <header className="room-memory-header">
-              <div>
-                <span className="room-memory-kicker">{roomName}</span>
-                <h2 id="room-memory-title">房间记忆</h2>
-                <p>{activeConversation?.name || `对话 ${activeConversationId || 1}`}</p>
-              </div>
-              <button type="button" className="room-memory-close focus-ring" onClick={onClose} aria-label="关闭房间记忆">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-                  <path d="M4 4l8 8M12 4l-8 8" />
-                </svg>
-              </button>
-            </header>
-
-            <div className="room-memory-list" aria-label="当前房间的对话">
-              {conversations.length ? conversations.map((conversation) => {
-                const isActive = conversation.id === activeConversationId;
-                const title = conversation.name || `对话 ${conversation.id}`;
-                return (
-                  <div key={conversation.id} className={`room-memory-row ${isActive ? "is-active" : ""}`}>
-                    <button
-                      type="button"
-                      className="room-memory-select focus-ring"
-                      onClick={() => {
-                        onSelect(conversation.id);
-                        onClose();
-                      }}
-                      aria-current={isActive ? "page" : undefined}
-                    >
-                      <span>{title}</span>
-                      <small>{conversation.id === mainConversationId ? "主对话" : `#${conversation.id}`}</small>
-                    </button>
-                    {conversation.id !== mainConversationId ? (
-                      <button
-                        type="button"
-                        className="room-memory-delete focus-ring"
-                        onClick={() => onDelete(conversation.id)}
-                        aria-label={`删除对话 ${title}`}
-                        title="删除对话"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                          <path d="M4 4l6 6M10 4l-6 6" />
-                        </svg>
-                      </button>
-                    ) : null}
-                  </div>
-                );
-              }) : (
-                <div className="room-memory-empty">当前房间还只有主对话</div>
-              )}
-            </div>
-
-            <button
-              type="button"
-              className="room-memory-create focus-ring"
-              onClick={onCreate}
-              disabled={readOnly || createBusy}
-            >
-              <span>{createBusy ? "创建中" : "新建讨论"}</span>
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-                <path d="M7 2.5v9M2.5 7h9" />
-              </svg>
-            </button>
-            {error ? <div className="room-memory-error">{error}</div> : null}
-          </motion.section>
-        </motion.div>
-      ) : null}
-    </AnimatePresence>
-  );
-}
-
 export default function ChatRoom({
   nickname, username = "", avatarUrl = "", onProfileUpdate = async () => {},
   connectionState, messages,
@@ -250,14 +144,31 @@ export default function ChatRoom({
   const [contextMenu, setContextMenu] = useState(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarMode, setSidebarMode] = useState(() => {
+    try {
+      return localStorage.getItem("atrium.chat.sidebarMode") || "conversations";
+    } catch {
+      return "conversations";
+    }
+  });
+  const updateSidebarMode = (mode) => {
+    setSidebarMode(mode);
+    try { localStorage.setItem("atrium.chat.sidebarMode", mode); } catch {}
+  };
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(() => readStoredChatSurface().workspacePanelOpen === true);
   const [workspacePanelTab, setWorkspacePanelTab] = useState(() => {
     const tab = readStoredChatSurface().workspacePanelTab;
     return ["room", "ai", "members", "contacts"].includes(tab) ? tab : "room";
   });
-  const [roomMemoryOpen, setRoomMemoryOpen] = useState(false);
-  const [createConversationBusy, setCreateConversationBusy] = useState(false);
-  const [createConversationError, setCreateConversationError] = useState("");
+  const [createRoomOpen, setCreateRoomOpen] = useState(false);
+  const [newRoomName, setNewRoomName] = useState("");
+  const [newRoomAiMembers, setNewRoomAiMembers] = useState([]);
+  const [createRoomBusy, setCreateRoomBusy] = useState(false);
+  const [createRoomError, setCreateRoomError] = useState("");
+  const [titleEditing, setTitleEditing] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [titleBusy, setTitleBusy] = useState(false);
+  const [titleError, setTitleError] = useState("");
   const [noteToast, setNoteToast] = useState(null);
   const noteToastTimerRef = useRef(null);
 
@@ -279,33 +190,15 @@ export default function ChatRoom({
   }, [contextMenu]);
 
   useEffect(() => {
-    if (!roomMemoryOpen) return undefined;
-    function handlePointerDown(event) {
-      if (event.target?.closest?.(".room-memory-surface")) return;
-      if (event.target?.closest?.(".room-anchor")) return;
-      setRoomMemoryOpen(false);
-    }
-    function handleKeyDown(event) {
-      if (event.key === "Escape") setRoomMemoryOpen(false);
-    }
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [roomMemoryOpen]);
-
-  useEffect(() => {
-    setRoomMemoryOpen(false);
-    setCreateConversationError("");
-  }, [activeRoomId]);
-
-  useEffect(() => {
     return () => {
       window.clearTimeout(noteToastTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!titleEditing) setTitleDraft(activeConversation?.name || "");
+    setTitleError("");
+  }, [activeConversation?.name, activeConversationId, titleEditing]);
 
   function handleMessageContextMenu(e, message) {
     if (!message) return;
@@ -370,21 +263,102 @@ export default function ChatRoom({
     setContextMenu(null);
   }
 
-  async function handleCreateConversationDraft() {
-    if (createConversationBusy || readOnly) return;
-    setCreateConversationBusy(true);
-    setCreateConversationError("");
+  function openWorkspace(roomId = activeRoomId, tab = "room") {
+    const nextTab = ["room", "ai", "members", "contacts"].includes(tab) ? tab : "room";
+    if (roomId && roomId !== activeRoomId) onRoomSelect(roomId);
+    setWorkspacePanelTab(nextTab);
+    setWorkspacePanelOpen(true);
+    writeStoredChatSurface({ workspacePanelOpen: true, workspacePanelTab: nextTab });
+  }
+
+  function openCreateRoom() {
+    if (readOnly) return;
+    setCreateRoomError("");
+    setCreateRoomOpen(true);
+  }
+
+  function closeCreateRoom() {
+    if (createRoomBusy) return;
+    setCreateRoomOpen(false);
+    setCreateRoomError("");
+  }
+
+  async function updateNewRoomAiMembers(nextMembers) {
+    setNewRoomAiMembers(nextMembers);
+    return nextMembers;
+  }
+
+  async function handleCreateRoom() {
+    const name = newRoomName.trim();
+    if (!name || createRoomBusy || readOnly) {
+      if (!name) setCreateRoomError("请先给讨论室起名");
+      return;
+    }
+    setCreateRoomBusy(true);
+    setCreateRoomError("");
     try {
-      const created = await onCreateConversationDraft();
-      if (created?.conversationId || created?.isDraft) {
-        setRoomMemoryOpen(false);
-        if (created.warning) setCreateConversationError(created.warning);
+      const created = await createRoom(name);
+      if (created?.roomId && newRoomAiMembers.length) {
+        await syncRoomAiMembers(created.roomId, newRoomAiMembers);
       }
-    } catch (err) {
-      setContextMenu(null);
-      setCreateConversationError(getApiErrorMessage(err, "新讨论创建失败"));
+      const nextRoom = await onRoomsChanged(created?.roomId);
+      if (nextRoom?.id) onRoomSelect(nextRoom.id);
+      updateSidebarMode("conversations");
+      setMobileSidebarOpen(false);
+      setCreateRoomOpen(false);
+      setNewRoomName("");
+      setNewRoomAiMembers([]);
+    } catch (error) {
+      setCreateRoomError(getApiErrorMessage(error, "新建房间失败"));
     } finally {
-      setCreateConversationBusy(false);
+      setCreateRoomBusy(false);
+    }
+  }
+
+  function startTitleEdit() {
+    if (readOnly || isMainConversation || !activeConversationId) return;
+    setTitleDraft(activeConversationTitle);
+    setTitleError("");
+    setTitleEditing(true);
+  }
+
+  function cancelTitleEdit() {
+    setTitleEditing(false);
+    setTitleDraft(activeConversationTitle);
+    setTitleError("");
+  }
+
+  async function commitTitleEdit() {
+    const nextTitle = titleDraft.trim();
+    if (titleBusy || readOnly || isMainConversation || !activeConversationId) return;
+    if (!nextTitle) {
+      setTitleError("对话名不能为空");
+      return;
+    }
+    if (nextTitle === activeConversationTitle) {
+      cancelTitleEdit();
+      return;
+    }
+    setTitleBusy(true);
+    setTitleError("");
+    try {
+      await renameConversation(activeConversationId, nextTitle);
+      await onRoomsChanged(room?.roomId);
+      setTitleEditing(false);
+    } catch (error) {
+      setTitleError(getApiErrorMessage(error, "对话重命名失败"));
+    } finally {
+      setTitleBusy(false);
+    }
+  }
+
+  function handleTitleKeyDown(event) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commitTitleEdit();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelTitleEdit();
     }
   }
 
@@ -426,14 +400,15 @@ export default function ChatRoom({
   const composerPlaceholder = room?.composerPlaceholder || "输入消息，按 Enter 发送";
   const roomConversationCount = Math.max(roomConversations.length || 0, 1);
   const selectedConversation = activeConversation || roomConversations.find((item) => item.id === activeConversationId);
-  const activeConversationTitle = selectedConversation?.name || (activeConversationId ? `对话 ${activeConversationId}` : "主对话");
+  const activeConversationTitle = isMainConversation
+    ? roomName
+    : selectedConversation?.name || (activeConversationId ? `对话 ${activeConversationId}` : "对话");
+  const newRoomAiOptions = mergeAiMemberOptions(availableAis, newRoomAiMembers);
   const currentMoment =
     workspacePanelOpen ? "tooling"
-      : roomMemoryOpen ? "switching"
-        : !visibleMessages.length ? "arriving"
-          : "thinking";
+      : !visibleMessages.length ? "arriving"
+        : "thinking";
   const conversationTeamError =
-    createConversationError ||
     aiConfigError?.conversation ||
     aiConfigError?.room ||
     aiConfigError?.thinking ||
@@ -474,6 +449,16 @@ export default function ChatRoom({
           activeRoomId={activeRoomId}
           onRoomSelect={(id) => { onRoomSelect(id); setMobileSidebarOpen(false); }}
           roomName={roomName}
+          mode={sidebarMode}
+          onModeChange={updateSidebarMode}
+          room={room}
+          conversations={roomConversations}
+          activeConversationId={activeConversationId}
+          onConversationSelect={(id) => { onConversationSelect(id); setMobileSidebarOpen(false); }}
+          onCreateConversation={onCreateConversationDraft}
+          onDeleteConversation={onDeleteConversation}
+          onCreateRoom={openCreateRoom}
+          onOpenRoomManagement={(roomId, tab) => openWorkspace(roomId, tab)}
         />
       </div>
 
@@ -504,23 +489,49 @@ export default function ChatRoom({
         >
           <div className="header-inner">
             <div className="room-heading" title={roomHint || roomAtmosphere}>
-              <button
-                type="button"
-                className="room-anchor focus-ring"
-                onClick={() => setRoomMemoryOpen((value) => !value)}
-                disabled={readOnly}
-                aria-label={`${roomMemoryOpen ? "关闭" : "打开"}${roomName}的房间记忆`}
-                aria-expanded={roomMemoryOpen}
-                aria-haspopup="true"
-                aria-controls="room-memory-panel"
-                title={roomMemoryOpen ? "关闭房间记忆" : "打开房间记忆"}
-              >
-                <span className="room-name">{roomName}</span>
+              <div className={`room-anchor ${titleEditing ? "is-editing-title" : ""}`}>
+                {titleEditing ? (
+                  <div className="room-title-edit">
+                    <input
+                      className="room-title-input"
+                      value={titleDraft}
+                      onChange={(event) => {
+                        setTitleDraft(event.target.value);
+                        setTitleError("");
+                      }}
+                      onKeyDown={handleTitleKeyDown}
+                      onBlur={commitTitleEdit}
+                      maxLength={32}
+                      disabled={titleBusy}
+                      autoFocus
+                    />
+                    <button type="button" className="room-title-save focus-ring" onMouseDown={(event) => event.preventDefault()} onClick={commitTitleEdit} disabled={titleBusy}>
+                      保存
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="room-title-button focus-ring"
+                    onClick={startTitleEdit}
+                    disabled={readOnly || isMainConversation}
+                    title={isMainConversation ? "主对话不可重命名" : "重命名对话"}
+                  >
+                    <span className="room-name">{activeConversationTitle}</span>
+                    {!isMainConversation ? (
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M7.8 2.8 11.2 6.2 5.5 11.9 2.4 12.6l.7-3.1 4.7-6.7Z" />
+                        <path d="m9.3 1.9 2.8 2.8" />
+                      </svg>
+                    ) : null}
+                  </button>
+                )}
                 <span className="room-anchor-meta">
-                  <span>{activeConversationTitle}</span>
+                  <span>{roomName}</span>
                   <span>{roomConversationCount} 段记忆</span>
                 </span>
-              </button>
+                {titleError ? <span className="room-title-error">{titleError}</span> : null}
+              </div>
               <HeaderStatus modelLabel={currentModelLabel} connectionState={connectionState} />
             </div>
             <div className="header-actions">
@@ -528,8 +539,7 @@ export default function ChatRoom({
                 type="button"
                 className="header-icon-button focus-ring"
                 onClick={() => {
-                  setWorkspacePanelOpen(true);
-                  writeStoredChatSurface({ workspacePanelOpen: true, workspacePanelTab });
+                  openWorkspace(activeRoomId, workspacePanelTab);
                 }}
                 disabled={readOnly}
                 aria-label="打开房间、成员与笔记"
@@ -629,20 +639,6 @@ export default function ChatRoom({
           onRemoveAttachment={onRemoveAttachment}
         />
 
-        <RoomMemoryLayer
-          isOpen={roomMemoryOpen && !readOnly}
-          room={room}
-          roomName={roomName}
-          conversations={roomConversations}
-          activeConversationId={activeConversationId}
-          onClose={() => setRoomMemoryOpen(false)}
-          onSelect={onConversationSelect}
-          onDelete={onDeleteConversation}
-          onCreate={handleCreateConversationDraft}
-          createBusy={createConversationBusy}
-          error={createConversationError}
-          readOnly={readOnly}
-        />
       </main>
 
       {readOnly ? null : (
@@ -684,6 +680,61 @@ export default function ChatRoom({
           writeStoredChatSurface({ workspacePanelOpen: false, workspacePanelTab });
         }}
       />
+
+      <ModalLayer
+        isOpen={createRoomOpen && !readOnly}
+        title="新建房间"
+        subtitle="先命名房间，再配置默认 AI 阵容"
+        onClose={closeCreateRoom}
+      >
+        <div className="ai-create-room">
+          <label className="ai-create-room-name">
+            <span>房间名</span>
+            <input
+              className="workspace-input"
+              value={newRoomName}
+              onChange={(event) => {
+                setNewRoomName(event.target.value);
+                setCreateRoomError("");
+              }}
+              placeholder="例如：项目复盘"
+              maxLength={32}
+              disabled={createRoomBusy}
+            />
+          </label>
+          <div className="ai-create-room-main">
+            <AiModelSelector
+              models={newRoomAiOptions}
+              members={newRoomAiMembers}
+              thinkingAdapters={thinkingAdapters}
+              readOnly={createRoomBusy}
+              onChange={updateNewRoomAiMembers}
+              className="is-room-create"
+            />
+          </div>
+          <div className="ai-create-room-seats">
+            <AiSeatStrip
+              members={newRoomAiMembers}
+              thinkingAdapters={thinkingAdapters}
+              readOnly={createRoomBusy}
+              onChange={updateNewRoomAiMembers}
+              emptyText="无 AI"
+            />
+          </div>
+          {createRoomError ? <div className="create-conversation-error">{createRoomError}</div> : null}
+          <div className="ai-create-room-actions">
+            <motion.button
+              type="button"
+              className="workspace-action is-primary"
+              onClick={handleCreateRoom}
+              disabled={createRoomBusy || !newRoomName.trim()}
+              whileTap={createRoomBusy || !newRoomName.trim() ? undefined : { scale: 0.98 }}
+            >
+              {createRoomBusy ? "处理中" : "创建"}
+            </motion.button>
+          </div>
+        </div>
+      </ModalLayer>
 
       <AnimatePresence>
         {noteToast ? (

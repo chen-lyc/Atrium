@@ -39,6 +39,7 @@ Router::Router() {
         {Method::GET, {"conversations", ":conversation_id", "model"}, true, handle_conversation_model},
         {Method::HEAD, {"conversations", ":conversation_id", "model"}, true, handle_conversation_model},
         {Method::DELETE, {"conversations", ":conversation_id"}, true, handle_delete_conversation},
+        {Method::PATCH, {"conversations", ":conv_id", "title"}, true, handle_rename_conversation},
         {Method::DELETE, {"messages", ":message_id"}, true, handle_delete_message},
 
         {Method::POST, {"rooms"}, true, handle_create_room},
@@ -551,7 +552,8 @@ RouteResult handle_list_room_conversations(RequestContext &ctx) {
 
     vector<uint64_t> conversation_ids;
     vector<string> titles;
-    ret = get_list_conversations_by_room_id(room_id, conversation_ids, titles);
+    vector<uint64_t> created_at_ms;
+    ret = get_list_conversations_by_room_id(room_id, conversation_ids, titles, created_at_ms);
     if (ret != MysqlPool::QueryResult::Success) {
         return {RouteStatus::ServerError};
     }
@@ -571,6 +573,7 @@ RouteResult handle_list_room_conversations(RequestContext &ctx) {
         json c;
         c["id"] = conversation_ids[i];
         c["title"] = titles[i];
+        c["created_at_ms"] = created_at_ms[i];
         list.emplace_back(c);
     }
     out["conversations"] = list;
@@ -1847,6 +1850,42 @@ RouteResult handle_delete_conversation(RequestContext &ctx) {
         "HTTP/1.1 200 OK\r\n"
         "Content-Length: 0\r\n"
         "\r\n";
+    return {RouteStatus::Success};
+}
+RouteResult handle_rename_conversation(RequestContext &ctx) {
+    // PATCH /api/conversations/:conv_id/title
+    // 权限：对话所在房间的成员
+    // body: {"title": string}
+    string conv_id_str(ctx.params["conv_id"]);
+    uint64_t conv_id = 0;
+    try { conv_id = stoull(conv_id_str); } catch (const exception &) { return {RouteStatus::BadRequest}; }
+
+    string title;
+    try {
+        json in = json::parse(ctx.req.body);
+        title = in["title"];
+    } catch (const exception &) { return {RouteStatus::BadRequest}; }
+
+    if (title.empty() || title.size() > 64) return {RouteStatus::BadRequest};
+
+    MysqlPool::QueryResult ret = verify_conversation_member(conv_id, ctx.user_id);
+    if (ret == MysqlPool::QueryResult::NotFound) return {RouteStatus::BadRequest};
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::ServerError};
+
+    ret = update_conversation_title(conv_id, title);
+    if (ret != MysqlPool::QueryResult::Success) return {RouteStatus::ServerError};
+
+    json out;
+    out["ok"] = true;
+    out["title"] = title;
+    string body = out.dump();
+    ctx.conn.outbuf +=
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Content-Length: ";
+    ctx.conn.outbuf += to_string(body.size());
+    ctx.conn.outbuf += "\r\n\r\n";
+    if (ctx.req.method == Method::GET) ctx.conn.outbuf += body;
     return {RouteStatus::Success};
 }
 RouteResult handle_delete_message(RequestContext &ctx) {

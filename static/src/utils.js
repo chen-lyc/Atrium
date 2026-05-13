@@ -113,7 +113,8 @@ export function normalizeAuthConversations(data) {
           : id
             ? `对话 ${id}`
             : "";
-      return { id, name };
+      const createdAtMs = normalizeNumericId(item?.created_at_ms ?? item?.createdAtMs);
+      return { id, name, createdAtMs };
     })
     .filter((conversation) => {
       if (!conversation.id || seen.has(conversation.id)) return false;
@@ -145,7 +146,8 @@ export function normalizeAuthRooms(data) {
             : "";
       const conversations = normalizeAuthConversations(item);
       const type = typeof item?.type === "number" ? item.type : 2;
-      return { roomId, id: roomId, name, mainConversationId, conversations, type };
+      const memberCount = normalizeNonNegativeCount(item?.member_count ?? item?.memberCount ?? item?.members_count ?? item?.membersCount);
+      return { roomId, id: roomId, name, mainConversationId, conversations, type, memberCount };
     })
     .filter((room) => {
       if (!room.roomId || seen.has(room.roomId)) return false;
@@ -518,6 +520,17 @@ export async function fetchRoomConversations(roomId) {
   }
 }
 
+export async function renameConversation(conversationId, title) {
+  const res = await fetch(`/api/conversations/${conversationId}/title`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ title })
+  });
+  if (!res.ok) throw new Error(`Rename failed: ${res.status}`);
+  return res.json();
+}
+
 export async function loadSessionRooms(fallbackNickname = "") {
   const roomResult = await fetchAuthRooms();
   if (!roomResult.ok) return { ok: false, status: roomResult.status, rooms: [], conversations: [] };
@@ -589,6 +602,11 @@ export function buildAuthBody(nickname, password) {
 function normalizeNumericId(value) {
   const numericValue = Number(value);
   return Number.isSafeInteger(numericValue) && numericValue > 0 ? numericValue : 0;
+}
+
+function normalizeNonNegativeCount(value) {
+  const numericValue = Number(value);
+  return Number.isSafeInteger(numericValue) && numericValue >= 0 ? numericValue : null;
 }
 
 function normalizeTokenCount(value) {
