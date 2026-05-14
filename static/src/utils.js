@@ -861,6 +861,7 @@ export async function syncConversationAiMembers(conversationId, nextMembers) {
   return fetchConversationAiMembers(conversationId);
 }
 
+// Reserved: API layer ready, not yet wired to UI
 export async function fetchConversationModel(conversationId, signal) {
   const data = await apiRequest(`/api/conversations/${conversationId}/model`, { signal });
   return { provider: data?.provider || "", model: data?.model || "" };

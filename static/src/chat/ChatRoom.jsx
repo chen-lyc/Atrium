@@ -127,7 +127,7 @@ export default function ChatRoom({
   onCreateConversationDraft = async () => null,
   onConversationAiMembersChange = async () => [],
   onRoomAiMembersSave = async () => [],
-  readOnly = false, suppressConnectionPulse = false,
+  readOnly = false,
   isFading = false, fadeDuration = 600,
   transitionMode = "idle", transitionConfig = null,
   hideMessageContent = false,
@@ -390,8 +390,6 @@ export default function ChatRoom({
   const roomPlaceLabel = room?.placeLabel || (roomTone === "public" ? "公共大厅" : "个人空间");
   const roomAtmosphere = room?.atmosphere || roomHint || "写下一个想法，让讨论从这里开始。";
   const currentModelLabel = isConversationModelLoading ? "团队同步中" : activeConversationModelLabel;
-  const actualMessageCount = visibleMessages.filter((message) => message.nickname !== "__system__").length;
-  const shouldShowConversationPrep = false;
   const emptyTitle = room?.emptyTitle || (roomTone === "public" ? "大厅正在等待新的讨论" : "这里还很安静");
   const emptyHint = room?.emptyHint || roomHint || "写下一个想法，让讨论从这里开始。";
   const emptySuggestions = roomTone === "public"
@@ -586,21 +584,7 @@ export default function ChatRoom({
               fadeDuration={fadeDuration}
               viewportRef={messagesViewportRef}
               renderEmpty={hideMessageContent ? () => null : () => (
-                shouldShowConversationPrep ? (
-                  <div className="empty-state empty-state--ai-start">
-                    <ConversationPrepPanel
-                      isVisible={shouldShowConversationPrep}
-                      roomAiMembers={roomAiMembers}
-                      conversationAiMembers={conversationAiMembers}
-                      availableAis={availableAis}
-                      thinkingAdapters={thinkingAdapters}
-                      readOnly={readOnly}
-                      onChangeTeam={onConversationAiMembersChange}
-                      loadError={conversationTeamError}
-                    />
-                  </div>
-                ) : (
-                  <div className={`empty-state empty-state--room is-${roomTone}`}>
+                <div className={`empty-state empty-state--room is-${roomTone}`}>
                     <div className="empty-copy">
                       <div className="empty-kicker">{roomPlaceLabel}</div>
                       <div className="empty-title">{emptyTitle}</div>
@@ -611,7 +595,7 @@ export default function ChatRoom({
                     </div>
                   </div>
                 )
-              )}
+              }
               onContextMenu={handleMessageContextMenu}
               hasMoreHistory={hasMoreHistory && !hideMessageContent}
             historyInitialLoading={historyInitialLoading && !hideMessageContent}

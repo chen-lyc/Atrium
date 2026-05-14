@@ -16,7 +16,6 @@ export const DEFAULT_CONVERSATION_ID = 1;
 export const PERSONAL_ROOM_ID = "personal";
 export const PUBLIC_ROOM_ID = "public";
 export const PUBLIC_CONVERSATION_ID = 1;
-export const DEFAULT_AI_MODEL = "deepseek-v4-flash";
 export const AI_MODEL_OPTIONS = Object.freeze([
   {
     value: "deepseek-v4-flash",
