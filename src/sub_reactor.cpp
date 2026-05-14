@@ -519,7 +519,8 @@ void Reactor::process(Connection &conn) {
                             return false;
                         }
                         uint64_t real_room_id = 0;
-                        MysqlPool::QueryResult ret = get_room_from_conversations(real_room_id, conversation_id);
+                        vector<AiMemberInfo> ai_members;
+                        MysqlPool::QueryResult ret = get_conv_room_and_ai_members(conversation_id, real_room_id, ai_members);
                         if (ret == MysqlPool::QueryResult::NotFound) {
                             LOG_WARN("ws conversation not in room, conv=%llu room=%llu", conversation_id, room_id);
                             sendError(conn, WS_PROTOCOLERROR);
@@ -584,10 +585,7 @@ void Reactor::process(Connection &conn) {
                         payload_data = user_json.dump();
                         LOG_DEBUG("fd = %d websocket payload: %s", conn.fd, payload_data.c_str());
 
-                        vector<AiMemberInfo> ai_members;
-                        MysqlPool::QueryResult members_ret = get_conversation_ai_members(conversation_id, ai_members);
-                        if (members_ret == MysqlPool::QueryResult::Success) {
-                            for (auto &m : ai_members) {
+                        for (auto &m : ai_members) {
                                 const char *api_key_ptr = nullptr;
                                 if (m.provider == "deepseek") api_key_ptr = std::getenv("DEEPSEEK_API_KEY");
                                 else if (m.provider == "qwen") api_key_ptr = std::getenv("QWEN_API_KEY");
@@ -614,7 +612,6 @@ void Reactor::process(Connection &conn) {
                                 };
                                 ConvAiScheduler::getInstance().submit(conversation_id, m.ai_id, message_id, launcher);
                             }
-                        }
                     } catch (const json::exception &e) {
                         LOG_WARN("bad json: %s", e.what());
                         sendError(conn, WS_PROTOCOLERROR);
@@ -784,6 +781,83 @@ void Reactor::AiReplyTask::process() {
     dispatchToOtherAis();
 }
 
+void Reactor::AiReplyTask::onChunk(AiSseData &data) {
+    if (data.content.empty()) {
+        if (data.total_tokens) accumulate_user_ai_tokens(m_user_id, m_ai_id, data);
+        return;
+    }
+
+    m_ai_reply += data.content;
+
+    if (!m_send_start_frame) {
+        LOG_DEBUG("ai first sse, model=%s provider=%s", m_ai_model.c_str(), m_provider.c_str());
+
+        string ai_reply_start;
+        json ai_reply;
+        ai_reply["room_id"] = m_room_id;
+        ai_reply["conversation_id"] = m_conversation_id;
+        ai_reply["message_id"] = m_ai_message_id;
+        ai_reply["avatar_url"] = m_client->avatar_url();
+        ai_reply["model"] = m_ai_model;
+        ai_reply["send_time_ms"] = now_ms();
+
+        json ai_json;
+        ai_json["type"] = static_cast<int>(chatdb::EventType::AiStreamStart);
+        ai_json["data"] = ai_reply;
+        ai_reply_start = ai_json.dump();
+        if (ai_reply_start.empty()) return;
+
+        broadcastAiReply(ai_reply_start);
+        m_send_start_frame = true;
+    }
+
+    string reply;
+    json ai_reply;
+    ai_reply["model"] = m_ai_model;
+    ai_reply["content"] = data.content;
+
+    json ai_json;
+    ai_json["type"] = static_cast<int>(chatdb::EventType::AiStreamDelta);
+    ai_json["data"] = ai_reply;
+    reply = ai_json.dump();
+    if (reply.empty()) return;
+
+    broadcastAiReply(reply);
+
+    if (data.total_tokens > 0) {
+        accumulate_user_ai_tokens(m_user_id, m_ai_id, data);
+    }
+}
+
+void Reactor::AiReplyTask::broadcastAiReply(const std::string reply) {
+    string ai_frame;
+    uint8_t byte0 = 0x80 | WS_TEXT;
+    ai_frame.append(reinterpret_cast<char *>(&byte0), 1);
+    if (reply.size() < 126) {
+        uint8_t byte1 = static_cast<uint8_t>(reply.size());
+        ai_frame.append(reinterpret_cast<char *>(&byte1), 1);
+    } else if (reply.size() < (1 << 16)) {
+        uint8_t byte1 = 126;
+        ai_frame.append(reinterpret_cast<char *>(&byte1), 1);
+        uint16_t payload_length = reply.size();
+        uint16_t ext = htons(payload_length);
+        ai_frame.append(reinterpret_cast<char *>(&ext), 2);
+    } else {
+        uint8_t byte1 = 127;
+        ai_frame.append(reinterpret_cast<char *>(&byte1), 1);
+        uint64_t payload_length = reply.size();
+        uint64_t ext = htobe64(payload_length);
+        ai_frame.append(reinterpret_cast<char *>(&ext), 8);
+    }
+    ai_frame += std::move(reply);
+
+    shared_ptr<const string> frame = make_shared<string>(ai_frame);
+    unordered_map<int, vector<int>> reactor_to_fds = ConnRoute::getInstance().queryByRoom(m_room_id);
+    for (auto it = reactor_to_fds.begin(); it != reactor_to_fds.end(); ++it) {
+        m_reactor.m_sub_reactors[it->first]->enqueueBroadcast({m_room_id, it->second, frame});
+    }
+}
+
 void Reactor::AiReplyTask::dispatchToOtherAis() {
     if (m_round >= 2) return;
 
@@ -831,52 +905,6 @@ void Reactor::AiReplyTask::dispatchToOtherAis() {
     }
 }
 
-void Reactor::AiReplyTask::onChunk(AiSseData &data) {
-    if (data.content.empty()) {
-        if (data.total_tokens) accumulate_user_ai_tokens(m_user_id, m_ai_id, data);
-        return;
-    }
-
-    m_ai_reply += data.content;
-
-    if (!m_send_start_frame) {
-        string ai_reply_start;
-        json ai_reply;
-        ai_reply["room_id"] = m_room_id;
-        ai_reply["conversation_id"] = m_conversation_id;
-        ai_reply["message_id"] = m_ai_message_id;
-        ai_reply["avatar_url"] = m_client->avatar_url();
-        ai_reply["model"] = m_ai_model;
-        ai_reply["send_time_ms"] = now_ms();
-
-        json ai_json;
-        ai_json["type"] = static_cast<int>(chatdb::EventType::AiStreamStart);
-        ai_json["data"] = ai_reply;
-        ai_reply_start = ai_json.dump();
-        if (ai_reply_start.empty()) return;
-
-        broadcastAiReply(ai_reply_start);
-        m_send_start_frame = true;
-    }
-
-    string reply;
-    json ai_reply;
-    ai_reply["model"] = m_ai_model;
-    ai_reply["content"] = data.content;
-
-    json ai_json;
-    ai_json["type"] = static_cast<int>(chatdb::EventType::AiStreamDelta);
-    ai_json["data"] = ai_reply;
-    reply = ai_json.dump();
-    if (reply.empty()) return;
-
-    broadcastAiReply(reply);
-
-    if (data.total_tokens > 0) {
-        accumulate_user_ai_tokens(m_user_id, m_ai_id, data);
-    }
-}
-
 void Reactor::AiReplyTask::sendError() {
     json err;
     err["room_id"] = m_room_id;
@@ -888,35 +916,6 @@ void Reactor::AiReplyTask::sendError() {
     frame["data"] = err;
 
     broadcastAiReply(frame.dump());
-}
-
-void Reactor::AiReplyTask::broadcastAiReply(const std::string reply) {
-    string ai_frame;
-    uint8_t byte0 = 0x80 | WS_TEXT;
-    ai_frame.append(reinterpret_cast<char *>(&byte0), 1);
-    if (reply.size() < 126) {
-        uint8_t byte1 = static_cast<uint8_t>(reply.size());
-        ai_frame.append(reinterpret_cast<char *>(&byte1), 1);
-    } else if (reply.size() < (1 << 16)) {
-        uint8_t byte1 = 126;
-        ai_frame.append(reinterpret_cast<char *>(&byte1), 1);
-        uint16_t payload_length = reply.size();
-        uint16_t ext = htons(payload_length);
-        ai_frame.append(reinterpret_cast<char *>(&ext), 2);
-    } else {
-        uint8_t byte1 = 127;
-        ai_frame.append(reinterpret_cast<char *>(&byte1), 1);
-        uint64_t payload_length = reply.size();
-        uint64_t ext = htobe64(payload_length);
-        ai_frame.append(reinterpret_cast<char *>(&ext), 8);
-    }
-    ai_frame += std::move(reply);
-
-    shared_ptr<const string> frame = make_shared<string>(ai_frame);
-    unordered_map<int, vector<int>> reactor_to_fds = ConnRoute::getInstance().queryByRoom(m_room_id);
-    for (auto it = reactor_to_fds.begin(); it != reactor_to_fds.end(); ++it) {
-        m_reactor.m_sub_reactors[it->first]->enqueueBroadcast({m_room_id, it->second, frame});
-    }
 }
 
 string_view Reactor::getMimeType(const string &file_path) {

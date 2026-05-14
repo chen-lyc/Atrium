@@ -429,6 +429,43 @@ MysqlPool::QueryResult get_room_data(uint64_t room_id, string &room_name, uint64
     return MysqlPool::QueryResult::Success;
 }
 
+MysqlPool::QueryResult get_rooms_with_data(uint64_t user_id, std::vector<RoomBrief> &rooms) {
+    static const string sql =
+        "SELECT rm.room_id, r.name, r.main_conversation_id, r.type "
+        "FROM room_members rm "
+        "JOIN rooms r ON rm.room_id = r.id "
+        "WHERE rm.user_id = ? "
+        "ORDER BY "
+        "  CASE "
+        "    WHEN r.type = 1 THEN 0 "
+        "    WHEN r.type = 0 THEN 1 "
+        "    ELSE 2 "
+        "  END ASC, "
+        "  rm.join_at_ms DESC, "
+        "  r.id DESC";
+    MysqlPool::MysqlParams params{user_id};
+    vector<vector<string>> result;
+    size_t col_count = 4;
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, result, col_count);
+    if (ret != MysqlPool::QueryResult::Success) {
+        return ret;
+    }
+
+    for (size_t i = 0; i < result.size(); ++i) {
+        try {
+            RoomBrief entry;
+            entry.id = stoull(result[i][0]);
+            entry.name = std::move(result[i][1]);
+            entry.main_conversation_id = stoull(result[i][2]);
+            entry.type = stoi(result[i][3]);
+            rooms.emplace_back(std::move(entry));
+        } catch (const exception &e) {
+            LOG_WARN("parse room data failed: reason = %s", e.what());
+        }
+    }
+    return MysqlPool::QueryResult::Success;
+}
+
 MysqlPool::QueryResult create_room(uint64_t &room_id, uint64_t &main_conversation_id, const std::string &name, const uint64_t user_id, RoomType type) {
     return MysqlPool::getInstance().executeTransaction([&](MysqlTxnContext &txn) {
         uint64_t time_ms = now_ms();
@@ -968,6 +1005,40 @@ MysqlPool::QueryResult get_conversation_ai_members(uint64_t conversation_id, std
             return MysqlPool::QueryResult::ServerError;
         }
         members.push_back({ai_id, std::move(row[1]), std::move(row[2]), std::move(row[3]), std::move(row[4])});
+    }
+    return MysqlPool::QueryResult::Success;
+}
+
+MysqlPool::QueryResult get_conv_room_and_ai_members(uint64_t conversation_id, uint64_t &room_id, std::vector<AiMemberInfo> &members) {
+    static const string sql =
+        "SELECT c.room_id, a.id, a.provider, a.model, cam.adapter_url, cam.custom_adapter_text "
+        "FROM conversations c "
+        "LEFT JOIN conversation_ai_members cam ON cam.conversation_id = c.id "
+        "LEFT JOIN ai a ON a.id = cam.ai_id "
+        "WHERE c.id = ?";
+    MysqlPool::MysqlParams params{conversation_id};
+    vector<vector<string>> rows;
+    size_t col_count = 6;
+    MysqlPool::QueryResult ret = MysqlPool::getInstance().executeQuery(sql, params, rows, col_count);
+    if (ret != MysqlPool::QueryResult::Success) return ret;
+    if (rows.empty()) return MysqlPool::QueryResult::NotFound;
+
+    try {
+        room_id = stoull(rows[0][0]);
+    } catch (const exception &e) {
+        LOG_WARN("parse room_id in get_conv_room_and_ai_members failed, conv=%llu", conversation_id);
+        return MysqlPool::QueryResult::ServerError;
+    }
+
+    for (auto &row : rows) {
+        if (row[1].empty()) continue;
+        uint64_t ai_id = 0;
+        try {
+            ai_id = stoull(row[1]);
+        } catch (const exception &e) {
+            return MysqlPool::QueryResult::ServerError;
+        }
+        members.push_back({ai_id, std::move(row[2]), std::move(row[3]), std::move(row[4]), std::move(row[5])});
     }
     return MysqlPool::QueryResult::Success;
 }

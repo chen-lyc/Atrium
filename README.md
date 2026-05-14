@@ -220,7 +220,7 @@ CREATE TABLE room_members (
   join_at_ms BIGINT UNSIGNED NOT NULL,
 
   PRIMARY KEY (room_id, user_id),
-  KEY idx_user_id (user_id)
+  KEY idx_user_join (user_id, join_at_ms, room_id)
 
   -- APP FK: room_members.room_id -> rooms.id
   -- APP FK: room_members.user_id -> users.id

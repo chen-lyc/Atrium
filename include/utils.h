@@ -78,6 +78,15 @@ enum class RoomType {
     Normal = 2,
 };
 
+struct RoomBrief {
+    uint64_t id;
+    std::string name;
+    uint64_t main_conversation_id;
+    int type;
+};
+
+MysqlPool::QueryResult get_rooms_with_data(uint64_t user_id, std::vector<RoomBrief> &rooms);
+
 MysqlPool::QueryResult create_room(uint64_t &room_id, uint64_t &main_conversation_id, const std::string &name, const uint64_t user_id, RoomType type = RoomType::Normal);
 MysqlPool::QueryResult join_public_room(uint64_t &room_id, uint64_t &main_conversation_id, uint64_t user_id);
 MysqlPool::QueryResult join_public_room(uint64_t &room_id, uint64_t user_id);
@@ -136,6 +145,7 @@ struct RoomAiMemberInfo {
 
 MysqlPool::QueryResult get_conversation_ai_model(uint64_t conversation_id, std::string &provider, std::string &model);
 MysqlPool::QueryResult get_conversation_ai_members(uint64_t conversation_id, std::vector<AiMemberInfo> &members);
+MysqlPool::QueryResult get_conv_room_and_ai_members(uint64_t conversation_id, uint64_t &room_id, std::vector<AiMemberInfo> &members);
 struct AiInfo {
     uint64_t id;
     std::string provider;

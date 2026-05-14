@@ -457,8 +457,8 @@ RouteResult handle_search_users(RequestContext &ctx) {
     return {RouteStatus::Success};
 }
 RouteResult handle_list_rooms(RequestContext &ctx) {
-    vector<uint64_t> room_ids;
-    MysqlPool::QueryResult get_ret = get_room_ids(ctx.user_id, room_ids);
+    vector<RoomBrief> room_list;
+    MysqlPool::QueryResult get_ret = get_rooms_with_data(ctx.user_id, room_list);
 
     if (get_ret == MysqlPool::QueryResult::NotFound) {
         uint64_t room_id = 0;
@@ -466,48 +466,17 @@ RouteResult handle_list_rooms(RequestContext &ctx) {
         if (ret != MysqlPool::QueryResult::Success) {
             return {RouteStatus::ServerError};
         }
-        room_ids.emplace_back(room_id);
         static string personal_room_name = "个人讨论室";
         uint64_t main_conv_id = 0;
         ret = create_room(room_id, main_conv_id, personal_room_name, ctx.user_id, RoomType::Personal);
         if (ret != MysqlPool::QueryResult::Success) {
             return {RouteStatus::ServerError};
         }
-        room_ids.emplace_back(room_id);
-        get_ret = MysqlPool::QueryResult::Success;
+        get_ret = get_rooms_with_data(ctx.user_id, room_list);
     }
 
     if (get_ret == MysqlPool::QueryResult::Success) {
         json out;
-        struct RoomEntry {
-            uint64_t id;
-            string name;
-            uint64_t main_conversation_id;
-            int type;
-            bool operator<(const RoomEntry &other) const {
-                return type < other.type;
-            }
-        };
-        bool any_server_error = false;
-        vector<RoomEntry> room_list;
-        for (size_t i = 0; i < room_ids.size(); ++i) {
-            string name;
-            uint64_t main_conversation_id = 0;
-            int type = 0;
-            MysqlPool::QueryResult get_name_ret = get_room_data(room_ids[i], name, main_conversation_id, type);
-            if (get_name_ret == MysqlPool::QueryResult::ServerError) {
-                any_server_error = true;
-                continue;
-            }
-            if (get_name_ret != MysqlPool::QueryResult::Success) continue;
-            room_list.push_back({room_ids[i], std::move(name), main_conversation_id, type});
-        }
-        sort(room_list.begin(), room_list.end());
-
-        if (room_list.empty() && any_server_error) {
-            return {RouteStatus::ServerError};
-        }
-
         json list = json::array();
         for (auto &entry : room_list) {
             json r;

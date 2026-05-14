@@ -113,7 +113,7 @@ AiClientStatus AiClient::chat(const AiChatRequest &request, uint64_t &ai_id, std
         return AiClientStatus::BuildRequestFailed;
     }
 
-    LOG_DEBUG("begin to be client");
+    LOG_DEBUG("%s %s: begin request", m_config.provider.c_str(), request.model.c_str());
     httplib::SSLClient cli(m_config.base_url);
     cli.set_bearer_token_auth(request.api);
     cli.set_read_timeout(60, 0);
@@ -186,7 +186,7 @@ AiClientStatus AiClient::chat(const AiChatRequest &request, uint64_t &ai_id, std
         }
         return false;
     });
-    LOG_DEBUG("after ai post");
+    LOG_DEBUG("%s %s: response done", m_config.provider.c_str(), request.model.c_str());
     if (!res) return AiClientStatus::NetworkError;
     LOG_DEBUG("ai response status = %d, body = %s", res->status, res->body.c_str());
     switch (res->status) {

@@ -292,7 +292,6 @@ function createRoomList(roomRecords, personalConversationId) {
 
   records
     .filter((room) => !usedIds.has(room.roomId))
-    .sort((a, b) => a.roomId - b.roomId)
     .forEach((room, index) => {
       rooms.push(createGenericRoom(room, index));
     });
