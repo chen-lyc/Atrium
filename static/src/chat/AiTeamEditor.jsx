@@ -10,6 +10,22 @@ import {
 } from "../utils.js";
 
 const CONTENT_THINKING_KEYS = new Set(["aggressive", "conservative", "comprehensive", "counterexample", "convergent", "divergent"]);
+const RADIAL_ADAPTER_OPTIONS = Object.freeze([
+  { key: "aggressive", label: "激进", clockAngle: 0 },
+  { key: "comprehensive", label: "全面", clockAngle: 60 },
+  { key: "convergent", label: "收敛", clockAngle: 120 },
+  { key: "conservative", label: "保守", clockAngle: 180 },
+  { key: "counterexample", label: "反例", clockAngle: 240 },
+  { key: "divergent", label: "发散", clockAngle: 300 }
+].map((option) => {
+  const radians = (option.clockAngle * Math.PI) / 180;
+  const radius = 74;
+  return {
+    ...option,
+    x: Math.sin(radians) * radius,
+    y: -Math.cos(radians) * radius
+  };
+}));
 const FEATURED_MODELS_PER_PROVIDER = 2;
 const PROVIDER_LABELS = {
   deepseek: "DeepSeek",
@@ -17,6 +33,225 @@ const PROVIDER_LABELS = {
   claude: "Claude",
   openai: "OpenAI"
 };
+const SEAT_BREATH_MIN_SECONDS = 3.45;
+const SEAT_BREATH_DEPTH_MIN = 0.006;
+const SEAT_NEUTRAL_VISUAL_PROFILE = Object.freeze({
+  rhythm: "organic",
+  flow: "neutral"
+});
+const SEAT_ADAPTER_VISUAL_PROFILES = Object.freeze({
+  aggressive: {
+    durationBase: 2.34,
+    durationJitter: 0.18,
+    rhythm: "organic",
+    flow: "neutral",
+    depthScale: 1.22,
+    auraScale: 1.08,
+    outlineScale: 1.04,
+    bodyStyle: {
+      "--ai-seat-bg-main-share": "94%",
+      "--ai-seat-bg-light-share": "6%",
+      "--ai-seat-border-line-share": "70%",
+      "--ai-seat-inner-shade-share": "1.5%",
+      "--ai-seat-shadow-y": "7px",
+      "--ai-seat-shadow-blur": "18px",
+      "--ai-seat-shadow-alpha": "0.055",
+      "--ai-seat-aura-center-share": "9%",
+      "--ai-seat-aura-mid-share": "3.5%",
+      "--ai-seat-aura-mid-stop": "43%",
+      "--ai-seat-aura-edge-stop": "78%"
+    }
+  },
+  conservative: {
+    durationBase: 7.08,
+    durationJitter: 0.42,
+    rhythm: "organic",
+    flow: "neutral",
+    depthScale: 0.72,
+    auraScale: 0.68,
+    outlineScale: 1.14,
+    bodyStyle: {
+      "--ai-seat-bg-main-share": "98%",
+      "--ai-seat-bg-light-share": "2%",
+      "--ai-seat-border-line-share": "88%",
+      "--ai-seat-inner-shade-share": "4%",
+      "--ai-seat-shadow-y": "11px",
+      "--ai-seat-shadow-blur": "22px",
+      "--ai-seat-shadow-alpha": "0.07",
+      "--ai-seat-aura-center-share": "6%",
+      "--ai-seat-aura-mid-share": "2%",
+      "--ai-seat-aura-mid-stop": "40%",
+      "--ai-seat-aura-edge-stop": "68%",
+      "--ai-seat-outline-peak-scale": "1.01",
+      "--ai-seat-outline-tail-scale": "1.003"
+    }
+  },
+  comprehensive: {
+    durationBase: 4.72,
+    durationJitter: 0,
+    rhythm: "even",
+    flow: "neutral",
+    depthScale: 0.82,
+    auraScale: 0.96,
+    outlineScale: 0.96,
+    bodyStyle: {
+      "--ai-seat-aura-center-share": "7%",
+      "--ai-seat-aura-mid-share": "4%",
+      "--ai-seat-aura-mid-stop": "55%",
+      "--ai-seat-aura-edge-stop": "84%",
+      "--ai-seat-aura-peak-scale": "1.014",
+      "--ai-seat-outline-peak-scale": "1.014"
+    }
+  },
+  counterexample: {
+    durationBase: 4.38,
+    durationJitter: 0.18,
+    rhythm: "interrupted",
+    flow: "neutral",
+    depthScale: 0.96,
+    auraScale: 0.9,
+    outlineScale: 1.08,
+    bodyStyle: {
+      "--ai-seat-border-line-share": "86%",
+      "--ai-seat-aura-center-share": "7%",
+      "--ai-seat-aura-mid-share": "2.5%",
+      "--ai-seat-aura-mid-stop": "42%",
+      "--ai-seat-aura-edge-stop": "70%",
+      "--ai-seat-edge-mark-share": "18%",
+      "--ai-seat-edge-mark-size": "18%",
+      "--ai-seat-edge-mark-x": "82%",
+      "--ai-seat-edge-mark-y": "18%",
+      "--ai-seat-outline-peak-scale": "1.013",
+      "--ai-seat-outline-tail-scale": "1.004"
+    }
+  },
+  divergent: {
+    durationBase: 4.36,
+    durationJitter: 0.32,
+    rhythm: "organic",
+    flow: "outward",
+    depthScale: 0.86,
+    auraScale: 0.92,
+    outlineScale: 0.6
+  },
+  convergent: {
+    durationBase: 4.58,
+    durationJitter: 0.22,
+    rhythm: "organic",
+    flow: "inward",
+    depthScale: 0.74,
+    auraScale: 0.82,
+    outlineScale: 1.1
+  }
+});
+const SEAT_EXPLICIT_THINKING_KEYS = new Set(THINKING_MODE_OPTIONS.map((option) => option.key));
+
+function getSeatVitalSeed(member, index) {
+  const source = [
+    member?.aiId ?? member?.ai_id ?? member?.id ?? index,
+    member?.provider,
+    member?.model,
+    member?.displayName || member?.display_name
+  ].join(":");
+  let seed = 0;
+  for (let i = 0; i < source.length; i += 1) {
+    seed = (seed * 31 + source.charCodeAt(i)) % 9973;
+  }
+  return seed + index * 97;
+}
+
+function getSeatThinkingMode(member) {
+  const explicit = member?.thinkingMode ?? member?.thinking_mode ?? member?.adapterKey ?? member?.adapter;
+  if (typeof explicit === "string" && SEAT_EXPLICIT_THINKING_KEYS.has(explicit)) return explicit;
+  return getThinkingModeFromMember(member);
+}
+
+function getSeatAdapterVisualProfile(thinkingMode) {
+  return SEAT_ADAPTER_VISUAL_PROFILES[thinkingMode] || SEAT_NEUTRAL_VISUAL_PROFILE;
+}
+
+function getSeedUnit(seed, salt) {
+  return ((seed * salt) % 1000) / 1000;
+}
+
+function getSeatVitalStyle(member, index, visualProfile = SEAT_NEUTRAL_VISUAL_PROFILE) {
+  const seed = getSeatVitalSeed(member, index);
+  const isNeutral = visualProfile === SEAT_NEUTRAL_VISUAL_PROFILE;
+  const duration = isNeutral
+    ? SEAT_BREATH_MIN_SECONDS + (seed % 150) / 100
+    : visualProfile.durationBase + getSeedUnit(seed, 41) * visualProfile.durationJitter;
+  const delay = isNeutral
+    ? -((seed * 37) % 430) / 100
+    : -(getSeedUnit(seed, 37) * duration);
+  const baseDepth = SEAT_BREATH_DEPTH_MIN + (seed % 8) / 1000;
+  const baseAura = 0.14 + ((seed >> 2) % 7) / 100;
+  const baseOutline = 0.27 + ((seed >> 4) % 8) / 100;
+  const depth = baseDepth * (visualProfile.depthScale ?? 1);
+  const aura = baseAura * (visualProfile.auraScale ?? 1);
+  const outline = baseOutline * (visualProfile.outlineScale ?? 1);
+  const interruptDuration = duration * (3.7 + getSeedUnit(seed, 61) * 1.05);
+  const interruptDelay = -(getSeedUnit(seed, 73) * interruptDuration);
+  const flowStyle = visualProfile.flow === "outward"
+    ? {
+        "--ai-seat-bg-main-share": "94%",
+        "--ai-seat-bg-light-share": "6%",
+        "--ai-seat-border-line-share": "48%",
+        "--ai-seat-inner-shade-share": "1.2%",
+        "--ai-seat-shadow-y": "8px",
+        "--ai-seat-shadow-blur": "18px",
+        "--ai-seat-shadow-alpha": "0.045",
+        "--ai-seat-outline-inset": "0px",
+        "--ai-seat-aura-inset": "0px",
+        "--ai-seat-aura-center-share": "4.5%",
+        "--ai-seat-aura-mid-share": "4%",
+        "--ai-seat-aura-mid-stop": "62%",
+        "--ai-seat-aura-edge-stop": "98%",
+        "--ai-seat-aura-rest-scale": "0.996",
+        "--ai-seat-aura-peak-scale": "1.018",
+        "--ai-seat-aura-tail-scale": "1.008",
+        "--ai-seat-outline-peak-scale": "1.006",
+        "--ai-seat-outline-tail-scale": "1.002"
+      }
+    : visualProfile.flow === "inward"
+      ? {
+          "--ai-seat-bg-main-share": "97%",
+          "--ai-seat-bg-light-share": "3%",
+          "--ai-seat-border-line-share": "88%",
+          "--ai-seat-inner-shade-share": "3%",
+          "--ai-seat-shadow-y": "8px",
+          "--ai-seat-shadow-blur": "18px",
+          "--ai-seat-shadow-alpha": "0.055",
+          "--ai-seat-outline-inset": "0px",
+          "--ai-seat-aura-inset": "2px",
+          "--ai-seat-aura-center-share": "9%",
+          "--ai-seat-aura-mid-share": "1.4%",
+          "--ai-seat-aura-mid-stop": "34%",
+          "--ai-seat-aura-edge-stop": "50%",
+          "--ai-seat-aura-rest-scale": "0.996",
+          "--ai-seat-aura-peak-scale": "1.006",
+          "--ai-seat-aura-tail-scale": "1",
+          "--ai-seat-outline-peak-scale": "1.006",
+          "--ai-seat-outline-tail-scale": "1.001"
+        }
+      : {};
+  return {
+    "--ai-seat-breath-duration": `${duration.toFixed(2)}s`,
+    "--ai-seat-breath-delay": `${delay.toFixed(2)}s`,
+    "--ai-seat-breath-peak-scale": (1 + depth).toFixed(3),
+    "--ai-seat-breath-tail-scale": (1 + depth * 0.42).toFixed(3),
+    "--ai-seat-breath-alert-scale": (1 + depth * 0.64).toFixed(3),
+    "--ai-seat-aura-opacity": aura.toFixed(2),
+    "--ai-seat-aura-rest-opacity": (aura * 0.62).toFixed(2),
+    "--ai-seat-aura-tail-opacity": (aura * 0.58).toFixed(2),
+    "--ai-seat-outline-opacity": outline.toFixed(2),
+    "--ai-seat-outline-rest-opacity": (outline * 0.72).toFixed(2),
+    "--ai-seat-outline-tail-opacity": (outline * 0.62).toFixed(2),
+    "--ai-seat-interrupt-duration": `${interruptDuration.toFixed(2)}s`,
+    "--ai-seat-interrupt-delay": `${interruptDelay.toFixed(2)}s`,
+    ...flowStyle,
+    ...(visualProfile.bodyStyle || {})
+  };
+}
 
 function normalizeProvider(provider) {
   return String(provider || "other").trim().toLowerCase() || "other";
@@ -102,6 +337,7 @@ function buildMemberWithThinking(member, thinkingKey, customText, thinkingAdapte
     id: Number(member?.aiId ?? member?.ai_id ?? member?.id),
     avatarUrl: member?.avatarUrl || member?.avatar_url || "",
     displayName: member?.displayName || member?.display_name || "",
+    thinkingMode: thinkingKey,
     adapterUrl: isCustom ? "" : resolveThinkingAdapterUrl(thinkingKey, thinkingAdapters),
     customAdapterText: isCustom ? customText || member.customAdapterText || "" : ""
   };
@@ -403,38 +639,31 @@ function AiSeatStrip({
   members = [],
   thinkingAdapters = [],
   readOnly = false,
+  presentationOnly = false,
+  vitalSigns = true,
   onChange = async () => [],
   emptyText = "未设置 AI",
   className = ""
 }) {
   const [openAiId, setOpenAiId] = useState(null);
-  const [thinkingOpenAiId, setThinkingOpenAiId] = useState(null);
+  const [previewThinkingMode, setPreviewThinkingMode] = useState("");
   const [pending, setPending] = useState(false);
   const timerRef = useRef(null);
 
   useEffect(() => () => window.clearTimeout(timerRef.current), []);
 
-  useEffect(() => {
-    if (thinkingOpenAiId == null) return undefined;
-    function handlePointerDown(event) {
-      if (event.target?.closest?.(".ai-seat-thinking-panel")) return;
-      setThinkingOpenAiId(null);
-    }
-    document.addEventListener("mousedown", handlePointerDown);
-    return () => document.removeEventListener("mousedown", handlePointerDown);
-  }, [thinkingOpenAiId]);
-
   function open(member) {
     window.clearTimeout(timerRef.current);
     setOpenAiId(member.aiId);
+    setPreviewThinkingMode("");
   }
 
   function queueClose() {
     window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => {
       setOpenAiId(null);
-      setThinkingOpenAiId(null);
-    }, 140);
+      setPreviewThinkingMode("");
+    }, 160);
   }
 
   function handleSeatBlur(event) {
@@ -455,77 +684,116 @@ function AiSeatStrip({
   async function updateThinking(member, key, customText) {
     const nextMember = buildMemberWithThinking(member, key, customText, thinkingAdapters);
     await persist(members.map((item) => item.aiId === member.aiId ? nextMember : item));
-    setThinkingOpenAiId(null);
     setOpenAiId(null);
+    setPreviewThinkingMode("");
   }
 
-  async function removeMember(member) {
-    await persist(members.filter((item) => item.aiId !== member.aiId));
+  async function commitAdapter(member, key) {
+    if (pending) return;
+    if (getSeatThinkingMode(member) !== key) {
+      await updateThinking(member, key, "");
+      return;
+    }
     setOpenAiId(null);
+    setPreviewThinkingMode("");
   }
+
+  const isInteractive = !readOnly && !presentationOnly;
+  const stripClassName = [
+    "ai-seat-strip",
+    vitalSigns ? "has-vital-signs" : "",
+    presentationOnly ? "is-presentation-only" : "",
+    isInteractive && openAiId != null ? "is-seat-focus-active" : "",
+    className
+  ].filter(Boolean).join(" ");
 
   return (
-    <div className={`ai-seat-strip ${className}`.trim()}>
-      {members.length ? members.map((member) => {
+    <div className={stripClassName}>
+      {members.length ? members.map((member, index) => {
         const isOpen = openAiId === member.aiId;
+        const committedThinkingMode = getSeatThinkingMode(member);
+        const thinkingMode = isOpen && previewThinkingMode ? previewThinkingMode : committedThinkingMode;
+        const visualProfile = getSeatAdapterVisualProfile(thinkingMode);
+        const vitalStyle = vitalSigns ? getSeatVitalStyle(member, index, visualProfile) : undefined;
+        const wrapClassName = [
+          "ai-seat-wrap",
+          isOpen ? "is-focused" : "",
+          isInteractive && openAiId != null && !isOpen ? "is-muted" : ""
+        ].filter(Boolean).join(" ");
         return (
           <div
             key={member.aiId}
-            className="ai-seat-wrap"
-            onMouseEnter={() => open(member)}
-            onMouseLeave={queueClose}
-            onFocus={() => open(member)}
-            onBlur={handleSeatBlur}
+            className={wrapClassName}
+            data-seat-rhythm={visualProfile.rhythm}
+            style={vitalStyle}
+            onMouseEnter={isInteractive ? () => open(member) : undefined}
+            onMouseLeave={isInteractive ? queueClose : undefined}
+            onFocus={isInteractive ? () => open(member) : undefined}
+            onBlur={isInteractive ? handleSeatBlur : undefined}
           >
             <button
               type="button"
               className="ai-seat-pill"
               aria-label={getAiMemberName(member)}
-              aria-disabled={readOnly}
+              aria-disabled={readOnly || presentationOnly}
+              tabIndex={isInteractive ? 0 : -1}
+              data-thinking-mode={thinkingMode}
+              data-seat-rhythm={visualProfile.rhythm}
+              data-seat-flow={visualProfile.flow}
+              style={vitalStyle}
             >
               <img src={getAiAvatarUrl(member)} alt="" />
             </button>
             <AnimatePresence>
-              {isOpen ? (
+              {isInteractive && isOpen ? (
                 <motion.div
-                  className="ai-seat-popover"
-                  initial={{ opacity: 0, y: -4, scale: 0.99 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -3, scale: 0.99 }}
-                  transition={{ duration: 0.14, ease: EASE }}
+                  className="ai-seat-radial-menu"
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.92 }}
+                  transition={{ duration: 0.22, ease: EASE }}
+                  onMouseEnter={() => window.clearTimeout(timerRef.current)}
+                  onMouseLeave={queueClose}
+                  aria-label={`${getAiMemberName(member)} adapter 选择`}
                 >
-                  <div className="ai-seat-popover-head">
-                    <AiIdentity member={member} members={members} />
-                    <button type="button" onClick={() => removeMember(member)} disabled={readOnly || pending}>
-                      移除
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    className="ai-seat-thinking-label"
-                    onClick={() => setThinkingOpenAiId((current) => current === member.aiId ? null : member.aiId)}
-                    disabled={readOnly || pending}
-                  >
-                    {getThinkingModeLabel(member)}
-                  </button>
-                  <AnimatePresence>
-                    {thinkingOpenAiId === member.aiId ? (
-                      <motion.div
-                        className="ai-seat-thinking-panel"
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: "auto" }}
-                        exit={{ opacity: 0, height: 0 }}
-                        transition={{ duration: 0.16, ease: EASE }}
+                  {RADIAL_ADAPTER_OPTIONS.map((option, optionIndex) => {
+                    const optionVisualProfile = getSeatAdapterVisualProfile(option.key);
+                    const optionVitalStyle = vitalSigns
+                      ? getSeatVitalStyle(
+                          { ...member, aiId: `${member.aiId}:${option.key}`, thinkingMode: option.key },
+                          index + optionIndex + 11,
+                          optionVisualProfile
+                        )
+                      : undefined;
+                    const isActiveAdapter = committedThinkingMode === option.key;
+                    return (
+                      <motion.button
+                        key={option.key}
+                        type="button"
+                        className={`ai-seat-adapter-option ${isActiveAdapter ? "is-active" : ""}`}
+                        initial={{ opacity: 0, x: -28, y: -31, scale: 0.84 }}
+                        animate={{ opacity: 1, x: option.x - 28, y: option.y - 31, scale: 1 }}
+                        exit={{ opacity: 0, x: -28, y: -31, scale: 0.88 }}
+                        transition={{ duration: 0.24, delay: optionIndex * 0.012, ease: EASE }}
+                        onMouseEnter={() => setPreviewThinkingMode(option.key)}
+                        onFocus={() => setPreviewThinkingMode(option.key)}
+                        onClick={() => commitAdapter(member, option.key)}
+                        disabled={pending}
+                        aria-pressed={isActiveAdapter}
                       >
-                        <ThinkingPicker
-                          value={getThinkingModeFromMember(member)}
-                          customText={member.customAdapterText || ""}
-                          disabled={readOnly || pending}
-                          onSelect={(key, customText) => updateThinking(member, key, customText)}
-                        />
-                      </motion.div>
-                    ) : null}
-                  </AnimatePresence>
+                        <span
+                          className="ai-seat-adapter-option-seat"
+                          data-seat-rhythm={optionVisualProfile.rhythm}
+                          data-seat-flow={optionVisualProfile.flow}
+                          style={optionVitalStyle}
+                          aria-hidden="true"
+                        >
+                          <img src={getAiAvatarUrl(member)} alt="" />
+                        </span>
+                        <span className="ai-seat-adapter-option-label">{option.label}</span>
+                      </motion.button>
+                    );
+                  })}
                 </motion.div>
               ) : null}
             </AnimatePresence>

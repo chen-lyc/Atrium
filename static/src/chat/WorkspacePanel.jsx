@@ -1007,6 +1007,7 @@ export default function WorkspacePanel({
                                 members={conversationSupplementMembers}
                                 thinkingAdapters={thinkingAdapters}
                                 readOnly={true}
+                                presentationOnly={true}
                                 onChange={async () => conversationSupplementMembers}
                                 emptyText=""
                               />
@@ -1247,6 +1248,7 @@ export default function WorkspacePanel({
                   members={newRoomAiMembers}
                   thinkingAdapters={thinkingAdapters}
                   readOnly={readOnly || actionKey === "create-room"}
+                  presentationOnly={true}
                   onChange={async (nextMembers) => {
                     setNewRoomAiMembers(nextMembers);
                     return nextMembers;

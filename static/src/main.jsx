@@ -5,4 +5,14 @@ import "katex/dist/katex.min.css";
 import "./styles.css";
 
 const root = createRoot(document.getElementById("root"));
-root.render(React.createElement(App));
+const query = new URLSearchParams(window.location.search);
+const demo = query.get("demo");
+const isSeatDemo = demo === "ai-seat-vitals" || demo === "ai-seat-adapters";
+
+if (isSeatDemo) {
+  import("./chat/AiSeatVitalsDemo.jsx").then(({ default: AiSeatVitalsDemo }) => {
+    root.render(React.createElement(AiSeatVitalsDemo, { variant: demo === "ai-seat-adapters" ? "adapters" : "vitals" }));
+  });
+} else {
+  root.render(React.createElement(App));
+}

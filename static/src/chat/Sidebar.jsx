@@ -71,6 +71,12 @@ function getIdentityInitial(nickname, username) {
   return Array.from(source)[0] || "用";
 }
 
+function isTextEditingTarget(target) {
+  if (!target || !(target instanceof Element)) return false;
+  const tagName = target.tagName.toLowerCase();
+  return target.isContentEditable || tagName === "input" || tagName === "textarea" || tagName === "select";
+}
+
 function ModeIcon({ mode }) {
   if (mode === "rooms") {
     return (
@@ -109,6 +115,14 @@ function GearIcon() {
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M7 4.6a2.4 2.4 0 1 1 0 4.8 2.4 2.4 0 0 1 0-4.8Z" />
       <path d="M7 1.7v1.2M7 11.1v1.2M2.5 4.1l1 .6M10.5 9.3l1 .6M2.5 9.9l1-.6M10.5 4.7l1-.6" />
+    </svg>
+  );
+}
+
+function MoreIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+      <path d="M3.2 7h.1M7 7h.1M10.8 7h.1" />
     </svg>
   );
 }
@@ -367,6 +381,7 @@ export default function Sidebar({
   activeConversationId = 0,
   onConversationSelect = () => {},
   onCreateConversation = async () => null,
+  onRenameConversation = async () => {},
   onDeleteConversation = () => {},
   onCreateRoom = () => {},
   onOpenRoomManagement = () => {}
@@ -374,7 +389,14 @@ export default function Sidebar({
   const [profileOpen, setProfileOpen] = useState(false);
   const [quicklookRoomId, setQuicklookRoomId] = useState("");
   const [quicklookAnchor, setQuicklookAnchor] = useState(null);
+  const [conversationMenuId, setConversationMenuId] = useState(0);
+  const [deleteConfirmId, setDeleteConfirmId] = useState(0);
+  const [renamingConversationId, setRenamingConversationId] = useState(0);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameError, setRenameError] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
   const quicklookTimerRef = useRef(null);
+  const conversationMenuRef = useRef(null);
   const resolvedRooms =
     Array.isArray(rooms) && rooms.length
       ? rooms
@@ -386,6 +408,11 @@ export default function Sidebar({
   const normalConversations = sortNormalConversations(conversations, mainConversationId);
   const isEntering = transitionMode === "enter";
   const isExiting = transitionMode === "exit";
+  const nextMode = resolvedMode === "rooms" ? "conversations" : "rooms";
+  const modeActionLabel = resolvedMode === "rooms" ? "当前对话" : "返回房间";
+  const modeAriaShortcut = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform)
+    ? "Meta+B"
+    : "Control+B";
 
   const initial = isEntering
     ? { x: motionTiming?.x ?? entryOffsetX, opacity: 0 }
@@ -400,6 +427,31 @@ export default function Sidebar({
       : { duration: 0.18, ease: EASE };
 
   useEffect(() => () => window.clearTimeout(quicklookTimerRef.current), []);
+
+  useEffect(() => {
+    if (!conversationMenuId) return undefined;
+    function handlePointerDown(event) {
+      if (event.target?.closest?.(".conversation-menu-button")) return;
+      if (conversationMenuRef.current?.contains(event.target)) return;
+      setConversationMenuId(0);
+      setDeleteConfirmId(0);
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [conversationMenuId]);
+
+  useEffect(() => {
+    function handleModeShortcut(event) {
+      if (readOnly || event.defaultPrevented || event.altKey) return;
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "b") return;
+      if (isTextEditingTarget(event.target)) return;
+      event.preventDefault();
+      onModeChange(resolvedMode === "rooms" ? "conversations" : "rooms");
+      setQuicklookRoomId("");
+    }
+    window.addEventListener("keydown", handleModeShortcut);
+    return () => window.removeEventListener("keydown", handleModeShortcut);
+  }, [onModeChange, readOnly, resolvedMode]);
 
   function switchMode(nextMode) {
     if (readOnly) return;
@@ -439,18 +491,72 @@ export default function Sidebar({
     onModeChange("conversations");
   }
 
+  function openConversationMenu(event, conversationId) {
+    event.stopPropagation();
+    setConversationMenuId((current) => current === conversationId ? 0 : conversationId);
+    setDeleteConfirmId(0);
+    setRenameError("");
+  }
+
+  function startConversationRename(conversation, title) {
+    setRenamingConversationId(conversation.id);
+    setRenameDraft(title);
+    setRenameError("");
+    setConversationMenuId(0);
+    setDeleteConfirmId(0);
+  }
+
+  function cancelConversationRename() {
+    setRenamingConversationId(0);
+    setRenameDraft("");
+    setRenameError("");
+    setRenameBusy(false);
+  }
+
+  async function submitConversationRename(event, conversation, currentTitle) {
+    event.preventDefault();
+    if (renameBusy || readOnly) return;
+    const nextTitle = renameDraft.trim();
+    if (!nextTitle) {
+      setRenameError("对话名不能为空");
+      return;
+    }
+    if (nextTitle === currentTitle) {
+      cancelConversationRename();
+      return;
+    }
+    setRenameBusy(true);
+    setRenameError("");
+    try {
+      await onRenameConversation(conversation.id, nextTitle);
+      cancelConversationRename();
+    } catch (error) {
+      setRenameError(error?.message || "重命名失败");
+    } finally {
+      setRenameBusy(false);
+    }
+  }
+
+  async function confirmConversationDelete(conversationId) {
+    if (readOnly) return;
+    await onDeleteConversation(conversationId);
+    setConversationMenuId(0);
+    setDeleteConfirmId(0);
+  }
+
   return (
     <motion.aside className="sidebar" initial={initial} animate={animate} transition={transition}>
-      <header className="sidebar-mode-head">
+      <header className={`sidebar-mode-head is-mode-${resolvedMode}`}>
         <button
           type="button"
           className="sidebar-mode-switch focus-ring"
-          onClick={() => switchMode(resolvedMode === "rooms" ? "conversations" : "rooms")}
+          onClick={() => switchMode(nextMode)}
           disabled={readOnly}
-          aria-label={resolvedMode === "rooms" ? "切换到对话视图" : "切换到房间视图"}
-          title={resolvedMode === "rooms" ? "对话视图" : "房间视图"}
+          aria-label={resolvedMode === "rooms" ? "回到当前对话" : "返回房间视图"}
+          aria-keyshortcuts={modeAriaShortcut}
         >
-          <ModeIcon mode={resolvedMode} />
+          <ModeIcon mode={nextMode} />
+          <span className="sidebar-mode-copy">{modeActionLabel}</span>
         </button>
         <div className="sidebar-mode-title">
           <span>{resolvedMode === "rooms" ? "所有房间" : activeRoom?.name || roomName}</span>
@@ -487,161 +593,229 @@ export default function Sidebar({
       />
 
       <section className="sidebar-mode-body">
-        <div className="sidebar-tool-row">
-          {resolvedMode === "rooms" ? (
-            <button type="button" className="sidebar-tool is-primary focus-ring" onClick={onCreateRoom} disabled={readOnly}>
-              <PlusIcon />
-              <span>新建房间</span>
-            </button>
-          ) : (
-            <>
-              <button type="button" className="sidebar-tool is-primary focus-ring" onClick={createConversation} disabled={readOnly}>
-                <PlusIcon />
-                <span>新建讨论</span>
-              </button>
-              <button type="button" className="sidebar-tool focus-ring" disabled title="搜索稍后开放">
-                <SearchIcon />
-                <span>搜索</span>
-              </button>
-            </>
-          )}
-        </div>
-
-        {resolvedMode === "conversations" ? (
-          <div className="conversation-list" aria-label="当前房间的对话">
-            {mainConversation ? (
-              <button
-                type="button"
-                className={`conversation-item is-main focus-ring ${activeConversationId === mainConversation.id ? "is-active" : ""}`}
-                onClick={() => onConversationSelect(mainConversation.id)}
-                disabled={readOnly}
-                aria-current={activeConversationId === mainConversation.id ? "page" : undefined}
-              >
-                <span className="conversation-copy">
-                  <span>{mainConversation.name || activeRoom?.name || "主对话"}</span>
-                  <small>主对话 · 房间仪表板预留</small>
-                </span>
-              </button>
-            ) : null}
-            <div className="conversation-scroll">
-              {normalConversations.length ? normalConversations.map((conversation) => {
-                const isActive = conversation.id === activeConversationId;
-                const title = conversation.name || `对话 ${conversation.id}`;
-                return (
-                  <div key={conversation.id} className={`conversation-item-wrap ${isActive ? "is-active" : ""}`}>
-                    <button
-                      type="button"
-                      className="conversation-item focus-ring"
-                      onClick={() => onConversationSelect(conversation.id)}
-                      disabled={readOnly}
-                      aria-current={isActive ? "page" : undefined}
-                    >
-                      <span className="conversation-copy">
-                        <span>{title}</span>
-                        <small>{formatConversationMeta(conversation, mainConversationId)}</small>
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      className="conversation-delete focus-ring"
-                      onClick={() => onDeleteConversation(conversation.id)}
-                      disabled={readOnly}
-                      aria-label={`删除${title}`}
-                      title="删除对话"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
-                        <path d="M4 4l6 6M10 4l-6 6" />
-                      </svg>
-                    </button>
-                  </div>
-                );
-              }) : (
-                <div className="sidebar-empty">当前房间还没有普通对话</div>
+        <AnimatePresence initial={false} mode="wait">
+          <motion.div
+            key={resolvedMode}
+            className="sidebar-mode-content"
+            initial={{ opacity: 0, y: resolvedMode === "conversations" ? 8 : -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: resolvedMode === "conversations" ? -4 : 6 }}
+            transition={{ duration: 0.18, ease: EASE }}
+          >
+            <div className={`sidebar-tool-row ${resolvedMode === "conversations" ? "is-conversation-tools" : ""}`}>
+              {resolvedMode === "rooms" ? (
+                <button type="button" className="sidebar-tool is-primary focus-ring" onClick={onCreateRoom} disabled={readOnly}>
+                  <PlusIcon />
+                  <span>新建房间</span>
+                </button>
+              ) : (
+                <>
+                  <button type="button" className="sidebar-tool is-new-conversation focus-ring" onClick={createConversation} disabled={readOnly}>
+                    <PlusIcon />
+                    <span>新对话</span>
+                  </button>
+                  <button type="button" className="sidebar-tool is-search focus-ring" disabled title="搜索稍后开放">
+                    <SearchIcon />
+                    <span>搜索</span>
+                  </button>
+                </>
               )}
             </div>
-          </div>
-        ) : (
-          <div className="room-list is-mode-rooms" aria-label="所有房间">
-            {resolvedRooms.map((item) => {
-              const isActive = item.id === activeRoomId || (!activeRoomId && item.name === roomName);
-              const isDisabled = readOnly || !item.isAvailable;
-              const isQuicklookOpen = quicklookRoomId === item.id;
-              return (
-                <div
-                  key={item.id}
-                  className="room-mode-wrap"
-                  onMouseLeave={queueCloseQuicklook}
-                  onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) queueCloseQuicklook(); }}
-                >
-                  <motion.button
-                    type="button"
-                    className={`room-item focus-ring is-${item.tone || "personal"} ${isActive ? "is-active" : ""} ${!item.isAvailable ? "is-disabled" : ""}`}
-                    onClick={() => { if (!isDisabled) selectRoom(item.id); }}
-                    disabled={isDisabled}
-                    whileTap={isDisabled ? undefined : { scale: 0.99 }}
-                    transition={TAP_TRANSITION}
-                    aria-current={isActive ? "page" : undefined}
-                  >
-                    <span className="room-main">
-                      <span className="room-label">{item.name}</span>
-                      {item.note ? <span className="room-status">{item.note}</span> : null}
-                    </span>
-                    <span className="room-kind">{getRoomTypeLabel(item)}</span>
-                  </motion.button>
+
+            {resolvedMode === "conversations" ? (
+              <div className="conversation-list" aria-label="当前房间的对话">
+                {mainConversation ? (
                   <button
                     type="button"
-                    className="room-gear focus-ring"
-                    onMouseEnter={(event) => openQuicklook(item.id, event)}
-                    onFocus={(event) => openQuicklook(item.id, event)}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      openQuicklook(item.id, event);
-                    }}
-                    disabled={readOnly || !item.isAvailable}
-                    aria-label={`查看${item.name}快览`}
-                    aria-expanded={isQuicklookOpen}
+                    className={`conversation-item is-main focus-ring ${activeConversationId === mainConversation.id ? "is-active" : ""}`}
+                    onClick={() => onConversationSelect(mainConversation.id)}
+                    disabled={readOnly}
+                    aria-current={activeConversationId === mainConversation.id ? "page" : undefined}
                   >
-                    <GearIcon />
+                    <span className="conversation-copy">
+                      <span>{mainConversation.name || activeRoom?.name || "主对话"}</span>
+                      <small>主对话 · 房间仪表板预留</small>
+                    </span>
                   </button>
-                  <AnimatePresence>
-                    {isQuicklookOpen ? (
-                      <motion.div
-                        className="room-quicklook"
-                        style={quicklookAnchor ? { left: quicklookAnchor.left, top: quicklookAnchor.top } : undefined}
-                        initial={{ opacity: 0, x: -4, scale: 0.99 }}
-                        animate={{ opacity: 1, x: 0, scale: 1 }}
-                        exit={{ opacity: 0, x: -4, scale: 0.99 }}
-                        transition={{ duration: 0.14, ease: EASE }}
-                        onMouseEnter={() => openQuicklook(item.id)}
-                        onMouseLeave={queueCloseQuicklook}
-                        onFocus={() => openQuicklook(item.id)}
-                        onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) queueCloseQuicklook(); }}
-                      >
-                        <div className="room-quicklook-title">{item.name}</div>
-                        <div className="room-quicklook-meta">
-                          <div><span>类型</span><strong>{getRoomTypeLabel(item)}</strong></div>
-                          <div><span>成员</span><strong>{getRoomMemberLabel(item)}</strong></div>
-                          <div><span>对话</span><strong>{getRoomConversationLabel(item)}</strong></div>
-                        </div>
-                        <button
-                          type="button"
-                          className="room-quicklook-action focus-ring"
-                          onClick={() => {
-                            onOpenRoomManagement(item.id, "room");
-                            setQuicklookRoomId("");
-                          }}
-                        >
-                          打开房间管理
-                        </button>
-                      </motion.div>
-                    ) : null}
-                  </AnimatePresence>
+                ) : null}
+                <div className="conversation-scroll">
+                  {normalConversations.length ? normalConversations.map((conversation) => {
+                    const isActive = conversation.id === activeConversationId;
+                    const title = conversation.name || `对话 ${conversation.id}`;
+                    const meta = formatConversationMeta(conversation, mainConversationId);
+                    const isRenaming = renamingConversationId === conversation.id;
+                    const isMenuOpen = conversationMenuId === conversation.id;
+                    const isConfirmingDelete = deleteConfirmId === conversation.id;
+                    return (
+                      <div key={conversation.id} className={`conversation-item-wrap ${isActive ? "is-active" : ""}`}>
+                        {isRenaming ? (
+                          <form className="conversation-rename" onSubmit={(event) => submitConversationRename(event, conversation, title)}>
+                            <input
+                              className="conversation-rename-input focus-ring"
+                              value={renameDraft}
+                              onChange={(event) => { setRenameDraft(event.target.value); setRenameError(""); }}
+                              onKeyDown={(event) => {
+                                if (event.key === "Escape") {
+                                  event.preventDefault();
+                                  cancelConversationRename();
+                                }
+                              }}
+                              disabled={renameBusy}
+                              maxLength={32}
+                              autoFocus
+                            />
+                            <button type="submit" className="conversation-rename-action focus-ring" disabled={renameBusy}>保存</button>
+                            <button type="button" className="conversation-rename-action focus-ring" onClick={cancelConversationRename} disabled={renameBusy}>取消</button>
+                            {renameError ? <span className="conversation-rename-error">{renameError}</span> : null}
+                          </form>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="conversation-item focus-ring"
+                              onClick={() => onConversationSelect(conversation.id)}
+                              disabled={readOnly}
+                              aria-current={isActive ? "page" : undefined}
+                              title={meta ? `${title} · ${meta}` : title}
+                            >
+                              <span className="conversation-copy">
+                                <span>{title}</span>
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              className="conversation-menu-button focus-ring"
+                              onClick={(event) => openConversationMenu(event, conversation.id)}
+                              disabled={readOnly}
+                              aria-label={`${title}的更多操作`}
+                              aria-expanded={isMenuOpen}
+                            >
+                              <MoreIcon />
+                            </button>
+                            <AnimatePresence>
+                              {isMenuOpen ? (
+                                <motion.div
+                                  ref={conversationMenuRef}
+                                  className="conversation-action-menu"
+                                  initial={{ opacity: 0, y: -4, scale: 0.98 }}
+                                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                                  exit={{ opacity: 0, y: -3, scale: 0.98 }}
+                                  transition={{ duration: 0.14, ease: EASE }}
+                                >
+                                  {isConfirmingDelete ? (
+                                    <div className="conversation-delete-confirm">
+                                      <span>删除这个对话？</span>
+                                      <div>
+                                        <button type="button" className="conversation-menu-action focus-ring" onClick={() => setDeleteConfirmId(0)}>取消</button>
+                                        <button type="button" className="conversation-menu-action is-danger focus-ring" onClick={() => confirmConversationDelete(conversation.id)}>删除</button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <button type="button" className="conversation-menu-action focus-ring" onClick={() => startConversationRename(conversation, title)}>
+                                        重命名
+                                      </button>
+                                      <button type="button" className="conversation-menu-action is-danger focus-ring" onClick={() => setDeleteConfirmId(conversation.id)}>
+                                        删除
+                                      </button>
+                                    </>
+                                  )}
+                                </motion.div>
+                              ) : null}
+                            </AnimatePresence>
+                          </>
+                        )}
+                      </div>
+                    );
+                  }) : (
+                    <div className="sidebar-empty">当前房间还没有普通对话</div>
+                  )}
                 </div>
-              );
-            })}
-          </div>
-        )}
+              </div>
+            ) : (
+              <div className="room-list is-mode-rooms" aria-label="所有房间">
+                {resolvedRooms.map((item) => {
+                  const isActive = item.id === activeRoomId || (!activeRoomId && item.name === roomName);
+                  const isDisabled = readOnly || !item.isAvailable;
+                  const isQuicklookOpen = quicklookRoomId === item.id;
+                  return (
+                    <div
+                      key={item.id}
+                      className="room-mode-wrap"
+                      onMouseLeave={queueCloseQuicklook}
+                      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) queueCloseQuicklook(); }}
+                    >
+                      <motion.button
+                        type="button"
+                        className={`room-item focus-ring is-${item.tone || "personal"} ${isActive ? "is-active" : ""} ${!item.isAvailable ? "is-disabled" : ""}`}
+                        onClick={() => { if (!isDisabled) selectRoom(item.id); }}
+                        disabled={isDisabled}
+                        whileTap={isDisabled ? undefined : { scale: 0.99 }}
+                        transition={TAP_TRANSITION}
+                        aria-current={isActive ? "page" : undefined}
+                      >
+                        <span className="room-main">
+                          <span className="room-label">{item.name}</span>
+                          {item.note ? <span className="room-status">{item.note}</span> : null}
+                        </span>
+                        <span className="room-kind">{getRoomTypeLabel(item)}</span>
+                      </motion.button>
+                      <button
+                        type="button"
+                        className="room-gear focus-ring"
+                        onMouseEnter={(event) => openQuicklook(item.id, event)}
+                        onFocus={(event) => openQuicklook(item.id, event)}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          openQuicklook(item.id, event);
+                        }}
+                        disabled={readOnly || !item.isAvailable}
+                        aria-label={`查看${item.name}快览`}
+                        aria-expanded={isQuicklookOpen}
+                      >
+                        <GearIcon />
+                      </button>
+                      <AnimatePresence>
+                        {isQuicklookOpen ? (
+                          <motion.div
+                            className="room-quicklook"
+                            style={quicklookAnchor ? { left: quicklookAnchor.left, top: quicklookAnchor.top } : undefined}
+                            initial={{ opacity: 0, x: -4, scale: 0.99 }}
+                            animate={{ opacity: 1, x: 0, scale: 1 }}
+                            exit={{ opacity: 0, x: -4, scale: 0.99 }}
+                            transition={{ duration: 0.14, ease: EASE }}
+                            onMouseEnter={() => openQuicklook(item.id)}
+                            onMouseLeave={queueCloseQuicklook}
+                            onFocus={() => openQuicklook(item.id)}
+                            onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) queueCloseQuicklook(); }}
+                          >
+                            <div className="room-quicklook-title">{item.name}</div>
+                            <div className="room-quicklook-meta">
+                              <div><span>类型</span><strong>{getRoomTypeLabel(item)}</strong></div>
+                              <div><span>成员</span><strong>{getRoomMemberLabel(item)}</strong></div>
+                              <div><span>对话</span><strong>{getRoomConversationLabel(item)}</strong></div>
+                            </div>
+                            <button
+                              type="button"
+                              className="room-quicklook-action focus-ring"
+                              onClick={() => {
+                                onOpenRoomManagement(item.id, "room");
+                                setQuicklookRoomId("");
+                              }}
+                            >
+                              打开房间管理
+                            </button>
+                          </motion.div>
+                        ) : null}
+                      </AnimatePresence>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </motion.div>
+        </AnimatePresence>
       </section>
 
       <div className="sidebar-footer">

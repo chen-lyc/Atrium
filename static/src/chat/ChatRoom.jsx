@@ -77,6 +77,7 @@ function ConversationPrepPanel({
           members={conversationAiMembers}
           thinkingAdapters={thinkingAdapters}
           readOnly={readOnly}
+          presentationOnly={true}
           onChange={onChangeTeam}
           emptyText="无 AI"
         />
@@ -165,10 +166,6 @@ export default function ChatRoom({
   const [newRoomAiMembers, setNewRoomAiMembers] = useState([]);
   const [createRoomBusy, setCreateRoomBusy] = useState(false);
   const [createRoomError, setCreateRoomError] = useState("");
-  const [titleEditing, setTitleEditing] = useState(false);
-  const [titleDraft, setTitleDraft] = useState("");
-  const [titleBusy, setTitleBusy] = useState(false);
-  const [titleError, setTitleError] = useState("");
   const [noteToast, setNoteToast] = useState(null);
   const noteToastTimerRef = useRef(null);
 
@@ -194,11 +191,6 @@ export default function ChatRoom({
       window.clearTimeout(noteToastTimerRef.current);
     };
   }, []);
-
-  useEffect(() => {
-    if (!titleEditing) setTitleDraft(activeConversation?.name || "");
-    setTitleError("");
-  }, [activeConversation?.name, activeConversationId, titleEditing]);
 
   function handleMessageContextMenu(e, message) {
     if (!message) return;
@@ -315,51 +307,14 @@ export default function ChatRoom({
     }
   }
 
-  function startTitleEdit() {
-    if (readOnly || isMainConversation || !activeConversationId) return;
-    setTitleDraft(activeConversationTitle);
-    setTitleError("");
-    setTitleEditing(true);
-  }
-
-  function cancelTitleEdit() {
-    setTitleEditing(false);
-    setTitleDraft(activeConversationTitle);
-    setTitleError("");
-  }
-
-  async function commitTitleEdit() {
-    const nextTitle = titleDraft.trim();
-    if (titleBusy || readOnly || isMainConversation || !activeConversationId) return;
-    if (!nextTitle) {
-      setTitleError("对话名不能为空");
-      return;
-    }
-    if (nextTitle === activeConversationTitle) {
-      cancelTitleEdit();
-      return;
-    }
-    setTitleBusy(true);
-    setTitleError("");
-    try {
-      await renameConversation(activeConversationId, nextTitle);
-      await onRoomsChanged(room?.roomId);
-      setTitleEditing(false);
-    } catch (error) {
-      setTitleError(getApiErrorMessage(error, "对话重命名失败"));
-    } finally {
-      setTitleBusy(false);
-    }
-  }
-
-  function handleTitleKeyDown(event) {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      commitTitleEdit();
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      cancelTitleEdit();
-    }
+  async function handleRenameConversation(conversationId, nextTitle) {
+    const normalizedTitle = String(nextTitle || "").trim();
+    const normalizedConversationId = Number(conversationId);
+    const mainConversationId = Number(room?.mainConversationId || room?.conversationId || 0);
+    if (readOnly || !normalizedConversationId || (mainConversationId && normalizedConversationId === mainConversationId)) return;
+    if (!normalizedTitle) throw new Error("对话名不能为空");
+    await renameConversation(normalizedConversationId, normalizedTitle);
+    await onRoomsChanged(room?.roomId);
   }
 
   function resolveSectionMotion(timing) {
@@ -454,6 +409,7 @@ export default function ChatRoom({
           activeConversationId={activeConversationId}
           onConversationSelect={(id) => { onConversationSelect(id); setMobileSidebarOpen(false); }}
           onCreateConversation={onCreateConversationDraft}
+          onRenameConversation={handleRenameConversation}
           onDeleteConversation={onDeleteConversation}
           onCreateRoom={openCreateRoom}
           onOpenRoomManagement={(roomId, tab) => openWorkspace(roomId, tab)}
@@ -480,57 +436,23 @@ export default function ChatRoom({
 
       <main className="main">
         <motion.header
-          className={`header ${isHeaderScrolled ? "is-scrolled" : ""}`}
+          className={`header ${isHeaderScrolled ? "is-scrolled" : ""} is-connection-${connectionState}`}
           initial={headerMotion.initial}
           animate={headerMotion.animate}
           transition={headerMotion.transition}
         >
           <div className="header-inner">
             <div className="room-heading" title={roomHint || roomAtmosphere}>
-              <div className={`room-anchor ${titleEditing ? "is-editing-title" : ""}`}>
-                {titleEditing ? (
-                  <div className="room-title-edit">
-                    <input
-                      className="room-title-input"
-                      value={titleDraft}
-                      onChange={(event) => {
-                        setTitleDraft(event.target.value);
-                        setTitleError("");
-                      }}
-                      onKeyDown={handleTitleKeyDown}
-                      onBlur={commitTitleEdit}
-                      maxLength={32}
-                      disabled={titleBusy}
-                      autoFocus
-                    />
-                    <button type="button" className="room-title-save focus-ring" onMouseDown={(event) => event.preventDefault()} onClick={commitTitleEdit} disabled={titleBusy}>
-                      保存
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    className="room-title-button focus-ring"
-                    onClick={startTitleEdit}
-                    disabled={readOnly || isMainConversation}
-                    title={isMainConversation ? "主对话不可重命名" : "重命名对话"}
-                  >
-                    <span className="room-name">{activeConversationTitle}</span>
-                    {!isMainConversation ? (
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="M7.8 2.8 11.2 6.2 5.5 11.9 2.4 12.6l.7-3.1 4.7-6.7Z" />
-                        <path d="m9.3 1.9 2.8 2.8" />
-                      </svg>
-                    ) : null}
-                  </button>
-                )}
+              <div className="room-anchor">
+                <div className="room-title-button" aria-label="当前对话">
+                  <span className="room-name">{activeConversationTitle}</span>
+                </div>
                 <span className="room-anchor-meta">
                   <span>{roomName}</span>
                   <span>{roomConversationCount} 段记忆</span>
                 </span>
-                {titleError ? <span className="room-title-error">{titleError}</span> : null}
               </div>
-              <HeaderStatus modelLabel={currentModelLabel} connectionState={connectionState} />
+              {connectionState !== "connected" ? <HeaderStatus modelLabel={currentModelLabel} connectionState={connectionState} /> : null}
             </div>
             <div className="header-actions">
               <button
@@ -701,6 +623,7 @@ export default function ChatRoom({
               members={newRoomAiMembers}
               thinkingAdapters={thinkingAdapters}
               readOnly={createRoomBusy}
+              presentationOnly={true}
               onChange={updateNewRoomAiMembers}
               emptyText="无 AI"
             />
