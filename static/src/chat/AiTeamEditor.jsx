@@ -646,23 +646,33 @@ function AiSeatStrip({
   className = ""
 }) {
   const [openAiId, setOpenAiId] = useState(null);
-  const [previewThinkingMode, setPreviewThinkingMode] = useState("");
+  const [thinkingOpenAiId, setThinkingOpenAiId] = useState(null);
   const [pending, setPending] = useState(false);
   const timerRef = useRef(null);
 
   useEffect(() => () => window.clearTimeout(timerRef.current), []);
 
+  useEffect(() => {
+    if (thinkingOpenAiId == null) return undefined;
+    function handlePointerDown(event) {
+      if (event.target?.closest?.(".ai-seat-popover")) return;
+      setThinkingOpenAiId(null);
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [thinkingOpenAiId]);
+
   function open(member) {
+    if (presentationOnly) return;
     window.clearTimeout(timerRef.current);
     setOpenAiId(member.aiId);
-    setPreviewThinkingMode("");
   }
 
   function queueClose() {
     window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => {
       setOpenAiId(null);
-      setPreviewThinkingMode("");
+      setThinkingOpenAiId(null);
     }, 160);
   }
 
@@ -684,26 +694,22 @@ function AiSeatStrip({
   async function updateThinking(member, key, customText) {
     const nextMember = buildMemberWithThinking(member, key, customText, thinkingAdapters);
     await persist(members.map((item) => item.aiId === member.aiId ? nextMember : item));
+    setThinkingOpenAiId(null);
     setOpenAiId(null);
-    setPreviewThinkingMode("");
   }
 
-  async function commitAdapter(member, key) {
-    if (pending) return;
-    if (getSeatThinkingMode(member) !== key) {
-      await updateThinking(member, key, "");
-      return;
-    }
+  async function removeMember(member) {
+    await persist(members.filter((item) => item.aiId !== member.aiId));
     setOpenAiId(null);
-    setPreviewThinkingMode("");
   }
 
-  const isInteractive = !readOnly && !presentationOnly;
+  const canOpen = !presentationOnly;
+  const canEdit = !readOnly && !presentationOnly;
   const stripClassName = [
     "ai-seat-strip",
     vitalSigns ? "has-vital-signs" : "",
     presentationOnly ? "is-presentation-only" : "",
-    isInteractive && openAiId != null ? "is-seat-focus-active" : "",
+    canOpen && openAiId != null ? "is-seat-focus-active" : "",
     className
   ].filter(Boolean).join(" ");
 
@@ -712,13 +718,13 @@ function AiSeatStrip({
       {members.length ? members.map((member, index) => {
         const isOpen = openAiId === member.aiId;
         const committedThinkingMode = getSeatThinkingMode(member);
-        const thinkingMode = isOpen && previewThinkingMode ? previewThinkingMode : committedThinkingMode;
+        const thinkingMode = committedThinkingMode;
         const visualProfile = getSeatAdapterVisualProfile(thinkingMode);
         const vitalStyle = vitalSigns ? getSeatVitalStyle(member, index, visualProfile) : undefined;
         const wrapClassName = [
           "ai-seat-wrap",
           isOpen ? "is-focused" : "",
-          isInteractive && openAiId != null && !isOpen ? "is-muted" : ""
+          canOpen && openAiId != null && !isOpen ? "is-muted" : ""
         ].filter(Boolean).join(" ");
         return (
           <div
@@ -726,17 +732,18 @@ function AiSeatStrip({
             className={wrapClassName}
             data-seat-rhythm={visualProfile.rhythm}
             style={vitalStyle}
-            onMouseEnter={isInteractive ? () => open(member) : undefined}
-            onMouseLeave={isInteractive ? queueClose : undefined}
-            onFocus={isInteractive ? () => open(member) : undefined}
-            onBlur={isInteractive ? handleSeatBlur : undefined}
+            onMouseEnter={canOpen ? () => open(member) : undefined}
+            onMouseLeave={canOpen ? queueClose : undefined}
+            onFocus={canOpen ? () => open(member) : undefined}
+            onBlur={canOpen ? handleSeatBlur : undefined}
           >
             <button
               type="button"
               className="ai-seat-pill"
               aria-label={getAiMemberName(member)}
               aria-disabled={readOnly || presentationOnly}
-              tabIndex={isInteractive ? 0 : -1}
+              tabIndex={canOpen ? 0 : -1}
+              onClick={canOpen ? () => open(member) : undefined}
               data-thinking-mode={thinkingMode}
               data-seat-rhythm={visualProfile.rhythm}
               data-seat-flow={visualProfile.flow}
@@ -745,55 +752,49 @@ function AiSeatStrip({
               <img src={getAiAvatarUrl(member)} alt="" />
             </button>
             <AnimatePresence>
-              {isInteractive && isOpen ? (
+              {canOpen && isOpen ? (
                 <motion.div
-                  className="ai-seat-radial-menu"
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.92 }}
-                  transition={{ duration: 0.22, ease: EASE }}
+                  className="ai-seat-popover"
+                  initial={{ opacity: 0, y: -4, scale: 0.99 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -3, scale: 0.99 }}
+                  transition={{ duration: 0.14, ease: EASE }}
                   onMouseEnter={() => window.clearTimeout(timerRef.current)}
                   onMouseLeave={queueClose}
-                  aria-label={`${getAiMemberName(member)} adapter 选择`}
+                  aria-label={`${getAiMemberName(member)} 席位设置`}
                 >
-                  {RADIAL_ADAPTER_OPTIONS.map((option, optionIndex) => {
-                    const optionVisualProfile = getSeatAdapterVisualProfile(option.key);
-                    const optionVitalStyle = vitalSigns
-                      ? getSeatVitalStyle(
-                          { ...member, aiId: `${member.aiId}:${option.key}`, thinkingMode: option.key },
-                          index + optionIndex + 11,
-                          optionVisualProfile
-                        )
-                      : undefined;
-                    const isActiveAdapter = committedThinkingMode === option.key;
-                    return (
-                      <motion.button
-                        key={option.key}
-                        type="button"
-                        className={`ai-seat-adapter-option ${isActiveAdapter ? "is-active" : ""}`}
-                        initial={{ opacity: 0, x: -28, y: -31, scale: 0.84 }}
-                        animate={{ opacity: 1, x: option.x - 28, y: option.y - 31, scale: 1 }}
-                        exit={{ opacity: 0, x: -28, y: -31, scale: 0.88 }}
-                        transition={{ duration: 0.24, delay: optionIndex * 0.012, ease: EASE }}
-                        onMouseEnter={() => setPreviewThinkingMode(option.key)}
-                        onFocus={() => setPreviewThinkingMode(option.key)}
-                        onClick={() => commitAdapter(member, option.key)}
-                        disabled={pending}
-                        aria-pressed={isActiveAdapter}
+                  <div className="ai-seat-popover-head">
+                    <AiIdentity member={member} members={members} />
+                    <button type="button" onClick={() => removeMember(member)} disabled={!canEdit || pending}>
+                      移除
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className="ai-seat-thinking-label"
+                    onClick={() => setThinkingOpenAiId((current) => current === member.aiId ? null : member.aiId)}
+                    disabled={!canEdit || pending}
+                  >
+                    {getThinkingModeLabel(member)}
+                  </button>
+                  <AnimatePresence>
+                    {thinkingOpenAiId === member.aiId ? (
+                      <motion.div
+                        className="ai-seat-thinking-panel"
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        transition={{ duration: 0.16, ease: EASE }}
                       >
-                        <span
-                          className="ai-seat-adapter-option-seat"
-                          data-seat-rhythm={optionVisualProfile.rhythm}
-                          data-seat-flow={optionVisualProfile.flow}
-                          style={optionVitalStyle}
-                          aria-hidden="true"
-                        >
-                          <img src={getAiAvatarUrl(member)} alt="" />
-                        </span>
-                        <span className="ai-seat-adapter-option-label">{option.label}</span>
-                      </motion.button>
-                    );
-                  })}
+                        <ThinkingPicker
+                          value={getSeatThinkingMode(member)}
+                          customText={member.customAdapterText || ""}
+                          disabled={!canEdit || pending}
+                          onSelect={(key, customText) => updateThinking(member, key, customText)}
+                        />
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
                 </motion.div>
               ) : null}
             </AnimatePresence>
@@ -805,7 +806,6 @@ function AiSeatStrip({
     </div>
   );
 }
-
 function AiRosterList({
   members = [],
   thinkingAdapters = [],

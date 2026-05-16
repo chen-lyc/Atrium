@@ -77,7 +77,6 @@ function ConversationPrepPanel({
           members={conversationAiMembers}
           thinkingAdapters={thinkingAdapters}
           readOnly={readOnly}
-          presentationOnly={true}
           onChange={onChangeTeam}
           emptyText="无 AI"
         />
@@ -623,7 +622,6 @@ export default function ChatRoom({
               members={newRoomAiMembers}
               thinkingAdapters={thinkingAdapters}
               readOnly={createRoomBusy}
-              presentationOnly={true}
               onChange={updateNewRoomAiMembers}
               emptyText="无 AI"
             />
