@@ -1,4 +1,4 @@
-import { AI_MODEL_LABELS, DEFAULT_CONVERSATION_ID, THINKING_MODE_OPTIONS } from "./constants.js";
+import { AI_MODEL_LABELS, DEFAULT_CONVERSATION_ID, MESSAGE_TYPE, THINKING_MODE_OPTIONS } from "./constants.js";
 
 const MAX_IMAGE_SOURCE_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_DATA_URL_BYTES = 5 * 1024 * 1024;
@@ -97,6 +97,33 @@ function normalizeAuthUserId(data) {
   return "";
 }
 
+function normalizeOptionalTimestampMs(value) {
+  if (value == null || value === "") return 0;
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value < 10_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const trimmedValue = value.trim();
+    if (/^\d+$/.test(trimmedValue)) {
+      const numericValue = Number(trimmedValue);
+      if (Number.isFinite(numericValue) && numericValue > 0) {
+        return numericValue < 10_000_000_000 ? numericValue * 1000 : numericValue;
+      }
+    }
+    const parsedValue = Date.parse(trimmedValue);
+    return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : 0;
+  }
+  return 0;
+}
+
+function normalizePreviewText(value) {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (value && typeof value === "object") {
+    return normalizePreviewText(value.text ?? value.content ?? value.message ?? value.preview);
+  }
+  return "";
+}
+
 export function normalizeAuthConversations(data) {
   const rawConversations = Array.isArray(data?.conversations) ? data.conversations : [];
   const seen = new Set();
@@ -113,8 +140,33 @@ export function normalizeAuthConversations(data) {
           : id
             ? `对话 ${id}`
             : "";
-      const createdAtMs = normalizeNumericId(item?.created_at_ms ?? item?.createdAtMs);
-      return { id, name, createdAtMs };
+      const createdAtMs = normalizeOptionalTimestampMs(item?.created_at_ms ?? item?.createdAtMs ?? item?.created_at ?? item?.createdAt);
+      const updatedAtMs = normalizeOptionalTimestampMs(item?.updated_at_ms ?? item?.updatedAtMs ?? item?.updated_at ?? item?.updatedAt);
+      const lastMessageAtMs = normalizeOptionalTimestampMs(
+        item?.last_message_at_ms ??
+        item?.lastMessageAtMs ??
+        item?.last_message_at ??
+        item?.lastMessageAt ??
+        item?.last_message?.created_at_ms ??
+        item?.lastMessage?.createdAtMs ??
+        item?.last_message?.created_at ??
+        item?.lastMessage?.createdAt
+      );
+      const lastActivityAtMs = normalizeOptionalTimestampMs(
+        item?.last_activity_at_ms ??
+        item?.lastActivityAtMs ??
+        item?.last_activity_at ??
+        item?.lastActivityAt
+      ) || lastMessageAtMs || updatedAtMs || createdAtMs;
+      const lastMessagePreview = normalizePreviewText(
+        item?.last_message_preview ??
+        item?.lastMessagePreview ??
+        item?.last_message ??
+        item?.lastMessage ??
+        item?.preview
+      );
+      const unreadCount = normalizeNonNegativeCount(item?.unread_count ?? item?.unreadCount);
+      return { id, name, createdAtMs, updatedAtMs, lastActivityAtMs, lastMessagePreview, unreadCount };
     })
     .filter((conversation) => {
       if (!conversation.id || seen.has(conversation.id)) return false;
@@ -157,6 +209,10 @@ export function normalizeAuthRooms(data) {
 }
 
 export function normalizeIncomingMessage(payload, currentNickname, currentUserId = "") {
+  const messageType = normalizeIncomingMessageType(payload);
+  const senderType = normalizeText(payload?.sender_type ?? payload?.senderType ?? payload?.participant_type ?? payload?.participantType).toLowerCase();
+  const messageRole = normalizeText(payload?.role ?? payload?.message_role ?? payload?.messageRole).toLowerCase();
+  const isSystemMessage = messageType === MESSAGE_TYPE.SYSTEM || senderType === "system" || messageRole === "system";
   const normalizedUsername =
     typeof payload.username === "string" && payload.username.trim()
       ? payload.username.trim()
@@ -165,6 +221,7 @@ export function normalizeIncomingMessage(payload, currentNickname, currentUserId
   const normalizedCurrentUserId = String(currentUserId || "").trim();
   const isCurrentUser = Boolean(normalizedCurrentUserId && normalizedUserId === normalizedCurrentUserId);
   const normalizedNickname =
+    isSystemMessage ? "__system__" :
     normalizedUsername ||
     (typeof payload.nickname === "string" && payload.nickname.trim()
       ? payload.nickname.trim()
@@ -188,10 +245,10 @@ export function normalizeIncomingMessage(payload, currentNickname, currentUserId
     avatarUrl: typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || "",
     roomId: normalizeIncomingRoomId(payload),
     conversationId: normalizeIncomingConversationId(payload),
-    messageType: normalizeIncomingMessageType(payload),
+    messageType,
     text: getIncomingText(payload),
     timestamp: normalizeIncomingTimestamp(payload),
-    isSelf: Boolean(isCurrentUser || (currentNickname && normalizedNickname === currentNickname)),
+    isSelf: !isSystemMessage && Boolean(isCurrentUser || (currentNickname && normalizedNickname === currentNickname)),
     status: payload.status || "sent",
     source: "server"
   };
@@ -521,14 +578,33 @@ export async function fetchRoomConversations(roomId) {
 }
 
 export async function renameConversation(conversationId, title) {
-  const res = await fetch(`/api/conversations/${conversationId}/title`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ title })
-  });
-  if (!res.ok) throw new Error(`Rename failed: ${res.status}`);
-  return res.json();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  try {
+    const res = await fetch(`/api/conversations/${conversationId}/title`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ title }),
+      signal: controller.signal
+    });
+    if (!res.ok) {
+      const error = new Error("重命名失败");
+      error.status = res.status;
+      throw error;
+    }
+    return await res.json();
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("重命名请求超时，请稍后重试");
+    }
+    if (error instanceof TypeError && error.message === "Failed to fetch") {
+      throw new Error("网络连接异常，请稍后重试");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 export async function loadSessionRooms(fallbackNickname = "") {

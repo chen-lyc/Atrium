@@ -3,7 +3,11 @@ import { motion, AnimatePresence } from "framer-motion";
 import { EASE, STATUS_LABEL } from "../constants.js";
 import {
   createRoom,
+  fetchFriendRequests,
+  fetchMyRoomInvitations,
+  fetchRoomMembers,
   getApiErrorMessage,
+  getThinkingModeLabel,
   renameConversation,
   syncRoomAiMembers
 } from "../utils.js";
@@ -11,11 +15,26 @@ import Sidebar from "./Sidebar.jsx";
 import MessageList from "./MessageList.jsx";
 import MessageInput from "./MessageInput.jsx";
 import MessageFlight from "./MessageFlight.jsx";
+import AccountCenterPanel from "./AccountCenterPanel.jsx";
 import WorkspacePanel from "./WorkspacePanel.jsx";
-import { AiModelSelector, AiSeatStrip, ModalLayer, mergeAiMemberOptions } from "./AiTeamEditor.jsx";
+import {
+  AiModelSelector,
+  AiSeatStrip,
+  ModalLayer,
+  getAiAvatarUrl,
+  getAiMemberName,
+  mergeAiMemberOptions
+} from "./AiTeamEditor.jsx";
 
 const NOTE_TOAST_MS = 2200;
 const CHAT_SURFACE_STORAGE_KEY = "atrium.chat.surface";
+const ROLE_LABELS = {
+  0: "房主",
+  1: "管理员",
+  2: "成员"
+};
+const MAIN_SEATLINE_MEMBER_LIMIT = 5;
+const MAIN_SEATLINE_AI_LIMIT = 5;
 
 function readStoredChatSurface() {
   try {
@@ -46,6 +65,337 @@ function HeaderStatus({ modelLabel, connectionState }) {
     >
       <span aria-hidden="true" />
     </span>
+  );
+}
+
+function getRoleLabel(role) {
+  return ROLE_LABELS[Number(role)] || "成员";
+}
+
+function getMemberInitial(member) {
+  const source = member?.nickname || member?.username || "用";
+  return String(source).trim().slice(0, 1) || "用";
+}
+
+function getVisibleMemberCount(room, members) {
+  const rawCount = Number(room?.memberCount ?? room?.member_count ?? room?.membersCount ?? room?.members_count);
+  const normalizedCount = Number.isSafeInteger(rawCount) && rawCount >= 0 ? rawCount : 0;
+  return Math.max(normalizedCount, members.length);
+}
+
+function RoomMemberAvatar({ member, currentUserId = "" }) {
+  const isSelf = currentUserId && String(member?.userId) === String(currentUserId);
+  const avatar = member?.avatarUrl || member?.avatar_url || "";
+  return (
+    <span className={`main-seatline-avatar ${isSelf ? "is-self" : ""}`}>
+      {avatar ? <img src={avatar} alt="" /> : <span>{getMemberInitial(member)}</span>}
+    </span>
+  );
+}
+
+function MainConversationSeatline({
+  room,
+  members = [],
+  membersState = "idle",
+  currentUserId = "",
+  fallbackMember,
+  aiMembers = [],
+  thinkingAdapters = [],
+  compact = false,
+  onOpenMembers = () => {},
+  onOpenAi = () => {}
+}) {
+  const resolvedMembers = members.length ? members : fallbackMember ? [fallbackMember] : [];
+  const visibleMembers = resolvedMembers.slice(0, MAIN_SEATLINE_MEMBER_LIMIT);
+  const memberCount = getVisibleMemberCount(room, resolvedMembers);
+  const remainingMembers = Math.max(memberCount - visibleMembers.length, 0);
+  const visibleAiMembers = aiMembers.slice(0, MAIN_SEATLINE_AI_LIMIT);
+  const remainingAi = Math.max(aiMembers.length - visibleAiMembers.length, 0);
+  const loadLabel = membersState === "loading" && !members.length ? "同步中" : "";
+
+  return (
+    <section className={`main-seatline ${compact ? "is-compact" : "is-open"}`} aria-label="主对话成员席位">
+      <div className="main-seatline-scroll">
+        <div className="main-seatline-group is-members">
+          {visibleMembers.map((member) => {
+            const isSelf = currentUserId && String(member.userId) === String(currentUserId);
+            return (
+              <button
+                key={member.userId || member.nickname}
+                type="button"
+                className={`main-seatline-member focus-ring ${isSelf ? "is-self" : ""}`}
+                onClick={onOpenMembers}
+                title={`${member.nickname || member.username || "成员"} · ${getRoleLabel(member.role)}`}
+              >
+                <RoomMemberAvatar member={member} currentUserId={currentUserId} />
+                <span className="main-seatline-copy">
+                  <span>{isSelf ? "我" : member.nickname || member.username || "成员"}</span>
+                  <small>{getRoleLabel(member.role)}</small>
+                </span>
+              </button>
+            );
+          })}
+          {remainingMembers > 0 ? (
+            <button type="button" className="main-seatline-more focus-ring" onClick={onOpenMembers}>
+              +{remainingMembers}
+              <small>成员</small>
+            </button>
+          ) : loadLabel ? (
+            <span className="main-seatline-loading">{loadLabel}</span>
+          ) : null}
+        </div>
+
+        <div className="main-seatline-divider" aria-hidden="true" />
+
+        <div className="main-seatline-group is-ai">
+          {visibleAiMembers.length ? (
+            <AiSeatStrip
+              members={visibleAiMembers}
+              thinkingAdapters={thinkingAdapters}
+              readOnly={true}
+              onChange={async () => visibleAiMembers}
+              onSeatAction={onOpenAi}
+              showHoverSummary={true}
+              showLabels={true}
+              emptyText=""
+              className="is-main-seatline"
+            />
+          ) : (
+            <button type="button" className="main-seatline-empty-ai focus-ring" onClick={onOpenAi}>
+              <span>无 AI</span>
+              <small>房间阵容</small>
+            </button>
+          )}
+          {remainingAi > 0 ? (
+            <button type="button" className="main-seatline-more is-ai focus-ring" onClick={onOpenAi}>
+              +{remainingAi}
+              <small>AI</small>
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MainConversationCover({ roomPlaceLabel, title, topic, aiMembers = [], onOpenAi = () => {} }) {
+  const aiSummary = aiMembers.length
+    ? `${aiMembers.length} 位 AI 保持沉默席位`
+    : "房间 AI 阵容为空";
+  return (
+    <div className="main-conversation-cover">
+      <div className="main-cover-kicker">{roomPlaceLabel}</div>
+      <h2>{title}</h2>
+      <p>{topic}</p>
+      <button type="button" className="main-cover-ai-summary focus-ring" onClick={onOpenAi}>
+        <span>{aiSummary}</span>
+      </button>
+    </div>
+  );
+}
+
+function getMentionQuery(value) {
+  const match = String(value || "").match(/(^|\s)@([^\s@]*)$/);
+  return match ? match[2].trim().toLowerCase() : null;
+}
+
+function MainConversationMentionReserve({ query = "", aiMembers = [], onPick = () => {} }) {
+  const normalizedQuery = String(query || "").toLowerCase();
+  const matches = aiMembers
+    .filter((member) => getAiMemberName(member).toLowerCase().includes(normalizedQuery))
+    .slice(0, 5);
+  if (!matches.length) return null;
+
+  return (
+    <div className="main-mention-reserve" aria-label="@AI">
+      {matches.map((member) => (
+        <button
+          key={member.aiId}
+          type="button"
+          className="main-mention-chip focus-ring"
+          onClick={() => onPick(member)}
+        >
+          <img src={getAiAvatarUrl(member)} alt="" />
+          <span>{getAiMemberName(member)}</span>
+          <small>{getThinkingModeLabel(member)}</small>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function formatHomeTimestamp(timestamp) {
+  if (!timestamp) return "刚刚";
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "最近";
+  const now = Date.now();
+  const diff = now - date.getTime();
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (diff >= 0 && diff < minute) return "刚刚";
+  if (diff >= 0 && diff < hour) return `${Math.max(1, Math.floor(diff / minute))} 分钟前`;
+  if (diff >= 0 && diff < day) return `${Math.floor(diff / hour)} 小时前`;
+  if (diff >= 0 && diff < day * 7) return `${Math.floor(diff / day)} 天前`;
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function getConversationActivityMs(conversation) {
+  return Number(conversation?.lastActivityAtMs || conversation?.updatedAtMs || conversation?.createdAtMs || 0);
+}
+
+function getConversationPreview(conversation, room) {
+  if (conversation?.lastMessagePreview) return conversation.lastMessagePreview;
+  if (conversation?.isMain) return `${room?.name || "房间"}的公共时间线`;
+  return "进入对话后继续阅读和推进。";
+}
+
+function getHomeConversationEntries(rooms = [], homeRoom = null) {
+  const homeRoomId = homeRoom?.id;
+  const homeMainConversationId = homeRoom?.mainConversationId || homeRoom?.conversationId || 0;
+  return rooms
+    .flatMap((item) => {
+      const mainConversationId = item?.mainConversationId || item?.conversationId || 0;
+      return (item?.conversations || []).map((conversation) => ({
+        ...conversation,
+        roomId: item.id,
+        backendRoomId: item.roomId,
+        roomName: item.name,
+        roomType: item.type,
+        roomTone: item.tone,
+        isMain: conversation.id === mainConversationId || conversation.isMain === true,
+        title: conversation.id === mainConversationId
+          ? item.id === homeRoomId ? "Home" : `${item.name || "房间"} · 公共时间线`
+          : conversation.name || `对话 ${conversation.id}`,
+        preview: getConversationPreview(conversation, item),
+        activityMs: getConversationActivityMs(conversation) || conversation.id
+      }));
+    })
+    .filter((conversation) => !(conversation.roomId === homeRoomId && conversation.id === homeMainConversationId))
+    .sort((a, b) => (b.activityMs || 0) - (a.activityMs || 0) || b.id - a.id);
+}
+
+function HomeAiStack({ members = [] }) {
+  const visibleMembers = members.slice(0, 3);
+  if (!visibleMembers.length) {
+    return <span className="home-ai-empty">无 AI</span>;
+  }
+  return (
+    <span className="home-ai-cluster" aria-label={`${members.length} 位 AI`}>
+      <span className="home-ai-stack">
+        {visibleMembers.map((member) => (
+          <span className="home-ai-avatar" key={member.aiId || member.id} title={getAiMemberName(member)}>
+            <img src={getAiAvatarUrl(member)} alt="" />
+          </span>
+        ))}
+      </span>
+      <span className="home-ai-count">{members.length} 位 AI</span>
+    </span>
+  );
+}
+
+function HomeDashboard({
+  nickname = "",
+  room = null,
+  rooms = [],
+  roomAiMembersByRoomId = {},
+  onOpenConversation = () => {},
+  onCreateConversation = () => {},
+  onOpenAi = () => {}
+}) {
+  const conversations = getHomeConversationEntries(rooms, room);
+  const hasConversations = conversations.length > 0;
+  const homeName = nickname ? `${nickname} 的 Home` : "Home";
+
+  return (
+    <section className={`home-dashboard ${hasConversations ? "has-conversations" : "is-empty"}`} aria-label="Home">
+      <div className="home-dashboard-inner">
+        <header className="home-hero">
+          <div className="home-hero-copy">
+            <span className="home-kicker">个人讨论室 · 默认入口</span>
+            <h1>{homeName}</h1>
+            <p>从这里扫过最近的讨论、摘录和 AI 阵容，再决定进入哪一条思考线。</p>
+          </div>
+          <div className="home-hero-actions">
+            <button type="button" className="home-action is-primary focus-ring" onClick={onCreateConversation}>
+              新建对话
+            </button>
+            <button type="button" className="home-action focus-ring" onClick={onOpenAi}>
+              选择 AI
+            </button>
+          </div>
+        </header>
+
+        {!hasConversations ? (
+          <section className="home-empty-panel" aria-label="开始使用 Atrium">
+            <div className="home-empty-grid" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+            <div className="home-empty-copy">
+              <h2>还没有对话</h2>
+              <p>先建立一条思考线，再决定要不要让 AI 坐进来。个人讨论室会保留你的对话列表、房间设置和默认 AI 阵容。</p>
+            </div>
+            <div className="home-empty-actions">
+              <button type="button" className="home-action is-primary focus-ring" onClick={onCreateConversation}>
+                新建第一个对话
+              </button>
+              <button type="button" className="home-action focus-ring" onClick={onOpenAi}>
+                先配置 AI 阵容
+              </button>
+            </div>
+          </section>
+        ) : (
+          <section className="home-conversation-section" aria-label="对话近况">
+            <div className="home-section-head">
+              <div>
+                <h2>继续思考</h2>
+                <p>{conversations.length} 条对话按最近活动排列</p>
+              </div>
+            </div>
+            <div className="home-conversation-grid">
+              {conversations.map((conversation) => {
+                const members = roomAiMembersByRoomId[conversation.backendRoomId] || [];
+                const unreadCount = Number(conversation.unreadCount || 0);
+                return (
+                  <button
+                    key={`${conversation.roomId}-${conversation.id}`}
+                    type="button"
+                    className={`home-conversation-card focus-ring ${unreadCount > 0 ? "has-unread" : ""}`}
+                    onClick={() => onOpenConversation(conversation.roomId, conversation.id)}
+                  >
+                    <span className="home-card-meta">
+                      <span>{conversation.roomName || "房间"}</span>
+                      <time>{formatHomeTimestamp(conversation.activityMs)}</time>
+                    </span>
+                    <span className="home-card-title">{conversation.title}</span>
+                    <span className="home-card-preview">{conversation.preview}</span>
+                    <span className="home-card-foot">
+                      <HomeAiStack members={members} />
+                      {unreadCount > 0 ? <span className="home-unread">{unreadCount > 9 ? "9+" : unreadCount}</span> : null}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        <aside className="home-notes-panel" aria-label="笔记窥看">
+          <div className="home-section-head">
+            <div>
+              <h2>最近摘录</h2>
+              <p>笔记功能先保留前端入口</p>
+            </div>
+          </div>
+          <div className="home-note-empty">
+            <span>还没有笔记</span>
+            <p>在对话中右键消息，使用“摘录到笔记”。</p>
+          </div>
+        </aside>
+      </div>
+    </section>
   );
 }
 
@@ -104,6 +454,7 @@ export default function ChatRoom({
   hiddenMessageId, messageFlight, onMessageFlightComplete,
   onLogout, onDeleteMessage = () => {},
   rooms = null, activeRoomId = "", onRoomSelect = () => {},
+  roomAiMembersByRoomId = {},
   currentUserId = "", onRoomsChanged = async () => {},
   roomName = "我的讨论室", roomHint = "",
   room = null,
@@ -121,7 +472,7 @@ export default function ChatRoom({
   aiConfigError = {},
   assistantState = null,
   roomConversations = [],
-  onConversationSelect = () => {}, onDeleteConversation = () => {},
+  onConversationSelect = () => {}, onNavigateConversation = () => {}, onDeleteConversation = () => {},
   draftConversation = null,
   onDraftAiMembersChange = async () => [],
   onCreateConversationDraft = async () => null,
@@ -158,8 +509,10 @@ export default function ChatRoom({
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(() => readStoredChatSurface().workspacePanelOpen === true);
   const [workspacePanelTab, setWorkspacePanelTab] = useState(() => {
     const tab = readStoredChatSurface().workspacePanelTab;
-    return ["room", "ai", "members", "contacts"].includes(tab) ? tab : "room";
+    return ["room", "ai", "members"].includes(tab) ? tab : "room";
   });
+  const [accountCenterOpen, setAccountCenterOpen] = useState(false);
+  const [accountNotificationCount, setAccountNotificationCount] = useState(0);
   const [createRoomOpen, setCreateRoomOpen] = useState(false);
   const [newRoomName, setNewRoomName] = useState("");
   const [newRoomAiMembers, setNewRoomAiMembers] = useState([]);
@@ -167,6 +520,21 @@ export default function ChatRoom({
   const [createRoomError, setCreateRoomError] = useState("");
   const [noteToast, setNoteToast] = useState(null);
   const noteToastTimerRef = useRef(null);
+  const [mainRoomMembers, setMainRoomMembers] = useState([]);
+  const [mainRoomMembersState, setMainRoomMembersState] = useState("idle");
+
+  const roomTone = room?.tone === "public" ? "public" : "personal";
+  const activeBackendRoomId = Number(room?.roomId || 0);
+  const isPersonalMainConversation = room?.id === "personal" || Number(room?.type) === 1;
+  const isOrdinaryMainConversation = isMainConversation && !isPersonalMainConversation;
+  const isHomeDashboard = isMainConversation && isPersonalMainConversation && !draftConversation;
+  const fallbackSeatMember = {
+    userId: currentUserId || "self",
+    username,
+    nickname: nickname || username || "我",
+    avatarUrl,
+    role: 2
+  };
 
   useEffect(() => {
     if (!contextMenu) return undefined;
@@ -190,6 +558,46 @@ export default function ChatRoom({
       window.clearTimeout(noteToastTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!currentUserId) {
+      setAccountNotificationCount(0);
+      return undefined;
+    }
+    const controller = new AbortController();
+    Promise.all([
+      fetchFriendRequests("received", controller.signal),
+      fetchMyRoomInvitations("received", controller.signal)
+    ])
+      .then(([friendRequests, roomInvitations]) => {
+        setAccountNotificationCount(friendRequests.length + roomInvitations.length);
+      })
+      .catch((error) => {
+        if (error?.name !== "AbortError") setAccountNotificationCount(0);
+      });
+    return () => controller.abort();
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!isOrdinaryMainConversation || !activeBackendRoomId) {
+      setMainRoomMembers([]);
+      setMainRoomMembersState("idle");
+      return undefined;
+    }
+    const controller = new AbortController();
+    setMainRoomMembersState("loading");
+    fetchRoomMembers(activeBackendRoomId, controller.signal)
+      .then((members) => {
+        setMainRoomMembers(members);
+        setMainRoomMembersState("ready");
+      })
+      .catch((error) => {
+        if (error?.name === "AbortError") return;
+        setMainRoomMembers([]);
+        setMainRoomMembersState("error");
+      });
+    return () => controller.abort();
+  }, [isOrdinaryMainConversation, activeBackendRoomId]);
 
   function handleMessageContextMenu(e, message) {
     if (!message) return;
@@ -255,11 +663,39 @@ export default function ChatRoom({
   }
 
   function openWorkspace(roomId = activeRoomId, tab = "room") {
-    const nextTab = ["room", "ai", "members", "contacts"].includes(tab) ? tab : "room";
+    const nextTab = ["room", "ai", "members"].includes(tab) ? tab : "room";
     if (roomId && roomId !== activeRoomId) onRoomSelect(roomId);
+    setAccountCenterOpen(false);
     setWorkspacePanelTab(nextTab);
     setWorkspacePanelOpen(true);
     writeStoredChatSurface({ workspacePanelOpen: true, workspacePanelTab: nextTab });
+  }
+
+  function openAccountCenter() {
+    setWorkspacePanelOpen(false);
+    writeStoredChatSurface({ workspacePanelOpen: false, workspacePanelTab });
+    setAccountCenterOpen(true);
+  }
+
+  function openNoteEntry() {
+    window.dispatchEvent(new CustomEvent("atrium-note-entry", {
+      detail: {
+        roomId: activeRoomId,
+        conversationId: activeConversationId,
+        roomName
+      }
+    }));
+  }
+
+  function insertAiMention(member) {
+    const aiName = getAiMemberName(member);
+    const nextValue = String(messageDraft || "").replace(/(^|\s)@([^\s@]*)$/, `$1@${aiName} `);
+    onMessageDraftChange(nextValue);
+    requestAnimationFrame(() => {
+      const textarea = composerFieldRef?.current?.querySelector?.("textarea");
+      textarea?.focus?.();
+      textarea?.setSelectionRange?.(nextValue.length, nextValue.length);
+    });
   }
 
   function openCreateRoom() {
@@ -312,8 +748,11 @@ export default function ChatRoom({
     const mainConversationId = Number(room?.mainConversationId || room?.conversationId || 0);
     if (readOnly || !normalizedConversationId || (mainConversationId && normalizedConversationId === mainConversationId)) return;
     if (!normalizedTitle) throw new Error("对话名不能为空");
-    await renameConversation(normalizedConversationId, normalizedTitle);
-    await onRoomsChanged(room?.roomId);
+    try {
+      await renameConversation(normalizedConversationId, normalizedTitle);
+    } finally {
+      await onRoomsChanged(room?.roomId);
+    }
   }
 
   function resolveSectionMotion(timing) {
@@ -340,7 +779,6 @@ export default function ChatRoom({
 
   const headerMotion = resolveSectionMotion(transitionConfig?.header);
   const messagesMotion = resolveSectionMotion(transitionConfig?.messages);
-  const roomTone = room?.tone === "public" ? "public" : "personal";
   const roomPlaceLabel = room?.placeLabel || (roomTone === "public" ? "公共大厅" : "个人空间");
   const roomAtmosphere = room?.atmosphere || roomHint || "写下一个想法，让讨论从这里开始。";
   const currentModelLabel = isConversationModelLoading ? "团队同步中" : activeConversationModelLabel;
@@ -349,15 +787,28 @@ export default function ChatRoom({
   const emptySuggestions = roomTone === "public"
     ? ["提出一个公共问题", "贴出材料和判断", "沉淀阶段结论"]
     : ["写下研究对象", "让 DeepSeek 接入推演", "保存待整理结论"];
-  const composerPlaceholder = room?.composerPlaceholder || "输入消息，按 Enter 发送";
+  const composerPlaceholder = isOrdinaryMainConversation
+    ? "在主对话发言，可 @AI"
+    : room?.composerPlaceholder || "输入消息，按 Enter 发送";
   const roomConversationCount = Math.max(roomConversations.length || 0, 1);
   const selectedConversation = activeConversation || roomConversations.find((item) => item.id === activeConversationId);
-  const activeConversationTitle = isMainConversation
+  const activeConversationTitle = isHomeDashboard
+    ? "Home"
+    : isMainConversation
     ? roomName
     : selectedConversation?.name || (activeConversationId ? `对话 ${activeConversationId}` : "对话");
+  const mentionQuery = isOrdinaryMainConversation ? getMentionQuery(messageDraft) : null;
+  const mainComposerTopSlot = mentionQuery != null && roomAiMembers.length ? (
+    <MainConversationMentionReserve
+      query={mentionQuery}
+      aiMembers={roomAiMembers}
+      onPick={insertAiMention}
+    />
+  ) : null;
   const newRoomAiOptions = mergeAiMemberOptions(availableAis, newRoomAiMembers);
   const currentMoment =
-    workspacePanelOpen ? "tooling"
+    workspacePanelOpen || accountCenterOpen ? "tooling"
+      : isHomeDashboard ? "home"
       : !visibleMessages.length ? "arriving"
         : "thinking";
   const conversationTeamError =
@@ -391,7 +842,6 @@ export default function ChatRoom({
           nickname={nickname}
           username={username}
           avatarUrl={avatarUrl}
-          onProfileUpdate={onProfileUpdate}
           onLogout={onLogout}
           shouldAnimateEntry={false}
           transitionMode={resolvedTransitionMode}
@@ -412,6 +862,8 @@ export default function ChatRoom({
           onDeleteConversation={onDeleteConversation}
           onCreateRoom={openCreateRoom}
           onOpenRoomManagement={(roomId, tab) => openWorkspace(roomId, tab)}
+          onOpenAccountCenter={openAccountCenter}
+          accountNotificationCount={accountNotificationCount}
         />
       </div>
 
@@ -435,7 +887,7 @@ export default function ChatRoom({
 
       <main className="main">
         <motion.header
-          className={`header ${isHeaderScrolled ? "is-scrolled" : ""} is-connection-${connectionState}`}
+          className={`header ${isHeaderScrolled ? "is-scrolled" : ""} is-connection-${connectionState} ${isOrdinaryMainConversation ? "is-main-timeline" : ""} ${isHomeDashboard ? "is-home-dashboard" : ""}`}
           initial={headerMotion.initial}
           animate={headerMotion.animate}
           transition={headerMotion.transition}
@@ -445,15 +897,31 @@ export default function ChatRoom({
               <div className="room-anchor">
                 <div className="room-title-button" aria-label="当前对话">
                   <span className="room-name">{activeConversationTitle}</span>
+                  {isOrdinaryMainConversation ? <span className="room-topic">{roomAtmosphere}</span> : null}
                 </div>
                 <span className="room-anchor-meta">
-                  <span>{roomName}</span>
-                  <span>{roomConversationCount} 段记忆</span>
+                  <span>{isOrdinaryMainConversation ? roomPlaceLabel : roomName}</span>
+                  <span>{roomConversationCount} 段{isOrdinaryMainConversation ? "公共历史" : "记忆"}</span>
                 </span>
               </div>
               {connectionState !== "connected" ? <HeaderStatus modelLabel={currentModelLabel} connectionState={connectionState} /> : null}
             </div>
             <div className="header-actions">
+              {isOrdinaryMainConversation ? (
+                <button
+                  type="button"
+                  className="header-icon-button is-note-entry focus-ring"
+                  onClick={openNoteEntry}
+                  disabled={readOnly}
+                  aria-label="笔记"
+                  title="笔记"
+                >
+                  <svg width="17" height="17" viewBox="0 0 17 17" fill="none" stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M4.3 2.8h5.9l2.5 2.5v8.9H4.3z" />
+                    <path d="M10.1 2.9v2.5h2.5M6.1 8.2h4.8M6.1 10.9h3.3" />
+                  </svg>
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="header-icon-button focus-ring"
@@ -475,12 +943,36 @@ export default function ChatRoom({
 
         <motion.div
           key={draftConversation ? "draft" : `${activeRoomId}-${activeConversationId || "main"}`}
-          className={`messages-stage is-${roomTone} ${roomTransition ? "is-switching" : ""}`}
+          className={`messages-stage is-${roomTone} ${isOrdinaryMainConversation ? "is-main-timeline" : ""} ${isHomeDashboard ? "is-home-dashboard" : ""} ${roomTransition ? "is-switching" : ""}`}
           initial={stageInitial}
           animate={stageAnimate}
           transition={stageTransition}
         >
-          {draftConversation ? (
+          {isOrdinaryMainConversation && !draftConversation ? (
+            <MainConversationSeatline
+              room={room}
+              members={mainRoomMembers}
+              membersState={mainRoomMembersState}
+              currentUserId={currentUserId}
+              fallbackMember={fallbackSeatMember}
+              aiMembers={roomAiMembers}
+              thinkingAdapters={thinkingAdapters}
+              compact={Boolean(visibleMessages.length)}
+              onOpenMembers={() => openWorkspace(activeRoomId, "members")}
+              onOpenAi={() => openWorkspace(activeRoomId, "ai")}
+            />
+          ) : null}
+          {isHomeDashboard ? (
+            <HomeDashboard
+              nickname={nickname}
+              room={room}
+              rooms={rooms}
+              roomAiMembersByRoomId={roomAiMembersByRoomId}
+              onOpenConversation={onNavigateConversation}
+              onCreateConversation={onCreateConversationDraft}
+              onOpenAi={() => openWorkspace(activeRoomId, "ai")}
+            />
+          ) : draftConversation ? (
             <div className="empty-state empty-state--ai-start">
               <ConversationPrepPanel
                 isVisible={true}
@@ -505,7 +997,18 @@ export default function ChatRoom({
               fadeDuration={fadeDuration}
               viewportRef={messagesViewportRef}
               renderEmpty={hideMessageContent ? () => null : () => (
-                <div className={`empty-state empty-state--room is-${roomTone}`}>
+                isOrdinaryMainConversation ? (
+                  <div className={`empty-state empty-state--room is-main-conversation is-${roomTone}`}>
+                    <MainConversationCover
+                      roomPlaceLabel={roomPlaceLabel}
+                      title={roomAtmosphere}
+                      topic={room?.description || emptyHint}
+                      aiMembers={roomAiMembers}
+                      onOpenAi={() => openWorkspace(activeRoomId, "ai")}
+                    />
+                  </div>
+                ) : (
+                  <div className={`empty-state empty-state--room is-${roomTone}`}>
                     <div className="empty-copy">
                       <div className="empty-kicker">{roomPlaceLabel}</div>
                       <div className="empty-title">{emptyTitle}</div>
@@ -515,6 +1018,7 @@ export default function ChatRoom({
                       </div>
                     </div>
                   </div>
+                )
                 )
               }
               onContextMenu={handleMessageContextMenu}
@@ -527,22 +1031,25 @@ export default function ChatRoom({
           )}
         </motion.div>
 
-        <MessageInput
-          value={messageDraft}
-          onChange={onMessageDraftChange}
-          onSend={onSend}
-          disabled={composerDisabled}
-          attachment={messageAttachment}
-          error={composerError}
-          composerFieldRef={composerFieldRef}
-          shouldAnimateEntry={false}
-          transitionMode={resolvedTransitionMode}
-          motionTiming={transitionConfig?.composer}
-          readOnly={readOnly}
-          placeholder={composerPlaceholder}
-          onPasteImage={onPasteImage}
-          onRemoveAttachment={onRemoveAttachment}
-        />
+        {isHomeDashboard ? null : (
+          <MessageInput
+            value={messageDraft}
+            onChange={onMessageDraftChange}
+            onSend={onSend}
+            disabled={composerDisabled}
+            attachment={messageAttachment}
+            error={composerError}
+            composerFieldRef={composerFieldRef}
+            shouldAnimateEntry={false}
+            transitionMode={resolvedTransitionMode}
+            motionTiming={transitionConfig?.composer}
+            readOnly={readOnly}
+            placeholder={composerPlaceholder}
+            topSlot={mainComposerTopSlot}
+            onPasteImage={onPasteImage}
+            onRemoveAttachment={onRemoveAttachment}
+          />
+        )}
 
       </main>
 
@@ -558,7 +1065,6 @@ export default function ChatRoom({
         }}
         currentUserId={currentUserId}
         room={room}
-        rooms={rooms || []}
         readOnly={readOnly}
         activeTab={workspacePanelTab}
         onTabChange={(tab) => {
@@ -566,24 +1072,30 @@ export default function ChatRoom({
           writeStoredChatSurface({ workspacePanelOpen: true, workspacePanelTab: tab });
         }}
         onRoomsChanged={onRoomsChanged}
-        onConversationSelect={onConversationSelect}
         activeConversationModelLabel={activeConversationModelLabel}
         isConversationModelLoading={isConversationModelLoading}
         activeConversation={activeConversation}
         isMainConversation={isMainConversation}
         roomAiMembers={roomAiMembers}
         conversationAiMembers={conversationAiMembers}
-        effectiveAiMembers={effectiveAiMembers}
         availableAis={availableAis}
         thinkingAdapters={thinkingAdapters}
         aiConfigError={aiConfigError}
         onRoomAiMembersSave={onRoomAiMembersSave}
         onConversationAiMembersChange={onConversationAiMembersChange}
-        onRoomSelect={(id) => {
-          onRoomSelect(id);
-          setWorkspacePanelOpen(false);
-          writeStoredChatSurface({ workspacePanelOpen: false, workspacePanelTab });
-        }}
+      />
+
+      <AccountCenterPanel
+        isOpen={accountCenterOpen && !readOnly}
+        onClose={() => setAccountCenterOpen(false)}
+        currentUserId={currentUserId}
+        nickname={nickname}
+        username={username}
+        avatarUrl={avatarUrl}
+        onProfileUpdate={onProfileUpdate}
+        readOnly={readOnly}
+        onRoomsChanged={onRoomsChanged}
+        onNotificationCountChange={setAccountNotificationCount}
       />
 
       <ModalLayer

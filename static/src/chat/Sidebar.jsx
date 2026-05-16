@@ -1,12 +1,6 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { EASE, TAP_TRANSITION } from "../constants.js";
 import { ThemeManager } from "../theme.js";
-import {
-  getApiErrorMessage,
-  validateAuthUsername,
-  validateProfileAvatarUrl,
-  validateProfileNickname
-} from "../utils.js";
 import { useState, useEffect, useRef } from "react";
 
 const THEME_LABELS = {
@@ -93,6 +87,16 @@ function ModeIcon({ mode }) {
   );
 }
 
+function HomeIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2.7 7.4 8 3.1l5.3 4.3" />
+      <path d="M4 6.8v6h8v-6" />
+      <path d="M6.5 12.8V9.6h3v3.2" />
+    </svg>
+  );
+}
+
 function PlusIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
@@ -165,212 +169,8 @@ function getRoomConversationLabel(room) {
   return `${Math.max(count, 1)} 个对话`;
 }
 
-function normalizeProfileValue(value) {
-  return String(value || "").trim();
-}
-
-function ProfileEditorLayer({
-  isOpen,
-  nickname,
-  username,
-  avatarUrl,
-  onClose,
-  onSave,
-  readOnly
-}) {
-  const firstFieldRef = useRef(null);
-  const closeTimerRef = useRef(null);
-  const busyRef = useRef(false);
-  const onCloseRef = useRef(onClose);
-  const initialRef = useRef({ nickname: "", username: "", avatarUrl: "" });
-  const [draft, setDraft] = useState({ nickname: "", username: "", avatarUrl: "" });
-  const [errors, setErrors] = useState({ nickname: "", username: "", avatarUrl: "", form: "" });
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState("");
-
-  useEffect(() => {
-    busyRef.current = busy;
-  }, [busy]);
-
-  useEffect(() => {
-    onCloseRef.current = onClose;
-  }, [onClose]);
-
-  useEffect(() => {
-    if (!isOpen) return undefined;
-    const nextInitial = {
-      nickname: normalizeProfileValue(nickname),
-      username: normalizeProfileValue(username || nickname),
-      avatarUrl: normalizeProfileValue(avatarUrl)
-    };
-    initialRef.current = nextInitial;
-    setDraft(nextInitial);
-    setErrors({ nickname: "", username: "", avatarUrl: "", form: "" });
-    setNotice("");
-    setBusy(false);
-    const frameId = window.requestAnimationFrame(() => firstFieldRef.current?.focus({ preventScroll: true }));
-    function handleKeyDown(event) {
-      if (event.key === "Escape" && !busyRef.current) onCloseRef.current();
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.cancelAnimationFrame(frameId);
-      window.clearTimeout(closeTimerRef.current);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [isOpen]);
-
-  function updateDraft(field, value) {
-    setDraft((current) => ({ ...current, [field]: value }));
-    setErrors((current) => ({ ...current, [field]: "", form: "" }));
-    setNotice("");
-  }
-
-  const normalizedDraft = {
-    nickname: normalizeProfileValue(draft.nickname),
-    username: normalizeProfileValue(draft.username),
-    avatarUrl: normalizeProfileValue(draft.avatarUrl)
-  };
-  const hasChanges =
-    normalizedDraft.nickname !== initialRef.current.nickname ||
-    normalizedDraft.username !== initialRef.current.username ||
-    normalizedDraft.avatarUrl !== initialRef.current.avatarUrl;
-
-  async function handleSubmit(event) {
-    event.preventDefault();
-    if (busy || readOnly) return;
-    const nextErrors = {
-      nickname: validateProfileNickname(normalizedDraft.nickname),
-      username: validateAuthUsername(normalizedDraft.username),
-      avatarUrl: validateProfileAvatarUrl(normalizedDraft.avatarUrl),
-      form: ""
-    };
-    if (nextErrors.nickname || nextErrors.username || nextErrors.avatarUrl) {
-      setErrors(nextErrors);
-      return;
-    }
-    const payload = {};
-    if (normalizedDraft.nickname !== initialRef.current.nickname) payload.nickname = normalizedDraft.nickname;
-    if (normalizedDraft.username !== initialRef.current.username) payload.username = normalizedDraft.username;
-    if (normalizedDraft.avatarUrl !== initialRef.current.avatarUrl) payload.avatar_url = normalizedDraft.avatarUrl;
-    if (!Object.keys(payload).length) {
-      onClose();
-      return;
-    }
-    setBusy(true);
-    setErrors({ nickname: "", username: "", avatarUrl: "", form: "" });
-    try {
-      await onSave(payload);
-      initialRef.current = normalizedDraft;
-      setNotice("已保存");
-      closeTimerRef.current = window.setTimeout(() => onCloseRef.current(), 420);
-    } catch (error) {
-      const next = { nickname: "", username: "", avatarUrl: "", form: "" };
-      if (payload.username && error?.status === 400) {
-        next.username = error?.body === "invalid_username" ? "登录名不合法" : "登录名已被占用";
-      } else if (payload.nickname && error?.status === 400) {
-        next.nickname = "显示名不符合规则";
-      } else if (payload.avatar_url && error?.status === 400) {
-        next.avatarUrl = "头像地址不符合规则";
-      } else {
-        next.form = getApiErrorMessage(error, "身份保存失败，请稍后重试");
-      }
-      setErrors(next);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <AnimatePresence>
-      {isOpen ? (
-        <motion.div
-          className="identity-editor-layer"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.16, ease: EASE }}
-        >
-          <button type="button" className="identity-editor-backdrop" aria-label="关闭身份编辑" onClick={() => { if (!busy) onClose(); }} />
-          <motion.form
-            className="identity-editor"
-            onSubmit={handleSubmit}
-            initial={{ opacity: 0, y: -6, scale: 0.985 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -4, scale: 0.985 }}
-            transition={{ duration: 0.18, ease: EASE }}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="identity-editor-title"
-          >
-            <div className="identity-editor-head">
-              <div className="identity-editor-avatar" aria-hidden="true">
-                {normalizedDraft.avatarUrl ? <img src={normalizedDraft.avatarUrl} alt="" /> : <span>{getIdentityInitial(normalizedDraft.nickname, normalizedDraft.username)}</span>}
-              </div>
-              <div>
-                <span className="identity-editor-kicker">当前身份</span>
-                <h2 id="identity-editor-title">身份</h2>
-              </div>
-              <button type="button" className="identity-editor-close focus-ring" onClick={onClose} disabled={busy} aria-label="关闭身份编辑">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
-                  <path d="m4.2 4.2 7.6 7.6M11.8 4.2l-7.6 7.6" />
-                </svg>
-              </button>
-            </div>
-
-            <label className="identity-field">
-              <span>显示名</span>
-              <input
-                ref={firstFieldRef}
-                className={`identity-input ${errors.nickname ? "is-error" : ""}`}
-                value={draft.nickname}
-                onChange={(event) => updateDraft("nickname", event.target.value)}
-                disabled={busy}
-                autoComplete="name"
-              />
-              {errors.nickname ? <small>{errors.nickname}</small> : null}
-            </label>
-
-            <label className="identity-field">
-              <span>登录名</span>
-              <input
-                className={`identity-input ${errors.username ? "is-error" : ""}`}
-                value={draft.username}
-                onChange={(event) => updateDraft("username", event.target.value)}
-                disabled={busy}
-                autoComplete="username"
-              />
-              {errors.username ? <small>{errors.username}</small> : null}
-            </label>
-
-            <label className="identity-field">
-              <span>头像地址</span>
-              <input
-                className={`identity-input ${errors.avatarUrl ? "is-error" : ""}`}
-                value={draft.avatarUrl}
-                onChange={(event) => updateDraft("avatarUrl", event.target.value)}
-                disabled={busy}
-                autoComplete="url"
-              />
-              {errors.avatarUrl ? <small>{errors.avatarUrl}</small> : null}
-            </label>
-
-            {errors.form ? <div className="identity-editor-error">{errors.form}</div> : null}
-            {notice ? <div className="identity-editor-notice">{notice}</div> : null}
-
-            <div className="identity-editor-actions">
-              <button type="button" className="identity-editor-action focus-ring" onClick={onClose} disabled={busy}>取消</button>
-              <button type="submit" className="identity-editor-action is-primary focus-ring" disabled={!hasChanges || busy || readOnly}>{busy ? "保存中" : "保存"}</button>
-            </div>
-          </motion.form>
-        </motion.div>
-      ) : null}
-    </AnimatePresence>
-  );
-}
-
 export default function Sidebar({
-  nickname, username = "", avatarUrl = "", onProfileUpdate = async () => {}, onLogout,
+  nickname, username = "", avatarUrl = "", onLogout,
   shouldAnimateEntry, entryDelay, entryDuration = 0.3, entryOffsetX = -20,
   transitionMode = "idle", motionTiming = null, readOnly = false,
   rooms = null, activeRoomId = "", onRoomSelect = () => {},
@@ -384,9 +184,10 @@ export default function Sidebar({
   onRenameConversation = async () => {},
   onDeleteConversation = () => {},
   onCreateRoom = () => {},
-  onOpenRoomManagement = () => {}
+  onOpenRoomManagement = () => {},
+  onOpenAccountCenter = () => {},
+  accountNotificationCount = 0
 }) {
-  const [profileOpen, setProfileOpen] = useState(false);
   const [quicklookRoomId, setQuicklookRoomId] = useState("");
   const [quicklookAnchor, setQuicklookAnchor] = useState(null);
   const [conversationMenuId, setConversationMenuId] = useState(0);
@@ -403,9 +204,14 @@ export default function Sidebar({
       : [{ id: "personal", name: roomName, isAvailable: true }];
   const resolvedMode = mode === "rooms" ? "rooms" : "conversations";
   const activeRoom = room || resolvedRooms.find((item) => item.id === activeRoomId) || resolvedRooms[0];
+  const homeRoom = resolvedRooms.find((item) => item.id === "personal" || item.type === 1) || resolvedRooms[0];
+  const visibleRooms = resolvedRooms.filter((item) => item.id !== homeRoom?.id);
   const mainConversationId = activeRoom?.mainConversationId || activeRoom?.conversationId || 0;
+  const homeMainConversationId = homeRoom?.mainConversationId || homeRoom?.conversationId || 0;
   const mainConversation = conversations.find((item) => item.id === mainConversationId) || (mainConversationId ? { id: mainConversationId, name: activeRoom?.name || "主对话" } : null);
   const normalConversations = sortNormalConversations(conversations, mainConversationId);
+  const isPersonalRoom = activeRoom?.id === "personal" || activeRoom?.type === 1;
+  const isHomeActive = Boolean(homeRoom && activeRoom?.id === homeRoom.id && activeConversationId === homeMainConversationId);
   const isEntering = transitionMode === "enter";
   const isExiting = transitionMode === "exit";
   const nextMode = resolvedMode === "rooms" ? "conversations" : "rooms";
@@ -485,6 +291,19 @@ export default function Sidebar({
     setQuicklookRoomId("");
   }
 
+  function selectHome() {
+    if (readOnly || !homeRoom) return;
+    if (activeRoom?.id === homeRoom.id) {
+      if (homeMainConversationId && activeConversationId !== homeMainConversationId) {
+        onConversationSelect(homeMainConversationId);
+      }
+    } else {
+      onRoomSelect(homeRoom.id);
+    }
+    onModeChange("conversations");
+    setQuicklookRoomId("");
+  }
+
   async function createConversation() {
     if (readOnly) return;
     await onCreateConversation();
@@ -560,17 +379,30 @@ export default function Sidebar({
         </button>
         <div className="sidebar-mode-title">
           <span>{resolvedMode === "rooms" ? "所有房间" : activeRoom?.name || roomName}</span>
-          <small>{resolvedMode === "rooms" ? `${resolvedRooms.length} 个房间` : "当前房间"}</small>
+          <small>{resolvedMode === "rooms" ? `${visibleRooms.length} 个房间` : "当前房间"}</small>
         </div>
       </header>
 
       <button
         type="button"
-        className="identity focus-ring"
-        onClick={() => setProfileOpen(true)}
+        className={`sidebar-home-entry focus-ring ${isHomeActive ? "is-active" : ""}`}
+        onClick={selectHome}
+        disabled={readOnly || !homeRoom}
+        aria-current={isHomeActive ? "page" : undefined}
+      >
+        <span className="sidebar-home-icon"><HomeIcon /></span>
+        <span className="sidebar-home-copy">
+          <span>Home</span>
+          <small>{homeRoom?.name || "个人讨论室"} · 默认入口</small>
+        </span>
+      </button>
+
+      <button
+        type="button"
+        className={`identity focus-ring ${accountNotificationCount > 0 ? "has-notice" : ""}`}
+        onClick={onOpenAccountCenter}
         disabled={readOnly}
-        aria-label="编辑当前身份"
-        aria-expanded={profileOpen}
+        aria-label={accountNotificationCount > 0 ? `账户中心，${accountNotificationCount} 个待处理通知` : "账户中心"}
       >
         <span className="identity-avatar" aria-hidden="true">
           {avatarUrl ? <img src={avatarUrl} alt="" /> : <span>{getIdentityInitial(nickname, username)}</span>}
@@ -581,16 +413,6 @@ export default function Sidebar({
         </span>
         {username ? <span className="identity-handle">@{username}</span> : null}
       </button>
-
-      <ProfileEditorLayer
-        isOpen={profileOpen && !readOnly}
-        nickname={nickname}
-        username={username}
-        avatarUrl={avatarUrl}
-        onClose={() => setProfileOpen(false)}
-        onSave={onProfileUpdate}
-        readOnly={readOnly}
-      />
 
       <section className="sidebar-mode-body">
         <AnimatePresence initial={false} mode="wait">
@@ -633,8 +455,8 @@ export default function Sidebar({
                     aria-current={activeConversationId === mainConversation.id ? "page" : undefined}
                   >
                     <span className="conversation-copy">
-                      <span>{mainConversation.name || activeRoom?.name || "主对话"}</span>
-                      <small>主对话 · 房间仪表板预留</small>
+                      <span>{isPersonalRoom ? "Home" : mainConversation.name || activeRoom?.name || "主对话"}</span>
+                      <small>{isPersonalRoom ? "个人讨论室 · 总览" : "公共时间线"}</small>
                     </span>
                   </button>
                 ) : null}
@@ -734,7 +556,7 @@ export default function Sidebar({
               </div>
             ) : (
               <div className="room-list is-mode-rooms" aria-label="所有房间">
-                {resolvedRooms.map((item) => {
+                {visibleRooms.length ? visibleRooms.map((item) => {
                   const isActive = item.id === activeRoomId || (!activeRoomId && item.name === roomName);
                   const isDisabled = readOnly || !item.isAvailable;
                   const isQuicklookOpen = quicklookRoomId === item.id;
@@ -811,7 +633,9 @@ export default function Sidebar({
                       </AnimatePresence>
                     </div>
                   );
-                })}
+                }) : (
+                  <div className="sidebar-empty">还没有其他房间</div>
+                )}
               </div>
             )}
           </motion.div>

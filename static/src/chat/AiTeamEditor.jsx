@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { EASE, THINKING_MODE_OPTIONS } from "../constants.js";
+import { AI_MODEL_OPTIONS, EASE, THINKING_MODE_OPTIONS } from "../constants.js";
 import {
   getApiErrorMessage,
   getModelDisplayName,
@@ -27,6 +28,12 @@ const RADIAL_ADAPTER_OPTIONS = Object.freeze([
   };
 }));
 const FEATURED_MODELS_PER_PROVIDER = 2;
+const MODEL_VERSION_BADGE_OVERRIDES = Object.freeze({
+  "deepseek-v4-pro": { label: "Pro", compactLabel: "P" },
+  "deepseek-v4-flash": { label: "Flash", compactLabel: "F" },
+  "qwen3.5-plus": { label: "3.5+", compactLabel: "3.5+" },
+  "qwen3.5-flash": { label: "3.5F", compactLabel: "3.5F" }
+});
 const PROVIDER_LABELS = {
   deepseek: "DeepSeek",
   qwen: "Qwen",
@@ -145,6 +152,60 @@ const SEAT_ADAPTER_VISUAL_PROFILES = Object.freeze({
   }
 });
 const SEAT_EXPLICIT_THINKING_KEYS = new Set(THINKING_MODE_OPTIONS.map((option) => option.key));
+
+function normalizeModelKey(model) {
+  return String(model || "").trim().toLowerCase();
+}
+
+function formatVersionToken(token) {
+  const value = String(token || "").replace(/^v/i, "");
+  if (/^4o$/i.test(value)) return "4o";
+  return value.replace(/^\d/, (char) => char.toUpperCase());
+}
+
+function formatTierToken(token, compact = false) {
+  const value = String(token || "").toLowerCase();
+  if (value === "flash") return compact ? "F" : "Flash";
+  if (value === "pro") return compact ? "P" : "Pro";
+  if (value === "plus") return compact ? "+" : "Plus";
+  if (value === "turbo") return compact ? "T" : "Turbo";
+  if (value === "mini") return compact ? "M" : "Mini";
+  if (value === "max") return "Max";
+  return "";
+}
+
+function deriveModelVersionBadge(model) {
+  const key = normalizeModelKey(model);
+  if (!key) return null;
+  const override = MODEL_VERSION_BADGE_OVERRIDES[key];
+  if (override) return override;
+
+  const modelOption = AI_MODEL_OPTIONS.find((option) => normalizeModelKey(option.value) === key);
+  if (modelOption?.shortLabel) {
+    const shortLabel = String(modelOption.shortLabel);
+    const versionMatch = shortLabel.match(/\b\d+(?:\.\d+)?[a-z]?\b/i);
+    const tierMatch = shortLabel.match(/\b(flash|pro|plus|turbo|mini|max)\b/i);
+    const version = versionMatch ? formatVersionToken(versionMatch[0]) : "";
+    const tier = tierMatch ? formatTierToken(tierMatch[0]) : "";
+    const compactTier = tierMatch ? formatTierToken(tierMatch[0], true) : "";
+    if (version && compactTier) return { label: `${version}${compactTier}`, compactLabel: `${version}${compactTier}` };
+    if (tier) return { label: tier, compactLabel: compactTier || tier };
+    if (version) return { label: version, compactLabel: version };
+  }
+
+  const tokens = key.split(/[^a-z0-9.]+/).filter(Boolean);
+  const directVersion = key.match(/(?:gpt-|qwen|claude-|gemini-|deepseek-)?(4o|\d+(?:\.\d+)?[a-z]?)/i)?.[1] || "";
+  const versionToken = tokens.find((token) => /^(?:v?\d+(?:\.\d+)?[a-z]?|4o)$/i.test(token)) || directVersion;
+  const tierToken = tokens.find((token) => /^(flash|pro|plus|turbo|mini|max)$/i.test(token)) || "";
+  const version = formatVersionToken(versionToken);
+  const tier = formatTierToken(tierToken);
+  const compactTier = formatTierToken(tierToken, true);
+
+  if (version && compactTier) return { label: `${version}${compactTier}`, compactLabel: `${version}${compactTier}` };
+  if (tier) return { label: tier, compactLabel: compactTier || tier };
+  if (version) return { label: version, compactLabel: version };
+  return null;
+}
 
 function getSeatVitalSeed(member, index) {
   const source = [
@@ -311,6 +372,17 @@ function getAiShortName(member) {
     .replace(/\bpro\b/i, "Pro")
     .replace(/\bflash\b/i, "Flash")
     .trim();
+}
+
+function getAiModelVersionBadge(member) {
+  return deriveModelVersionBadge(member?.model);
+}
+
+function getAiSeatHoverSummary(member) {
+  return {
+    model: getModelDisplayName(member, getAiMemberName(member)),
+    thinking: getThinkingModeLabel(member)
+  };
 }
 
 function mergeAiMemberOptions(...groups) {
@@ -642,11 +714,15 @@ function AiSeatStrip({
   presentationOnly = false,
   vitalSigns = true,
   onChange = async () => [],
+  onSeatAction = null,
+  showHoverSummary = false,
+  showLabels = false,
   emptyText = "未设置 AI",
   className = ""
 }) {
   const [openAiId, setOpenAiId] = useState(null);
   const [thinkingOpenAiId, setThinkingOpenAiId] = useState(null);
+  const [hoverCard, setHoverCard] = useState(null);
   const [pending, setPending] = useState(false);
   const timerRef = useRef(null);
 
@@ -662,10 +738,29 @@ function AiSeatStrip({
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, [thinkingOpenAiId]);
 
-  function open(member) {
+  function getHoverCardPosition(target) {
+    if (!target?.getBoundingClientRect || typeof window === "undefined") return null;
+    const rect = target.getBoundingClientRect();
+    const width = Math.min(270, Math.max(180, window.innerWidth - 24));
+    const left = Math.max(12, Math.min(rect.left + rect.width / 2 - width / 2, window.innerWidth - 12 - width));
+    const bottomTop = rect.bottom + 8;
+    const useTop = bottomTop + 58 > window.innerHeight && rect.top > 72;
+    return {
+      left,
+      top: useTop ? Math.max(12, rect.top - 48) : Math.min(bottomTop, window.innerHeight - 12),
+      width,
+      placement: useTop ? "top" : "bottom"
+    };
+  }
+
+  function open(member, event) {
     if (presentationOnly) return;
     window.clearTimeout(timerRef.current);
     setOpenAiId(member.aiId);
+    if (showHoverSummary) {
+      const position = getHoverCardPosition(event?.currentTarget);
+      setHoverCard(position ? { aiId: member.aiId, ...position } : null);
+    }
   }
 
   function queueClose() {
@@ -673,6 +768,7 @@ function AiSeatStrip({
     timerRef.current = window.setTimeout(() => {
       setOpenAiId(null);
       setThinkingOpenAiId(null);
+      setHoverCard(null);
     }, 160);
   }
 
@@ -703,107 +799,155 @@ function AiSeatStrip({
     setOpenAiId(null);
   }
 
-  const canOpen = !presentationOnly;
+  const hasExternalAction = typeof onSeatAction === "function";
+  const canOpen = !presentationOnly && !hasExternalAction;
+  const canShowSummary = !presentationOnly && hasExternalAction && showHoverSummary;
+  const canReveal = canOpen || canShowSummary;
+  const canActivate = !presentationOnly;
   const canEdit = !readOnly && !presentationOnly;
+  const hoverMember = canShowSummary && hoverCard
+    ? members.find((member) => member.aiId === hoverCard.aiId)
+    : null;
+  const hoverSummary = hoverMember ? getAiSeatHoverSummary(hoverMember) : null;
   const stripClassName = [
     "ai-seat-strip",
     vitalSigns ? "has-vital-signs" : "",
     presentationOnly ? "is-presentation-only" : "",
-    canOpen && openAiId != null ? "is-seat-focus-active" : "",
+    canReveal && openAiId != null ? "is-seat-focus-active" : "",
+    showLabels ? "has-seat-labels" : "",
+    hasExternalAction ? "has-external-seat-action" : "",
     className
   ].filter(Boolean).join(" ");
 
   return (
-    <div className={stripClassName}>
-      {members.length ? members.map((member, index) => {
-        const isOpen = openAiId === member.aiId;
-        const committedThinkingMode = getSeatThinkingMode(member);
-        const thinkingMode = committedThinkingMode;
-        const visualProfile = getSeatAdapterVisualProfile(thinkingMode);
-        const vitalStyle = vitalSigns ? getSeatVitalStyle(member, index, visualProfile) : undefined;
-        const wrapClassName = [
-          "ai-seat-wrap",
-          isOpen ? "is-focused" : "",
-          canOpen && openAiId != null && !isOpen ? "is-muted" : ""
-        ].filter(Boolean).join(" ");
-        return (
-          <div
-            key={member.aiId}
-            className={wrapClassName}
-            data-seat-rhythm={visualProfile.rhythm}
-            style={vitalStyle}
-            onMouseEnter={canOpen ? () => open(member) : undefined}
-            onMouseLeave={canOpen ? queueClose : undefined}
-            onFocus={canOpen ? () => open(member) : undefined}
-            onBlur={canOpen ? handleSeatBlur : undefined}
-          >
-            <button
-              type="button"
-              className="ai-seat-pill"
-              aria-label={getAiMemberName(member)}
-              aria-disabled={readOnly || presentationOnly}
-              tabIndex={canOpen ? 0 : -1}
-              onClick={canOpen ? () => open(member) : undefined}
-              data-thinking-mode={thinkingMode}
+    <>
+      <div className={stripClassName}>
+        {members.length ? members.map((member, index) => {
+          const isOpen = openAiId === member.aiId;
+          const committedThinkingMode = getSeatThinkingMode(member);
+          const thinkingMode = committedThinkingMode;
+          const visualProfile = getSeatAdapterVisualProfile(thinkingMode);
+          const vitalStyle = vitalSigns ? getSeatVitalStyle(member, index, visualProfile) : undefined;
+          const modelBadge = !presentationOnly ? getAiModelVersionBadge(member) : null;
+          const wrapClassName = [
+            "ai-seat-wrap",
+            isOpen ? "is-focused" : "",
+            canReveal && openAiId != null && !isOpen ? "is-muted" : ""
+          ].filter(Boolean).join(" ");
+          return (
+            <div
+              key={member.aiId}
+              className={wrapClassName}
               data-seat-rhythm={visualProfile.rhythm}
-              data-seat-flow={visualProfile.flow}
               style={vitalStyle}
+              onMouseEnter={canReveal ? (event) => open(member, event) : undefined}
+              onMouseLeave={canReveal ? queueClose : undefined}
+              onFocus={canReveal ? (event) => open(member, event) : undefined}
+              onBlur={canReveal ? handleSeatBlur : undefined}
             >
-              <img src={getAiAvatarUrl(member)} alt="" />
-            </button>
-            <AnimatePresence>
-              {canOpen && isOpen ? (
-                <motion.div
-                  className="ai-seat-popover"
-                  initial={{ opacity: 0, y: -4, scale: 0.99 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -3, scale: 0.99 }}
-                  transition={{ duration: 0.14, ease: EASE }}
-                  onMouseEnter={() => window.clearTimeout(timerRef.current)}
-                  onMouseLeave={queueClose}
-                  aria-label={`${getAiMemberName(member)} 席位设置`}
-                >
-                  <div className="ai-seat-popover-head">
-                    <AiIdentity member={member} members={members} />
-                    <button type="button" onClick={() => removeMember(member)} disabled={!canEdit || pending}>
-                      移除
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    className="ai-seat-thinking-label"
-                    onClick={() => setThinkingOpenAiId((current) => current === member.aiId ? null : member.aiId)}
-                    disabled={!canEdit || pending}
-                  >
-                    {getThinkingModeLabel(member)}
-                  </button>
-                  <AnimatePresence>
-                    {thinkingOpenAiId === member.aiId ? (
-                      <motion.div
-                        className="ai-seat-thinking-panel"
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: "auto" }}
-                        exit={{ opacity: 0, height: 0 }}
-                        transition={{ duration: 0.16, ease: EASE }}
-                      >
-                        <ThinkingPicker
-                          value={getSeatThinkingMode(member)}
-                          customText={member.customAdapterText || ""}
-                          disabled={!canEdit || pending}
-                          onSelect={(key, customText) => updateThinking(member, key, customText)}
-                        />
-                      </motion.div>
-                    ) : null}
-                  </AnimatePresence>
-                </motion.div>
+              <button
+                type="button"
+                className="ai-seat-pill"
+                aria-label={`${getAiMemberName(member)} · ${getModelDisplayName(member, getAiMemberName(member))} · ${getThinkingModeLabel(member)}`}
+                aria-disabled={presentationOnly || (readOnly && !hasExternalAction)}
+                tabIndex={canActivate ? 0 : -1}
+                onClick={hasExternalAction ? () => onSeatAction(member) : canOpen ? (event) => open(member, event) : undefined}
+                data-thinking-mode={thinkingMode}
+                data-seat-rhythm={visualProfile.rhythm}
+                data-seat-flow={visualProfile.flow}
+                style={vitalStyle}
+              >
+                <img src={getAiAvatarUrl(member)} alt="" />
+                {modelBadge ? (
+                  <span className="ai-seat-model-badge" aria-hidden="true">
+                    <span className="ai-seat-model-badge-full">{modelBadge.label}</span>
+                    <span className="ai-seat-model-badge-compact">{modelBadge.compactLabel || modelBadge.label}</span>
+                  </span>
+                ) : null}
+              </button>
+              {showLabels ? (
+                <span className="ai-seat-caption">
+                  <span>{getAiMemberName(member)}</span>
+                  <small>{getThinkingModeLabel(member)}</small>
+                </span>
               ) : null}
-            </AnimatePresence>
-          </div>
-        );
-      }) : (
-        <span className="ai-seat-empty">{emptyText}</span>
-      )}
-    </div>
+              <AnimatePresence>
+                {canOpen && isOpen ? (
+                  <motion.div
+                    className="ai-seat-popover"
+                    initial={{ opacity: 0, y: -4, scale: 0.99 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -3, scale: 0.99 }}
+                    transition={{ duration: 0.14, ease: EASE }}
+                    onMouseEnter={() => window.clearTimeout(timerRef.current)}
+                    onMouseLeave={queueClose}
+                    aria-label={`${getAiMemberName(member)} 席位设置`}
+                  >
+                    <div className="ai-seat-popover-head">
+                      <AiIdentity member={member} members={members} />
+                      <button type="button" onClick={() => removeMember(member)} disabled={!canEdit || pending}>
+                        移除
+                      </button>
+                    </div>
+                    <div className="ai-seat-popover-summary">
+                      {getModelDisplayName(member, getAiMemberName(member))} · {getThinkingModeLabel(member)}
+                    </div>
+                    <button
+                      type="button"
+                      className="ai-seat-thinking-label"
+                      onClick={() => setThinkingOpenAiId((current) => current === member.aiId ? null : member.aiId)}
+                      disabled={!canEdit || pending}
+                    >
+                      {getThinkingModeLabel(member)}
+                    </button>
+                    <AnimatePresence>
+                      {thinkingOpenAiId === member.aiId ? (
+                        <motion.div
+                          className="ai-seat-thinking-panel"
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: "auto" }}
+                          exit={{ opacity: 0, height: 0 }}
+                          transition={{ duration: 0.16, ease: EASE }}
+                        >
+                          <ThinkingPicker
+                            value={getSeatThinkingMode(member)}
+                            customText={member.customAdapterText || ""}
+                            disabled={!canEdit || pending}
+                            onSelect={(key, customText) => updateThinking(member, key, customText)}
+                          />
+                        </motion.div>
+                      ) : null}
+                    </AnimatePresence>
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+            </div>
+          );
+        }) : (
+          <span className="ai-seat-empty">{emptyText}</span>
+        )}
+      </div>
+      {canShowSummary && typeof document !== "undefined" ? createPortal(
+        <AnimatePresence>
+          {hoverMember && hoverSummary ? (
+            <motion.div
+              className={`ai-seat-hover-card is-${hoverCard.placement}`}
+              style={{ left: hoverCard.left, top: hoverCard.top, width: hoverCard.width }}
+              initial={{ opacity: 0, y: hoverCard.placement === "top" ? -2 : 2, scale: 0.985 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: hoverCard.placement === "top" ? -2 : 2, scale: 0.985 }}
+              transition={{ duration: 0.13, ease: EASE }}
+              onMouseEnter={() => window.clearTimeout(timerRef.current)}
+              onMouseLeave={queueClose}
+            >
+              <span>{hoverSummary.model}</span>
+              <small>· {hoverSummary.thinking}</small>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>,
+        document.body
+      ) : null}
+    </>
   );
 }
 function AiRosterList({

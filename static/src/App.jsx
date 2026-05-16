@@ -124,6 +124,31 @@ function normalizeOptionalCount(value) {
   const numericValue = Number(value);
   return Number.isSafeInteger(numericValue) && numericValue >= 0 ? numericValue : null;
 }
+function normalizeTimestampMs(value) {
+  if (value == null || value === "") return 0;
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value < 10_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const trimmedValue = value.trim();
+    if (/^\d+$/.test(trimmedValue)) {
+      const numericValue = Number(trimmedValue);
+      if (Number.isFinite(numericValue) && numericValue > 0) {
+        return numericValue < 10_000_000_000 ? numericValue * 1000 : numericValue;
+      }
+    }
+    const parsedValue = Date.parse(trimmedValue);
+    return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : 0;
+  }
+  return 0;
+}
+function normalizePreviewText(value) {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (value && typeof value === "object") {
+    return normalizePreviewText(value.text ?? value.content ?? value.message ?? value.preview);
+  }
+  return "";
+}
 function normalizeConversationRecord(conversation) {
   const id = normalizeConversationId(conversation?.id ?? conversation?.conversation_id ?? conversation?.conversationId);
   const name = typeof conversation?.title === "string" && conversation.title.trim()
@@ -140,8 +165,33 @@ function normalizeConversationRecord(conversation) {
     conversation?.ownerId
   );
   const isMain = conversation?.is_main === true || conversation?.isMain === true || Number(conversation?.is_main ?? conversation?.isMain) === 1;
-  const createdAtMs = normalizeOptionalId(conversation?.created_at_ms ?? conversation?.createdAtMs ?? conversation?.created_at ?? conversation?.createdAt);
-  return { id, name, createdBy, isMain, createdAtMs };
+  const createdAtMs = normalizeTimestampMs(conversation?.created_at_ms ?? conversation?.createdAtMs ?? conversation?.created_at ?? conversation?.createdAt);
+  const updatedAtMs = normalizeTimestampMs(conversation?.updated_at_ms ?? conversation?.updatedAtMs ?? conversation?.updated_at ?? conversation?.updatedAt);
+  const lastMessageAtMs = normalizeTimestampMs(
+    conversation?.last_message_at_ms ??
+    conversation?.lastMessageAtMs ??
+    conversation?.last_message_at ??
+    conversation?.lastMessageAt ??
+    conversation?.last_message?.created_at_ms ??
+    conversation?.lastMessage?.createdAtMs ??
+    conversation?.last_message?.created_at ??
+    conversation?.lastMessage?.createdAt
+  );
+  const lastActivityAtMs = normalizeTimestampMs(
+    conversation?.last_activity_at_ms ??
+    conversation?.lastActivityAtMs ??
+    conversation?.last_activity_at ??
+    conversation?.lastActivityAt
+  ) || lastMessageAtMs || updatedAtMs || createdAtMs;
+  const lastMessagePreview = normalizePreviewText(
+    conversation?.last_message_preview ??
+    conversation?.lastMessagePreview ??
+    conversation?.last_message ??
+    conversation?.lastMessage ??
+    conversation?.preview
+  );
+  const unreadCount = normalizeOptionalCount(conversation?.unread_count ?? conversation?.unreadCount);
+  return { id, name, createdBy, isMain, createdAtMs, updatedAtMs, lastActivityAtMs, lastMessagePreview, unreadCount };
 }
 function persistPersonalConversationId(conversationId) {
   const normalizedId = normalizeConversationId(conversationId);
@@ -445,6 +495,7 @@ export default function App() {
   const activeBackendRoomId = activeRoom.roomId || personalRoom.roomId || 0;
   const activeConversation = activeRoomConversations.find((item) => item.id === activeConversationId) || null;
   const activeConversationIsMain = isMainConversation(activeRoom, activeConversationId);
+  const isHomeDashboardActive = activeRoom?.id === PERSONAL_ROOM_ID && activeConversationIsMain;
   const activeRoomAiMembers = roomAiMembers[activeBackendRoomId] || [];
   const hasKnownConversationAiMembers = Object.prototype.hasOwnProperty.call(conversationAiMembers, activeConversationId);
   const activeConversationAiMembers = !activeConversationIsMain && hasKnownConversationAiMembers ? conversationAiMembers[activeConversationId] : [];
@@ -454,6 +505,7 @@ export default function App() {
   const activeConversationModelLabel = getAiTeamLabel(activeEffectiveAiMembers);
   const isConversationModelLoading = Boolean(authedNickname && activeConversationId && !activeConversationIsMain && !hasKnownConversationAiMembers);
   const assistantExpected = activeEffectiveAiMembers.length > 0;
+  const roomAiPrefetchKey = rooms.map((room) => room.roomId).filter(Boolean).join(",");
   const shouldKeepSocketEnabled =
     Boolean(authedNickname) && (sceneTransition?.kind === "login" || sceneTransition?.kind === "logout" || (appStage === "chat" && sceneTransition?.kind !== "logout"));
 
@@ -735,6 +787,38 @@ export default function App() {
   }, [authedNickname, activeBackendRoomId]);
 
   useEffect(() => {
+    if (!authedNickname || !isHomeDashboardActive || !roomAiPrefetchKey) return undefined;
+    const missingRoomIds = rooms
+      .map((item) => item.roomId)
+      .filter((roomId) => roomId && !Object.prototype.hasOwnProperty.call(roomAiMembers, roomId));
+    if (!missingRoomIds.length) return undefined;
+
+    const controller = new AbortController();
+    Promise.all(
+      missingRoomIds.map((roomId) =>
+        fetchRoomAiMembers(roomId, controller.signal)
+          .then((members) => [roomId, members])
+          .catch((error) => {
+            if (error?.name === "AbortError") return null;
+            return [roomId, []];
+          })
+      )
+    ).then((entries) => {
+      if (controller.signal.aborted) return;
+      setRoomAiMembers((current) => {
+        const next = { ...current };
+        entries.forEach((entry) => {
+          if (!entry) return;
+          const [roomId, members] = entry;
+          next[roomId] = members;
+        });
+        return next;
+      });
+    });
+    return () => controller.abort();
+  }, [authedNickname, isHomeDashboardActive, roomAiPrefetchKey, roomAiMembers]);
+
+  useEffect(() => {
     if (!authedNickname || !activeConversationId) return undefined;
     if (activeConversationIsMain) {
       setAiConfigError((current) => ({ ...current, conversation: "" }));
@@ -959,6 +1043,27 @@ export default function App() {
     clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
   }
 
+  function handleNavigateConversation(roomId, conversationId) {
+    const nextRoom = rooms.find((r) => r.id === roomId);
+    if (!nextRoom || !nextRoom.isAvailable) return;
+    const nextConversationId = normalizeConversationId(conversationId) || nextRoom.conversationId;
+    if (!nextConversationId) return;
+    if (nextRoom.id === activeRoom.id && nextConversationId === activeConversationId) return;
+    const nextConversation = (nextRoom.conversations || []).find((conversation) => conversation.id === nextConversationId);
+    beginRoomTransition({
+      kind: nextRoom.id === activeRoom.id ? "conversation" : "room",
+      fromLabel: activeRoom.name,
+      toLabel: nextConversation?.name || nextRoom.name,
+      tone: nextRoom.tone || "personal"
+    });
+    if (nextRoom.roomId) setCookieValue("room_id", nextRoom.roomId);
+    setCookieValue("conversation_id", nextConversationId);
+    setActiveRoomId(nextRoom.id);
+    setConversationOverride(nextConversationId !== nextRoom.conversationId ? { roomId: nextRoom.id, conversationId: nextConversationId } : null);
+    setDraftConversation(null);
+    clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
+  }
+
   async function handleDeleteConversation(conversationId) {
     if (!conversationId) return;
     try {
@@ -1141,6 +1246,7 @@ export default function App() {
               onMessageFlightComplete={completeMessageFlight} onLogout={handleLogout}
               onDeleteMessage={handleDeleteMessage}
               rooms={rooms} activeRoomId={activeRoom.id} onRoomSelect={handleRoomSelect}
+              roomAiMembersByRoomId={roomAiMembers}
               roomName={activeRoom.name}
               roomHint={activeRoom.description}
               room={activeRoom}
@@ -1159,6 +1265,7 @@ export default function App() {
               assistantState={assistantState}
               roomConversations={activeRoomConversations}
               onConversationSelect={handleConversationSelect}
+              onNavigateConversation={handleNavigateConversation}
               draftConversation={draftConversation}
               onDraftAiMembersChange={handleDraftAiMembersChange}
               onDeleteConversation={handleDeleteConversation}
