@@ -315,7 +315,7 @@ export function decorateMessages(messages) {
     const currentTime = getTimestampValue(message.timestamp);
     const previousTime = prev ? getTimestampValue(prev.timestamp) : null;
     const diffMinutes = previousTime == null ? Infinity : Math.abs(currentTime - previousTime) / 60000;
-    const groupedWithPrev = Boolean(prev && prev.nickname === message.nickname && diffMinutes <= 2);
+    const groupedWithPrev = Boolean(prev && getMessageAuthorGroupKey(prev) === getMessageAuthorGroupKey(message) && diffMinutes <= 2);
     const showAuthor = !groupedWithPrev;
     const showDivider = index === 0 || diffMinutes > 5;
 
@@ -328,6 +328,16 @@ export function decorateMessages(messages) {
       dividerLabel: formatDividerTime(message.timestamp, index === 0)
     };
   });
+}
+
+function getMessageAuthorGroupKey(message) {
+  if (message?.isAI) {
+    const model = normalizeText(message.model).toLowerCase();
+    const provider = normalizeText(message.provider).toLowerCase();
+    if (model) return `ai:${model}`;
+    if (provider) return `ai-provider:${provider}`;
+  }
+  return `user:${normalizeText(message?.nickname)}`;
 }
 
 export function deleteSessionCookie() {

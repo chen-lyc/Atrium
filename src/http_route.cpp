@@ -773,7 +773,7 @@ RouteResult handle_create_room(RequestContext &ctx) {
         ctx.conn.outbuf += to_string(body.size());
         ctx.conn.outbuf += "\r\n\r\n";
         ctx.conn.outbuf += body;
-        return {RouteStatus::Success, MembershipAction::Join, room_id, std::vector<uint64_t>{ctx.user_id}};
+        return {RouteStatus::Success};
     } catch (const exception &e) {
         LOG_WARN("bad json: %s", e.what());
         return {RouteStatus::BadRequest};
@@ -1190,7 +1190,6 @@ RouteResult handle_respond_room_invitation(RequestContext &ctx) {
             return {RouteStatus::BadRequest};
         }
 
-        ret = accept_room_invitation(room_id, ctx.user_id, invitation_id);
         ret = accept_room_invitation(room_id, ctx.user_id, invitation_id);
         if (ret != MysqlPool::QueryResult::Success) {
             return {RouteStatus::ServerError};
@@ -1854,7 +1853,7 @@ RouteResult handle_rename_conversation(RequestContext &ctx) {
         "Content-Length: ";
     ctx.conn.outbuf += to_string(body.size());
     ctx.conn.outbuf += "\r\n\r\n";
-    if (ctx.req.method == Method::GET) ctx.conn.outbuf += body;
+    ctx.conn.outbuf += body;
     return {RouteStatus::Success};
 }
 RouteResult handle_delete_message(RequestContext &ctx) {

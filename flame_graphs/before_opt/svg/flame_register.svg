@@ -1,0 +1,2210 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="838" onload="init(evt)" viewBox="0 0 1200 838" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="838.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="821" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="821" > </text>
+<g id="frames">
+<g >
+<title>sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="1189.6" y="725" width="0.2" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="1192.62" y="735.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char*&gt; (10,101,010 samples, 0.02%)</title><rect x="288.1" y="261" width="0.2" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="291.13" y="271.5" ></text>
+</g>
+<g >
+<title>std::__do_visit&lt;void, std::__detail::__variant::_Variant_storage&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="287.9" y="309" width="0.2" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="290.95" y="319.5" ></text>
+</g>
+<g >
+<title>sock_def_readable (50,505,050 samples, 0.08%)</title><rect x="1059.8" y="85" width="0.9" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="1062.79" y="95.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Variant_storage&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="287.9" y="325" width="0.2" height="15.0" fill="rgb(214,41,9)" rx="2" ry="2" />
+<text  x="290.95" y="335.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (10,101,010 samples, 0.02%)</title><rect x="1057.7" y="645" width="0.2" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1060.72" y="655.5" ></text>
+</g>
+<g >
+<title>kmem_cache_free (10,101,010 samples, 0.02%)</title><rect x="43.9" y="597" width="0.2" height="15.0" fill="rgb(254,225,53)" rx="2" ry="2" />
+<text  x="46.92" y="607.5" ></text>
+</g>
+<g >
+<title>do_softirq (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="341" width="0.2" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="1059.02" y="351.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Variant_storage&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="245" width="0.2" height="15.0" fill="rgb(214,41,9)" rx="2" ry="2" />
+<text  x="291.32" y="255.5" ></text>
+</g>
+<g >
+<title>sql::mysql::NativeAPI::MySQL_NativeStatementWrapper::~MySQL_NativeStatementWrapper (20,202,020 samples, 0.03%)</title><rect x="1057.5" y="709" width="0.4" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1060.53" y="719.5" ></text>
+</g>
+<g >
+<title>HMAC_CTX_copy (494,949,490 samples, 0.78%)</title><rect x="960.3" y="725" width="9.2" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="963.29" y="735.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (10,101,010 samples, 0.02%)</title><rect x="43.9" y="725" width="0.2" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="46.92" y="735.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (10,101,010 samples, 0.02%)</title><rect x="1189.8" y="677" width="0.2" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1192.81" y="687.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Variant_storage&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="287.9" y="341" width="0.2" height="15.0" fill="rgb(214,41,9)" rx="2" ry="2" />
+<text  x="290.95" y="351.5" ></text>
+</g>
+<g >
+<title>dev_hard_start_xmit (10,101,010 samples, 0.02%)</title><rect x="1060.9" y="309" width="0.2" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="1063.92" y="319.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (10,101,010 samples, 0.02%)</title><rect x="1057.7" y="629" width="0.2" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1060.72" y="639.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (20,202,020 samples, 0.03%)</title><rect x="1057.2" y="629" width="0.3" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1060.15" y="639.5" ></text>
+</g>
+<g >
+<title>http::handle_register (80,808,080 samples, 0.13%)</title><rect x="287.2" y="565" width="1.5" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="290.19" y="575.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_loop (10,101,010 samples, 0.02%)</title><rect x="1038.7" y="645" width="0.2" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="1041.68" y="655.5" ></text>
+</g>
+<g >
+<title>handle_softirqs (10,101,010 samples, 0.02%)</title><rect x="211.6" y="693" width="0.2" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="214.63" y="703.5" ></text>
+</g>
+<g >
+<title>lock_sock_nested (10,101,010 samples, 0.02%)</title><rect x="1055.3" y="549" width="0.2" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="1058.27" y="559.5" ></text>
+</g>
+<g >
+<title>do_register (60,606,060 samples, 0.10%)</title><rect x="287.4" y="453" width="1.1" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="290.38" y="463.5" ></text>
+</g>
+<g >
+<title>std::__invoke_r&lt;http::RouteResult, http::RouteResult  (80,808,080 samples, 0.13%)</title><rect x="287.2" y="597" width="1.5" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="290.19" y="607.5" ></text>
+</g>
+<g >
+<title>delayed_put_pid (10,101,010 samples, 0.02%)</title><rect x="43.9" y="629" width="0.2" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="46.92" y="639.5" ></text>
+</g>
+<g >
+<title>ip_output (70,707,070 samples, 0.11%)</title><rect x="1059.8" y="421" width="1.3" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1062.79" y="431.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_loop (20,202,020 samples, 0.03%)</title><rect x="1058.3" y="677" width="0.4" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="1061.28" y="687.5" ></text>
+</g>
+<g >
+<title>rebalance_domains (10,101,010 samples, 0.02%)</title><rect x="285.3" y="661" width="0.2" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="288.31" y="671.5" ></text>
+</g>
+<g >
+<title>dev_queue_xmit (10,101,010 samples, 0.02%)</title><rect x="1060.9" y="341" width="0.2" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="1063.92" y="351.5" ></text>
+</g>
+<g >
+<title>rcu_core_si (10,101,010 samples, 0.02%)</title><rect x="43.9" y="677" width="0.2" height="15.0" fill="rgb(237,150,36)" rx="2" ry="2" />
+<text  x="46.92" y="687.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (161,616,160 samples, 0.26%)</title><rect x="1058.1" y="725" width="3.0" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="1061.09" y="735.5" ></text>
+</g>
+<g >
+<title>process_backlog (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="261" width="0.2" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="1059.02" y="271.5" ></text>
+</g>
+<g >
+<title>syscall_exit_to_user_mode (20,202,020 samples, 0.03%)</title><rect x="1058.3" y="693" width="0.4" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="1061.28" y="703.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Move_ctor_base&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.1" y="357" width="0.2" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="291.13" y="367.5" ></text>
+</g>
+<g >
+<title>mysql_stmt_prepare (40,404,040 samples, 0.06%)</title><rect x="1056.8" y="693" width="0.7" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="1059.77" y="703.5" ></text>
+</g>
+<g >
+<title>ip_local_deliver_finish (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="181" width="0.2" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="1059.02" y="191.5" ></text>
+</g>
+<g >
+<title>tcp_sendmsg_locked (10,101,010 samples, 0.02%)</title><rect x="286.6" y="485" width="0.2" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="289.63" y="495.5" ></text>
+</g>
+<g >
+<title>apparmor_socket_sendmsg (10,101,010 samples, 0.02%)</title><rect x="1058.7" y="581" width="0.1" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="1061.66" y="591.5" ></text>
+</g>
+<g >
+<title>std::_Destroy_aux&lt;false&gt;::__destroy&lt;std::variant&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="389" width="0.2" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="291.32" y="399.5" ></text>
+</g>
+<g >
+<title>__run_timers.part.0 (10,101,010 samples, 0.02%)</title><rect x="835.7" y="645" width="0.2" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="838.74" y="655.5" ></text>
+</g>
+<g >
+<title>new_sync_write (131,313,130 samples, 0.21%)</title><rect x="1058.7" y="629" width="2.4" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="1061.66" y="639.5" ></text>
+</g>
+<g >
+<title>inet_recvmsg (60,606,060 samples, 0.10%)</title><rect x="1055.1" y="581" width="1.1" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="1058.08" y="591.5" ></text>
+</g>
+<g >
+<title>irqentry_exit_to_user_mode (10,101,010 samples, 0.02%)</title><rect x="285.7" y="693" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="288.69" y="703.5" ></text>
+</g>
+<g >
+<title>__netif_receive_skb (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="245" width="0.2" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1059.02" y="255.5" ></text>
+</g>
+<g >
+<title>vfs_read (70,707,070 samples, 0.11%)</title><rect x="1055.1" y="645" width="1.3" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="1058.08" y="655.5" ></text>
+</g>
+<g >
+<title>neigh_hh_output (10,101,010 samples, 0.02%)</title><rect x="1060.9" y="357" width="0.2" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="1063.92" y="367.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (10,101,010 samples, 0.02%)</title><rect x="286.6" y="597" width="0.2" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="289.63" y="607.5" ></text>
+</g>
+<g >
+<title>std::__invoke_impl&lt;void, std::__detail::__variant::_Variant_storage&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="287.9" y="261" width="0.2" height="15.0" fill="rgb(237,151,36)" rx="2" ry="2" />
+<text  x="290.95" y="271.5" ></text>
+</g>
+<g >
+<title>run_timer_softirq (10,101,010 samples, 0.02%)</title><rect x="835.7" y="661" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="838.74" y="671.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="1038.7" y="709" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1041.68" y="719.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (20,202,020 samples, 0.03%)</title><rect x="1057.2" y="613" width="0.3" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1060.15" y="623.5" ></text>
+</g>
+<g >
+<title>std::__invoke_impl&lt;MysqlPool::QueryResult, do_register (60,606,060 samples, 0.10%)</title><rect x="287.4" y="469" width="1.1" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="290.38" y="479.5" ></text>
+</g>
+<g >
+<title>std::variant&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (20,202,020 samples, 0.03%)</title><rect x="287.9" y="437" width="0.4" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="290.95" y="447.5" ></text>
+</g>
+<g >
+<title>sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="529.9" y="709" width="0.2" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="532.90" y="719.5" ></text>
+</g>
+<g >
+<title>rcu_do_batch (10,101,010 samples, 0.02%)</title><rect x="43.9" y="645" width="0.2" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="46.92" y="655.5" ></text>
+</g>
+<g >
+<title>EVP_MD_CTX_clear_flags (282,828,280 samples, 0.45%)</title><rect x="850.8" y="725" width="5.3" height="15.0" fill="rgb(215,50,12)" rx="2" ry="2" />
+<text  x="853.81" y="735.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Move_assign_base&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.1" y="389" width="0.2" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="291.13" y="399.5" ></text>
+</g>
+<g >
+<title>tcp_sendmsg_locked (111,111,110 samples, 0.18%)</title><rect x="1059.0" y="549" width="2.1" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="1062.04" y="559.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Copy_assign_base&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="293" width="0.2" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="291.32" y="303.5" ></text>
+</g>
+<g >
+<title>tcp_send_mss (10,101,010 samples, 0.02%)</title><rect x="286.6" y="469" width="0.2" height="15.0" fill="rgb(231,124,29)" rx="2" ry="2" />
+<text  x="289.63" y="479.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="44.1" y="741" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="47.11" y="751.5" ></text>
+</g>
+<g >
+<title>__sock_sendmsg (131,313,130 samples, 0.21%)</title><rect x="1058.7" y="597" width="2.4" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="1061.66" y="607.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (10,101,010 samples, 0.02%)</title><rect x="835.5" y="725" width="0.2" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="838.55" y="735.5" ></text>
+</g>
+<g >
+<title>HMAC_Final (757,575,750 samples, 1.20%)</title><rect x="330.7" y="741" width="14.2" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="333.72" y="751.5" ></text>
+</g>
+<g >
+<title>mysql_autocommit (10,101,010 samples, 0.02%)</title><rect x="1189.8" y="741" width="0.2" height="15.0" fill="rgb(252,217,52)" rx="2" ry="2" />
+<text  x="1192.81" y="751.5" ></text>
+</g>
+<g >
+<title>__softirqentry_text_start (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="325" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1059.02" y="335.5" ></text>
+</g>
+<g >
+<title>__tcp_push_pending_frames (90,909,090 samples, 0.14%)</title><rect x="1059.4" y="517" width="1.7" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="1062.41" y="527.5" ></text>
+</g>
+<g >
+<title>sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="194.3" y="725" width="0.2" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="197.29" y="735.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_loop (20,202,020 samples, 0.03%)</title><rect x="447.0" y="661" width="0.4" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="449.99" y="671.5" ></text>
+</g>
+<g >
+<title>std::__uniq_ptr_impl&lt;sql::PreparedStatement, std::default_delete&lt;sql::PreparedStatement&gt; &gt;::__uniq_ptr_impl (10,101,010 samples, 0.02%)</title><rect x="287.4" y="373" width="0.2" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="290.38" y="383.5" ></text>
+</g>
+<g >
+<title>sock_read_iter (60,606,060 samples, 0.10%)</title><rect x="1055.1" y="613" width="1.1" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="1058.08" y="623.5" ></text>
+</g>
+<g >
+<title>x64_sys_call (131,313,130 samples, 0.21%)</title><rect x="1058.7" y="693" width="2.4" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1061.66" y="703.5" ></text>
+</g>
+<g >
+<title>end_bio_bh_io_sync (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="453" width="0.2" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="1061.47" y="463.5" ></text>
+</g>
+<g >
+<title>EVP_MD_CTX_copy_ex (232,323,230 samples, 0.37%)</title><rect x="320.5" y="741" width="4.4" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="323.55" y="751.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (10,101,010 samples, 0.02%)</title><rect x="320.4" y="693" width="0.1" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="323.36" y="703.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (10,101,010 samples, 0.02%)</title><rect x="43.9" y="741" width="0.2" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="46.92" y="751.5" ></text>
+</g>
+<g >
+<title>EVP_DigestFinal_ex (494,949,490 samples, 0.78%)</title><rect x="71.8" y="757" width="9.2" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="74.81" y="767.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Copy_ctor_base&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.1" y="341" width="0.2" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="291.13" y="351.5" ></text>
+</g>
+<g >
+<title>__run_timers.part.0 (10,101,010 samples, 0.02%)</title><rect x="211.6" y="661" width="0.2" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="214.63" y="671.5" ></text>
+</g>
+<g >
+<title>__schedule (10,101,010 samples, 0.02%)</title><rect x="447.2" y="629" width="0.2" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="450.18" y="639.5" ></text>
+</g>
+<g >
+<title>memcg_slab_free_hook (10,101,010 samples, 0.02%)</title><rect x="446.8" y="581" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="449.80" y="591.5" ></text>
+</g>
+<g >
+<title>OPENSSL_cleanse (5,797,979,740 samples, 9.17%)</title><rect x="86.3" y="757" width="108.2" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="89.32" y="767.5" >OPENSSL_cleanse</text>
+</g>
+<g >
+<title>schedule (10,101,010 samples, 0.02%)</title><rect x="447.2" y="645" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="450.18" y="655.5" ></text>
+</g>
+<g >
+<title>run_timer_softirq (10,101,010 samples, 0.02%)</title><rect x="285.5" y="677" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="288.50" y="687.5" ></text>
+</g>
+<g >
+<title>std::_Any_data::_M_access (10,101,010 samples, 0.02%)</title><rect x="288.5" y="485" width="0.2" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="291.51" y="495.5" ></text>
+</g>
+<g >
+<title>file_free_rcu (10,101,010 samples, 0.02%)</title><rect x="446.8" y="613" width="0.2" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="449.80" y="623.5" ></text>
+</g>
+<g >
+<title>irqentry_exit (10,101,010 samples, 0.02%)</title><rect x="1189.6" y="709" width="0.2" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="1192.62" y="719.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (10,101,010 samples, 0.02%)</title><rect x="1057.5" y="645" width="0.2" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1060.53" y="655.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (10,101,010 samples, 0.02%)</title><rect x="1056.6" y="645" width="0.2" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1059.59" y="655.5" ></text>
+</g>
+<g >
+<title>blk_update_request (10,101,010 samples, 0.02%)</title><rect x="320.4" y="597" width="0.1" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="323.36" y="607.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::__gen_vtable_impl&lt;std::__detail::__variant::_Multi_array&lt;void  (10,101,010 samples, 0.02%)</title><rect x="287.9" y="293" width="0.2" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="290.95" y="303.5" ></text>
+</g>
+<g >
+<title>sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="44.1" y="725" width="0.2" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="47.11" y="735.5" ></text>
+</g>
+<g >
+<title>rcu_cblist_dequeue (10,101,010 samples, 0.02%)</title><rect x="194.1" y="629" width="0.2" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="197.10" y="639.5" ></text>
+</g>
+<g >
+<title>std::__addressof&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; (10,101,010 samples, 0.02%)</title><rect x="287.9" y="245" width="0.2" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="290.95" y="255.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (10,101,010 samples, 0.02%)</title><rect x="43.9" y="709" width="0.2" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="46.92" y="719.5" ></text>
+</g>
+<g >
+<title>SHA256_Update (1,464,646,450 samples, 2.32%)</title><rect x="447.4" y="741" width="27.3" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="450.37" y="751.5" >S..</text>
+</g>
+<g >
+<title>tcp_v4_do_rcv (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="133" width="1.1" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="1062.79" y="143.5" ></text>
+</g>
+<g >
+<title>EVP_MD_get_size (151,515,150 samples, 0.24%)</title><rect x="83.5" y="757" width="2.8" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="86.49" y="767.5" ></text>
+</g>
+<g >
+<title>blk_complete_reqs (10,101,010 samples, 0.02%)</title><rect x="320.4" y="645" width="0.1" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="323.36" y="655.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_loop (10,101,010 samples, 0.02%)</title><rect x="194.3" y="677" width="0.2" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="197.29" y="687.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Copy_ctor_base&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="287.9" y="357" width="0.2" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="290.95" y="367.5" ></text>
+</g>
+<g >
+<title>tcp_filter (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="133" width="0.2" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="1059.02" y="143.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (40,404,040 samples, 0.06%)</title><rect x="1056.8" y="661" width="0.7" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1059.77" y="671.5" ></text>
+</g>
+<g >
+<title>MysqlPool::executeRaw (10,101,010 samples, 0.02%)</title><rect x="287.4" y="421" width="0.2" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="290.38" y="431.5" ></text>
+</g>
+<g >
+<title>common_interrupt (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="597" width="0.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1061.47" y="607.5" ></text>
+</g>
+<g >
+<title>CRYPTO_clear_free (1,838,383,820 samples, 2.91%)</title><rect x="10.0" y="757" width="34.3" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="13.00" y="767.5" >CR..</text>
+</g>
+<g >
+<title>asm_sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="194.3" y="741" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="197.29" y="751.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::basic_string (10,101,010 samples, 0.02%)</title><rect x="286.4" y="613" width="0.2" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="289.44" y="623.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_loop (10,101,010 samples, 0.02%)</title><rect x="44.1" y="677" width="0.2" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="47.11" y="687.5" ></text>
+</g>
+<g >
+<title>irqentry_exit_to_user_mode (10,101,010 samples, 0.02%)</title><rect x="1038.7" y="661" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1041.68" y="671.5" ></text>
+</g>
+<g >
+<title>irqentry_exit (20,202,020 samples, 0.03%)</title><rect x="835.9" y="693" width="0.4" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="838.92" y="703.5" ></text>
+</g>
+<g >
+<title>OSSL_PARAM_locate (10,101,010 samples, 0.02%)</title><rect x="357.7" y="741" width="0.2" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="360.67" y="751.5" ></text>
+</g>
+<g >
+<title>server.out (63,252,524,620 samples, 100.00%)</title><rect x="10.0" y="773" width="1180.0" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="13.00" y="783.5" >server.out</text>
+</g>
+<g >
+<title>sk_stream_alloc_skb (20,202,020 samples, 0.03%)</title><rect x="1059.0" y="533" width="0.4" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="1062.04" y="543.5" ></text>
+</g>
+<g >
+<title>ip_output (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="421" width="0.2" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1059.02" y="431.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="581" width="0.2" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="1061.47" y="591.5" ></text>
+</g>
+<g >
+<title>__local_bh_enable_ip (10,101,010 samples, 0.02%)</title><rect x="1055.3" y="533" width="0.2" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="1058.27" y="543.5" ></text>
+</g>
+<g >
+<title>std::__uniq_ptr_data&lt;sql::PreparedStatement, std::default_delete&lt;sql::PreparedStatement&gt;, true, true&gt;::__uniq_ptr_impl (10,101,010 samples, 0.02%)</title><rect x="287.4" y="389" width="0.2" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="290.38" y="399.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (20,202,020 samples, 0.03%)</title><rect x="1057.2" y="645" width="0.3" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1060.15" y="655.5" ></text>
+</g>
+<g >
+<title>sk_filter_trim_cap (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="117" width="0.2" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="1059.02" y="127.5" ></text>
+</g>
+<g >
+<title>irqentry_exit_to_user_mode (10,101,010 samples, 0.02%)</title><rect x="474.5" y="677" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="477.50" y="687.5" ></text>
+</g>
+<g >
+<title>rcu_core (10,101,010 samples, 0.02%)</title><rect x="43.9" y="661" width="0.2" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="46.92" y="671.5" ></text>
+</g>
+<g >
+<title>blk_done_softirq (10,101,010 samples, 0.02%)</title><rect x="320.4" y="661" width="0.1" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="323.36" y="671.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (20,202,020 samples, 0.03%)</title><rect x="836.3" y="741" width="0.4" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="839.30" y="751.5" ></text>
+</g>
+<g >
+<title>__sk_dst_check (10,101,010 samples, 0.02%)</title><rect x="1055.8" y="437" width="0.2" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="1058.83" y="447.5" ></text>
+</g>
+<g >
+<title>ip_protocol_deliver_rcu (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="165" width="1.1" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="1062.79" y="175.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_loop (10,101,010 samples, 0.02%)</title><rect x="1131.0" y="677" width="0.2" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="1134.02" y="687.5" ></text>
+</g>
+<g >
+<title>sql::mysql::MySQL_Connection::setAutoCommit (10,101,010 samples, 0.02%)</title><rect x="1189.8" y="757" width="0.2" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="1192.81" y="767.5" ></text>
+</g>
+<g >
+<title>read (70,707,070 samples, 0.11%)</title><rect x="1055.1" y="741" width="1.3" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="1058.08" y="751.5" ></text>
+</g>
+<g >
+<title>__x64_sys_read (70,707,070 samples, 0.11%)</title><rect x="1055.1" y="677" width="1.3" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="1058.08" y="687.5" ></text>
+</g>
+<g >
+<title>__wake_up_sync_key (50,505,050 samples, 0.08%)</title><rect x="1059.8" y="69" width="0.9" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="1062.79" y="79.5" ></text>
+</g>
+<g >
+<title>__schedule (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="645" width="0.2" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="1061.47" y="655.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (10,101,010 samples, 0.02%)</title><rect x="194.1" y="741" width="0.2" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="197.10" y="751.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (10,101,010 samples, 0.02%)</title><rect x="194.1" y="725" width="0.2" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="197.10" y="735.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;int, std::pair&lt;int const, std::vector&lt;int, std::allocator&lt;int&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;int const, std::vector&lt;int, std::allocator&lt;int&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;int&gt;, std::hash&lt;int&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::~_Hashtable (10,101,010 samples, 0.02%)</title><rect x="287.0" y="629" width="0.2" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="290.00" y="639.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (3,707,070,670 samples, 5.86%)</title><rect x="969.7" y="725" width="69.2" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="972.72" y="735.5" >[libcry..</text>
+</g>
+<g >
+<title>__tcp_transmit_skb (90,909,090 samples, 0.14%)</title><rect x="1059.4" y="485" width="1.7" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="1062.41" y="495.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,202,020 samples, 0.03%)</title><rect x="1038.9" y="709" width="0.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1041.87" y="719.5" ></text>
+</g>
+<g >
+<title>ip_local_out (70,707,070 samples, 0.11%)</title><rect x="1059.8" y="437" width="1.3" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="1062.79" y="447.5" ></text>
+</g>
+<g >
+<title>ip_finish_output (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="405" width="0.2" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="1059.02" y="415.5" ></text>
+</g>
+<g >
+<title>ksys_read (70,707,070 samples, 0.11%)</title><rect x="1055.1" y="661" width="1.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1058.08" y="671.5" ></text>
+</g>
+<g >
+<title>ip_finish_output2 (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="373" width="0.2" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="1059.02" y="383.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (10,101,010 samples, 0.02%)</title><rect x="529.7" y="693" width="0.2" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="532.71" y="703.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Copy_ctor_base&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="261" width="0.2" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="291.32" y="271.5" ></text>
+</g>
+<g >
+<title>std::function&lt;http::RouteResult  (80,808,080 samples, 0.13%)</title><rect x="287.2" y="629" width="1.5" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="290.19" y="639.5" ></text>
+</g>
+<g >
+<title>__sys_sendto (10,101,010 samples, 0.02%)</title><rect x="286.6" y="549" width="0.2" height="15.0" fill="rgb(236,146,34)" rx="2" ry="2" />
+<text  x="289.63" y="559.5" ></text>
+</g>
+<g >
+<title>std::function&lt;MysqlPool::QueryResult  (10,101,010 samples, 0.02%)</title><rect x="288.5" y="533" width="0.2" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="291.51" y="543.5" ></text>
+</g>
+<g >
+<title>irqentry_exit (10,101,010 samples, 0.02%)</title><rect x="194.3" y="709" width="0.2" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="197.29" y="719.5" ></text>
+</g>
+<g >
+<title>ip_finish_output (70,707,070 samples, 0.11%)</title><rect x="1059.8" y="405" width="1.3" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="1062.79" y="415.5" ></text>
+</g>
+<g >
+<title>ip_queue_xmit (70,707,070 samples, 0.11%)</title><rect x="1059.8" y="469" width="1.3" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="1062.79" y="479.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (10,101,010 samples, 0.02%)</title><rect x="835.7" y="725" width="0.2" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="838.74" y="735.5" ></text>
+</g>
+<g >
+<title>asm_common_interrupt (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="613" width="0.2" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="1061.47" y="623.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_loop (10,101,010 samples, 0.02%)</title><rect x="1189.6" y="677" width="0.2" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="1192.62" y="687.5" ></text>
+</g>
+<g >
+<title>irqentry_exit (10,101,010 samples, 0.02%)</title><rect x="474.5" y="693" width="0.2" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="477.50" y="703.5" ></text>
+</g>
+<g >
+<title>asm_common_interrupt (10,101,010 samples, 0.02%)</title><rect x="529.7" y="725" width="0.2" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="532.71" y="735.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="850.4" y="709" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="853.43" y="719.5" ></text>
+</g>
+<g >
+<title>irqentry_exit_to_user_mode (10,101,010 samples, 0.02%)</title><rect x="44.1" y="693" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="47.11" y="703.5" ></text>
+</g>
+<g >
+<title>blk_mq_end_request (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="501" width="0.2" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="1061.47" y="511.5" ></text>
+</g>
+<g >
+<title>__ip_finish_output (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="389" width="0.2" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1059.02" y="399.5" ></text>
+</g>
+<g >
+<title>rcu_core (10,101,010 samples, 0.02%)</title><rect x="194.1" y="661" width="0.2" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="197.10" y="671.5" ></text>
+</g>
+<g >
+<title>tcp_push (10,101,010 samples, 0.02%)</title><rect x="1058.8" y="549" width="0.2" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="1061.85" y="559.5" ></text>
+</g>
+<g >
+<title>Reactor::loop (121,212,120 samples, 0.19%)</title><rect x="286.4" y="661" width="2.3" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="289.44" y="671.5" ></text>
+</g>
+<g >
+<title>__lock_text_start (10,101,010 samples, 0.02%)</title><rect x="285.5" y="581" width="0.2" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="288.50" y="591.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,969,696,940 samples, 4.69%)</title><rect x="474.7" y="741" width="55.4" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="477.69" y="751.5" >[libc..</text>
+</g>
+<g >
+<title>tcp_recvmsg_locked (40,404,040 samples, 0.06%)</title><rect x="1055.5" y="549" width="0.7" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="1058.46" y="559.5" ></text>
+</g>
+<g >
+<title>__run_timers.part.0 (10,101,010 samples, 0.02%)</title><rect x="285.5" y="661" width="0.2" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="288.50" y="671.5" ></text>
+</g>
+<g >
+<title>net_rx_action (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="293" width="1.1" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="1062.79" y="303.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_loop (20,202,020 samples, 0.03%)</title><rect x="835.9" y="661" width="0.4" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="838.92" y="671.5" ></text>
+</g>
+<g >
+<title>[libgcc_s.so.1] (10,101,010 samples, 0.02%)</title><rect x="1056.4" y="693" width="0.2" height="15.0" fill="rgb(244,179,43)" rx="2" ry="2" />
+<text  x="1059.40" y="703.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (10,101,010 samples, 0.02%)</title><rect x="1056.6" y="709" width="0.2" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1059.59" y="719.5" ></text>
+</g>
+<g >
+<title>HMAC_Update (101,010,100 samples, 0.16%)</title><rect x="344.9" y="741" width="1.8" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="347.85" y="751.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (10,101,010 samples, 0.02%)</title><rect x="1056.6" y="629" width="0.2" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1059.59" y="639.5" ></text>
+</g>
+<g >
+<title>ip_rcv (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="213" width="1.1" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="1062.79" y="223.5" ></text>
+</g>
+<g >
+<title>wake_up_process (10,101,010 samples, 0.02%)</title><rect x="285.5" y="613" width="0.2" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="288.50" y="623.5" ></text>
+</g>
+<g >
+<title>__ip_queue_xmit (20,202,020 samples, 0.03%)</title><rect x="1055.8" y="453" width="0.4" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="1058.83" y="463.5" ></text>
+</g>
+<g >
+<title>process_timeout (10,101,010 samples, 0.02%)</title><rect x="285.5" y="629" width="0.2" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="288.50" y="639.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (10,101,010 samples, 0.02%)</title><rect x="1056.6" y="661" width="0.2" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1059.59" y="671.5" ></text>
+</g>
+<g >
+<title>std::destroy_at&lt;std::variant&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="357" width="0.2" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="291.32" y="367.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_set_length (10,101,010 samples, 0.02%)</title><rect x="286.4" y="597" width="0.2" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="289.44" y="607.5" ></text>
+</g>
+<g >
+<title>EVP_DigestFinal_ex (1,121,212,110 samples, 1.77%)</title><rect x="288.9" y="741" width="20.9" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="291.89" y="751.5" ></text>
+</g>
+<g >
+<title>sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="474.5" y="709" width="0.2" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="477.50" y="719.5" ></text>
+</g>
+<g >
+<title>sock_write_iter (131,313,130 samples, 0.21%)</title><rect x="1058.7" y="613" width="2.4" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="1061.66" y="623.5" ></text>
+</g>
+<g >
+<title>CRYPTO_free (424,242,420 samples, 0.67%)</title><rect x="44.3" y="757" width="7.9" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="47.30" y="767.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (20,202,020 samples, 0.03%)</title><rect x="1057.5" y="661" width="0.4" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1060.53" y="671.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (3,969,696,930 samples, 6.28%)</title><rect x="211.8" y="757" width="74.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="214.82" y="767.5" >[libcryp..</text>
+</g>
+<g >
+<title>BIO_clear_flags (10,101,010 samples, 0.02%)</title><rect x="288.7" y="741" width="0.2" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="291.70" y="751.5" ></text>
+</g>
+<g >
+<title>std::vector&lt;std::variant&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="437" width="0.2" height="15.0" fill="rgb(206,4,1)" rx="2" ry="2" />
+<text  x="291.32" y="447.5" ></text>
+</g>
+<g >
+<title>std::__invoke_impl&lt;http::RouteResult, http::RouteResult  (80,808,080 samples, 0.13%)</title><rect x="287.2" y="581" width="1.5" height="15.0" fill="rgb(233,128,30)" rx="2" ry="2" />
+<text  x="290.19" y="591.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (10,101,010 samples, 0.02%)</title><rect x="1057.3" y="597" width="0.2" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1060.34" y="607.5" ></text>
+</g>
+<g >
+<title>irqentry_exit (10,101,010 samples, 0.02%)</title><rect x="529.9" y="693" width="0.2" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="532.90" y="703.5" ></text>
+</g>
+<g >
+<title>__local_bh_enable_ip (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="357" width="1.1" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="1062.79" y="367.5" ></text>
+</g>
+<g >
+<title>__tcp_send_ack.part.0 (20,202,020 samples, 0.03%)</title><rect x="1055.8" y="501" width="0.4" height="15.0" fill="rgb(246,192,46)" rx="2" ry="2" />
+<text  x="1058.83" y="511.5" ></text>
+</g>
+<g >
+<title>do_softirq (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="341" width="1.1" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="1062.79" y="351.5" ></text>
+</g>
+<g >
+<title>std::__invoke&lt;void  (121,212,120 samples, 0.19%)</title><rect x="286.4" y="693" width="2.3" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="289.44" y="703.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (161,616,160 samples, 0.26%)</title><rect x="1058.1" y="709" width="3.0" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="1061.09" y="719.5" ></text>
+</g>
+<g >
+<title>__lock_text_start (10,101,010 samples, 0.02%)</title><rect x="211.6" y="581" width="0.2" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="214.63" y="591.5" ></text>
+</g>
+<g >
+<title>std::__invoke_r&lt;MysqlPool::QueryResult, do_register (60,606,060 samples, 0.10%)</title><rect x="287.4" y="485" width="1.1" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="290.38" y="495.5" ></text>
+</g>
+<g >
+<title>__sock_sendmsg (10,101,010 samples, 0.02%)</title><rect x="286.6" y="533" width="0.2" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="289.63" y="543.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::basic_string (10,101,010 samples, 0.02%)</title><rect x="288.1" y="277" width="0.2" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="291.13" y="287.5" ></text>
+</g>
+<g >
+<title>handle_softirqs (10,101,010 samples, 0.02%)</title><rect x="43.9" y="693" width="0.2" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="46.92" y="703.5" ></text>
+</g>
+<g >
+<title>run_timer_softirq (10,101,010 samples, 0.02%)</title><rect x="211.6" y="677" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="214.63" y="687.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Copy_assign_base&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.1" y="373" width="0.2" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="291.13" y="383.5" ></text>
+</g>
+<g >
+<title>ip_local_deliver_finish (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="181" width="1.1" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="1062.79" y="191.5" ></text>
+</g>
+<g >
+<title>irqentry_exit (20,202,020 samples, 0.03%)</title><rect x="447.0" y="693" width="0.4" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="449.99" y="703.5" ></text>
+</g>
+<g >
+<title>blk_update_request (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="485" width="0.2" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="1061.47" y="495.5" ></text>
+</g>
+<g >
+<title>rcu_do_batch (10,101,010 samples, 0.02%)</title><rect x="194.1" y="645" width="0.2" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="197.10" y="655.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_reschedule_ipi (20,202,020 samples, 0.03%)</title><rect x="835.9" y="725" width="0.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="838.92" y="735.5" ></text>
+</g>
+<g >
+<title>sql::SQLException::~SQLException (10,101,010 samples, 0.02%)</title><rect x="1056.4" y="741" width="0.2" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="1059.40" y="751.5" ></text>
+</g>
+<g >
+<title>__kfree_skb (10,101,010 samples, 0.02%)</title><rect x="1055.6" y="533" width="0.2" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="1058.64" y="543.5" ></text>
+</g>
+<g >
+<title>asm_common_interrupt (10,101,010 samples, 0.02%)</title><rect x="320.4" y="725" width="0.1" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="323.36" y="735.5" ></text>
+</g>
+<g >
+<title>handle_softirqs (10,101,010 samples, 0.02%)</title><rect x="194.1" y="693" width="0.2" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="197.10" y="703.5" ></text>
+</g>
+<g >
+<title>irqentry_exit (10,101,010 samples, 0.02%)</title><rect x="1038.7" y="677" width="0.2" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="1041.68" y="687.5" ></text>
+</g>
+<g >
+<title>tcp_data_ready (50,505,050 samples, 0.08%)</title><rect x="1059.8" y="101" width="0.9" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="1062.79" y="111.5" ></text>
+</g>
+<g >
+<title>common_interrupt (10,101,010 samples, 0.02%)</title><rect x="529.7" y="709" width="0.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="532.71" y="719.5" ></text>
+</g>
+<g >
+<title>SHA256_Final (141,414,140 samples, 0.22%)</title><rect x="194.5" y="757" width="2.6" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="197.48" y="767.5" ></text>
+</g>
+<g >
+<title>blk_stat_timer_fn (10,101,010 samples, 0.02%)</title><rect x="835.7" y="613" width="0.2" height="15.0" fill="rgb(242,171,40)" rx="2" ry="2" />
+<text  x="838.74" y="623.5" ></text>
+</g>
+<g >
+<title>malloc (3,141,414,110 samples, 4.97%)</title><rect x="1131.2" y="757" width="58.6" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="1134.21" y="767.5" >malloc</text>
+</g>
+<g >
+<title>__rq_qos_done_bio (10,101,010 samples, 0.02%)</title><rect x="320.4" y="565" width="0.1" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="323.36" y="575.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Variant_base&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.1" y="405" width="0.2" height="15.0" fill="rgb(218,62,15)" rx="2" ry="2" />
+<text  x="291.13" y="415.5" ></text>
+</g>
+<g >
+<title>[libssl.so.3] (10,101,010 samples, 0.02%)</title><rect x="836.7" y="741" width="0.2" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="839.68" y="751.5" ></text>
+</g>
+<g >
+<title>try_to_wake_up (10,101,010 samples, 0.02%)</title><rect x="211.6" y="597" width="0.2" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="214.63" y="607.5" ></text>
+</g>
+<g >
+<title>tcp_v4_rcv (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="149" width="0.2" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="1059.02" y="159.5" ></text>
+</g>
+<g >
+<title>rcu_core_si (10,101,010 samples, 0.02%)</title><rect x="194.1" y="677" width="0.2" height="15.0" fill="rgb(237,150,36)" rx="2" ry="2" />
+<text  x="197.10" y="687.5" ></text>
+</g>
+<g >
+<title>tcp_rcv_established (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="117" width="1.1" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="1062.79" y="127.5" ></text>
+</g>
+<g >
+<title>schedule (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="661" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1061.47" y="671.5" ></text>
+</g>
+<g >
+<title>Reactor::process (121,212,120 samples, 0.19%)</title><rect x="286.4" y="645" width="2.3" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="289.44" y="655.5" ></text>
+</g>
+<g >
+<title>try_to_wake_up (10,101,010 samples, 0.02%)</title><rect x="285.5" y="597" width="0.2" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="288.50" y="607.5" ></text>
+</g>
+<g >
+<title>inet_sendmsg (10,101,010 samples, 0.02%)</title><rect x="286.6" y="517" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="289.63" y="527.5" ></text>
+</g>
+<g >
+<title>net_rx_action (10,101,010 samples, 0.02%)</title><rect x="529.7" y="661" width="0.2" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="532.71" y="671.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="1189.6" y="741" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1192.62" y="751.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Move_assign_base&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="287.9" y="405" width="0.2" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="290.95" y="415.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Variant_storage&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="229" width="0.2" height="15.0" fill="rgb(214,41,9)" rx="2" ry="2" />
+<text  x="291.32" y="239.5" ></text>
+</g>
+<g >
+<title>handle_softirqs (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="565" width="0.2" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="1061.47" y="575.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (40,404,040 samples, 0.06%)</title><rect x="1056.8" y="677" width="0.7" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1059.77" y="687.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (10,101,010 samples, 0.02%)</title><rect x="446.8" y="709" width="0.2" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="449.80" y="719.5" ></text>
+</g>
+<g >
+<title>syscall_enter_from_user_mode (10,101,010 samples, 0.02%)</title><rect x="1058.1" y="693" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1061.09" y="703.5" ></text>
+</g>
+<g >
+<title>__napi_poll (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="277" width="1.1" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="1062.79" y="287.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (10,101,010 samples, 0.02%)</title><rect x="446.8" y="693" width="0.2" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="449.80" y="703.5" ></text>
+</g>
+<g >
+<title>handle_softirqs (20,202,020 samples, 0.03%)</title><rect x="285.3" y="693" width="0.4" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="288.31" y="703.5" ></text>
+</g>
+<g >
+<title>sysvec_reschedule_ipi (20,202,020 samples, 0.03%)</title><rect x="447.0" y="709" width="0.4" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="449.99" y="719.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_loop (10,101,010 samples, 0.02%)</title><rect x="285.7" y="677" width="0.2" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="288.69" y="687.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Move_ctor_base&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="287.9" y="373" width="0.2" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="290.95" y="383.5" ></text>
+</g>
+<g >
+<title>EVP_DigestUpdate (575,757,570 samples, 0.91%)</title><rect x="309.8" y="741" width="10.7" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="312.81" y="751.5" ></text>
+</g>
+<g >
+<title>rseq_ip_fixup (10,101,010 samples, 0.02%)</title><rect x="1058.3" y="645" width="0.2" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="1061.28" y="655.5" ></text>
+</g>
+<g >
+<title>call_timer_fn (10,101,010 samples, 0.02%)</title><rect x="285.5" y="645" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="288.50" y="655.5" ></text>
+</g>
+<g >
+<title>skb_release_head_state (10,101,010 samples, 0.02%)</title><rect x="1055.6" y="517" width="0.2" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="1058.64" y="527.5" ></text>
+</g>
+<g >
+<title>write (161,616,160 samples, 0.26%)</title><rect x="1058.1" y="741" width="3.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1061.09" y="751.5" ></text>
+</g>
+<g >
+<title>__netif_receive_skb_list_core (10,101,010 samples, 0.02%)</title><rect x="529.7" y="581" width="0.2" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="532.71" y="591.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (20,202,020 samples, 0.03%)</title><rect x="1057.5" y="677" width="0.4" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1060.53" y="687.5" ></text>
+</g>
+<g >
+<title>std::unique_ptr&lt;sql::PreparedStatement, std::default_delete&lt;sql::PreparedStatement&gt; &gt;::unique_ptr&lt;std::default_delete&lt;sql::PreparedStatement&gt;, void&gt; (10,101,010 samples, 0.02%)</title><rect x="287.4" y="405" width="0.2" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="290.38" y="415.5" ></text>
+</g>
+<g >
+<title>irqentry_exit (10,101,010 samples, 0.02%)</title><rect x="44.1" y="709" width="0.2" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="47.11" y="719.5" ></text>
+</g>
+<g >
+<title>[unknown] (10,101,010 samples, 0.02%)</title><rect x="1056.4" y="725" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1059.40" y="735.5" ></text>
+</g>
+<g >
+<title>[unknown] (41,404,039,990 samples, 65.46%)</title><rect x="288.7" y="757" width="772.4" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="291.70" y="767.5" >[unknown]</text>
+</g>
+<g >
+<title>malloc (848,484,840 samples, 1.34%)</title><rect x="1039.2" y="725" width="15.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="1042.25" y="735.5" ></text>
+</g>
+<g >
+<title>__ip_queue_xmit (70,707,070 samples, 0.11%)</title><rect x="1059.8" y="453" width="1.3" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="1062.79" y="463.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (10,101,010 samples, 0.02%)</title><rect x="286.6" y="613" width="0.2" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="289.63" y="623.5" ></text>
+</g>
+<g >
+<title>std::variant&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="341" width="0.2" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="291.32" y="351.5" ></text>
+</g>
+<g >
+<title>finish_task_switch.isra.0 (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="629" width="0.2" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="1061.47" y="639.5" ></text>
+</g>
+<g >
+<title>parseHttpRequest (10,101,010 samples, 0.02%)</title><rect x="286.8" y="629" width="0.2" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="289.82" y="639.5" ></text>
+</g>
+<g >
+<title>__x64_sys_sendto (10,101,010 samples, 0.02%)</title><rect x="286.6" y="565" width="0.2" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="289.63" y="575.5" ></text>
+</g>
+<g >
+<title>handle_softirqs (10,101,010 samples, 0.02%)</title><rect x="446.8" y="677" width="0.2" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="449.80" y="687.5" ></text>
+</g>
+<g >
+<title>process_backlog (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="261" width="1.1" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="1062.79" y="271.5" ></text>
+</g>
+<g >
+<title>__send (10,101,010 samples, 0.02%)</title><rect x="286.6" y="629" width="0.2" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="289.63" y="639.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_loop (10,101,010 samples, 0.02%)</title><rect x="850.4" y="645" width="0.2" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="853.43" y="655.5" ></text>
+</g>
+<g >
+<title>__netif_receive_skb_one_core (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="229" width="1.1" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1062.79" y="239.5" ></text>
+</g>
+<g >
+<title>run_rebalance_domains (10,101,010 samples, 0.02%)</title><rect x="285.3" y="677" width="0.2" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="288.31" y="687.5" ></text>
+</g>
+<g >
+<title>vfs_write (131,313,130 samples, 0.21%)</title><rect x="1058.7" y="645" width="2.4" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="1061.66" y="655.5" ></text>
+</g>
+<g >
+<title>EVP_MD_CTX_copy_ex (5,282,828,230 samples, 8.35%)</title><rect x="856.1" y="725" width="98.5" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="859.09" y="735.5" >EVP_MD_CTX_..</text>
+</g>
+<g >
+<title>__tcp_transmit_skb (20,202,020 samples, 0.03%)</title><rect x="1055.8" y="485" width="0.4" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="1058.83" y="495.5" ></text>
+</g>
+<g >
+<title>__napi_poll (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="277" width="0.2" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="1059.02" y="287.5" ></text>
+</g>
+<g >
+<title>std::_Destroy&lt;std::variant&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="373" width="0.2" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="291.32" y="383.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (10,101,010 samples, 0.02%)</title><rect x="211.6" y="741" width="0.2" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="214.63" y="751.5" ></text>
+</g>
+<g >
+<title>x64_sys_call (70,707,070 samples, 0.11%)</title><rect x="1055.1" y="693" width="1.3" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1058.08" y="703.5" ></text>
+</g>
+<g >
+<title>__ip_finish_output (70,707,070 samples, 0.11%)</title><rect x="1059.8" y="389" width="1.3" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1062.79" y="399.5" ></text>
+</g>
+<g >
+<title>ENGINE_finish (1,040,404,030 samples, 1.64%)</title><rect x="52.4" y="757" width="19.4" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="55.40" y="767.5" ></text>
+</g>
+<g >
+<title>rcu_do_batch (10,101,010 samples, 0.02%)</title><rect x="446.8" y="629" width="0.2" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="449.80" y="639.5" ></text>
+</g>
+<g >
+<title>__wake_up_common_lock (50,505,050 samples, 0.08%)</title><rect x="1059.8" y="53" width="0.9" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="1062.79" y="63.5" ></text>
+</g>
+<g >
+<title>bio_endio (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="469" width="0.2" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="1061.47" y="479.5" ></text>
+</g>
+<g >
+<title>std::_Function_handler&lt;http::RouteResult  (80,808,080 samples, 0.13%)</title><rect x="287.2" y="613" width="1.5" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="290.19" y="623.5" ></text>
+</g>
+<g >
+<title>std::thread::_Invoker&lt;std::tuple&lt;void  (121,212,120 samples, 0.19%)</title><rect x="286.4" y="709" width="2.3" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="289.44" y="719.5" ></text>
+</g>
+<g >
+<title>irqentry_exit_to_user_mode (10,101,010 samples, 0.02%)</title><rect x="850.4" y="661" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="853.43" y="671.5" ></text>
+</g>
+<g >
+<title>tcp_recvmsg (50,505,050 samples, 0.08%)</title><rect x="1055.3" y="565" width="0.9" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1058.27" y="575.5" ></text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.30] (10,101,010 samples, 0.02%)</title><rect x="287.6" y="421" width="0.2" height="15.0" fill="rgb(235,140,33)" rx="2" ry="2" />
+<text  x="290.57" y="431.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="285.7" y="741" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="288.69" y="751.5" ></text>
+</g>
+<g >
+<title>std::_Destroy&lt;std::variant&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="421" width="0.2" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="291.32" y="431.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (10,101,010 samples, 0.02%)</title><rect x="835.7" y="709" width="0.2" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="838.74" y="719.5" ></text>
+</g>
+<g >
+<title>loopback_xmit (10,101,010 samples, 0.02%)</title><rect x="1060.9" y="277" width="0.2" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1063.92" y="287.5" ></text>
+</g>
+<g >
+<title>[libssl.so.3] (30,303,030 samples, 0.05%)</title><rect x="285.9" y="757" width="0.5" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="288.87" y="767.5" ></text>
+</g>
+<g >
+<title>tcp_write_xmit (90,909,090 samples, 0.14%)</title><rect x="1059.4" y="501" width="1.7" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="1062.41" y="511.5" ></text>
+</g>
+<g >
+<title>irqentry_exit_to_user_mode (10,101,010 samples, 0.02%)</title><rect x="529.9" y="677" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="532.90" y="687.5" ></text>
+</g>
+<g >
+<title>load_balance (10,101,010 samples, 0.02%)</title><rect x="285.3" y="645" width="0.2" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="288.31" y="655.5" ></text>
+</g>
+<g >
+<title>irqentry_exit_to_user_mode (10,101,010 samples, 0.02%)</title><rect x="1131.0" y="693" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1134.02" y="703.5" ></text>
+</g>
+<g >
+<title>virtblk_request_done (10,101,010 samples, 0.02%)</title><rect x="320.4" y="629" width="0.1" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="323.36" y="639.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="1131.0" y="741" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1134.02" y="751.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (10,101,010 samples, 0.02%)</title><rect x="446.8" y="725" width="0.2" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="449.80" y="735.5" ></text>
+</g>
+<g >
+<title>std::thread::_Invoker&lt;std::tuple&lt;void  (121,212,120 samples, 0.19%)</title><rect x="286.4" y="725" width="2.3" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="289.44" y="735.5" ></text>
+</g>
+<g >
+<title>mysql_send_query (10,101,010 samples, 0.02%)</title><rect x="1189.8" y="709" width="0.2" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="1192.81" y="719.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="529.9" y="725" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="532.90" y="735.5" ></text>
+</g>
+<g >
+<title>bio_free (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="421" width="0.2" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="1061.47" y="431.5" ></text>
+</g>
+<g >
+<title>handle_softirqs (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="309" width="0.2" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="1059.02" y="319.5" ></text>
+</g>
+<g >
+<title>irqentry_exit_to_user_mode (10,101,010 samples, 0.02%)</title><rect x="194.3" y="693" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="197.29" y="703.5" ></text>
+</g>
+<g >
+<title>[unknown] (20,202,020 samples, 0.03%)</title><rect x="1038.9" y="725" width="0.3" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1041.87" y="735.5" ></text>
+</g>
+<g >
+<title>std::_Function_base::_Base_manager&lt;do_register (10,101,010 samples, 0.02%)</title><rect x="288.5" y="517" width="0.2" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="291.51" y="527.5" ></text>
+</g>
+<g >
+<title>blk_complete_reqs (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="533" width="0.2" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1061.47" y="543.5" ></text>
+</g>
+<g >
+<title>sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="285.7" y="725" width="0.2" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="288.69" y="735.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (16,414,141,250 samples, 25.95%)</title><rect x="530.1" y="741" width="306.2" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="533.09" y="751.5" >[libcrypto.so.3]</text>
+</g>
+<g >
+<title>irq_exit_rcu (10,101,010 samples, 0.02%)</title><rect x="194.1" y="709" width="0.2" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="197.10" y="719.5" ></text>
+</g>
+<g >
+<title>sysvec_reschedule_ipi (20,202,020 samples, 0.03%)</title><rect x="835.9" y="709" width="0.4" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="838.92" y="719.5" ></text>
+</g>
+<g >
+<title>clock_gettime (10,101,010 samples, 0.02%)</title><rect x="287.2" y="517" width="0.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="290.19" y="527.5" ></text>
+</g>
+<g >
+<title>HMAC_CTX_copy (212,121,210 samples, 0.34%)</title><rect x="326.8" y="741" width="3.9" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="329.76" y="751.5" ></text>
+</g>
+<g >
+<title>std::__invoke_r&lt;void, std::__detail::__variant::_Variant_storage&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="287.9" y="277" width="0.2" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="290.95" y="287.5" ></text>
+</g>
+<g >
+<title>std::__distance&lt;char*&gt; (10,101,010 samples, 0.02%)</title><rect x="288.1" y="213" width="0.2" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="291.13" y="223.5" ></text>
+</g>
+<g >
+<title>virtnet_poll (10,101,010 samples, 0.02%)</title><rect x="529.7" y="629" width="0.2" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="532.71" y="639.5" ></text>
+</g>
+<g >
+<title>std::_Destroy&lt;std::variant&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="405" width="0.2" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="291.32" y="415.5" ></text>
+</g>
+<g >
+<title>tcp_sendmsg (10,101,010 samples, 0.02%)</title><rect x="286.6" y="501" width="0.2" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="289.63" y="511.5" ></text>
+</g>
+<g >
+<title>kmem_cache_free (10,101,010 samples, 0.02%)</title><rect x="446.8" y="597" width="0.2" height="15.0" fill="rgb(254,225,53)" rx="2" ry="2" />
+<text  x="449.80" y="607.5" ></text>
+</g>
+<g >
+<title>__get_user_8 (10,101,010 samples, 0.02%)</title><rect x="1058.3" y="629" width="0.2" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1061.28" y="639.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (787,878,780 samples, 1.25%)</title><rect x="197.1" y="757" width="14.7" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="200.12" y="767.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (10,101,010 samples, 0.02%)</title><rect x="969.5" y="725" width="0.2" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="972.53" y="735.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Move_assign_base&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="309" width="0.2" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="291.32" y="319.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (70,707,070 samples, 0.11%)</title><rect x="1055.1" y="725" width="1.3" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="1058.08" y="735.5" ></text>
+</g>
+<g >
+<title>sql::mysql::MySQL_Connection::prepareStatement (40,404,040 samples, 0.06%)</title><rect x="1056.8" y="709" width="0.7" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="1059.77" y="719.5" ></text>
+</g>
+<g >
+<title>EVP_MD_CTX_test_flags (262,626,260 samples, 0.42%)</title><rect x="954.6" y="725" width="4.9" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="957.64" y="735.5" ></text>
+</g>
+<g >
+<title>call_timer_fn (10,101,010 samples, 0.02%)</title><rect x="211.6" y="645" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="214.63" y="655.5" ></text>
+</g>
+<g >
+<title>__netif_receive_skb_one_core (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="229" width="0.2" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1059.02" y="239.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Variant_base&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="287.9" y="421" width="0.2" height="15.0" fill="rgb(218,62,15)" rx="2" ry="2" />
+<text  x="290.95" y="431.5" ></text>
+</g>
+<g >
+<title>std::function&lt;MysqlPool::QueryResult  (60,606,060 samples, 0.10%)</title><rect x="287.4" y="517" width="1.1" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="290.38" y="527.5" ></text>
+</g>
+<g >
+<title>bio_put (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="437" width="0.2" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="1061.47" y="447.5" ></text>
+</g>
+<g >
+<title>bio_endio (10,101,010 samples, 0.02%)</title><rect x="320.4" y="581" width="0.1" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="323.36" y="591.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (10,101,010 samples, 0.02%)</title><rect x="211.6" y="709" width="0.2" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="214.63" y="719.5" ></text>
+</g>
+<g >
+<title>inet_sendmsg (121,212,120 samples, 0.19%)</title><rect x="1058.8" y="581" width="2.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1061.85" y="591.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (20,202,020 samples, 0.03%)</title><rect x="285.3" y="709" width="0.4" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="288.31" y="719.5" ></text>
+</g>
+<g >
+<title>mysql_real_query (10,101,010 samples, 0.02%)</title><rect x="1189.8" y="725" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1192.81" y="735.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (10,101,010 samples, 0.02%)</title><rect x="1056.6" y="693" width="0.2" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1059.59" y="703.5" ></text>
+</g>
+<g >
+<title>all (63,252,524,620 samples, 100%)</title><rect x="10.0" y="789" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="799.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (20,202,020 samples, 0.03%)</title><rect x="285.3" y="725" width="0.4" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="288.31" y="735.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Variant_storage&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.1" y="325" width="0.2" height="15.0" fill="rgb(214,41,9)" rx="2" ry="2" />
+<text  x="291.13" y="335.5" ></text>
+</g>
+<g >
+<title>MysqlTxnContext::executeQuery (20,202,020 samples, 0.03%)</title><rect x="287.4" y="437" width="0.4" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="290.38" y="447.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (70,707,070 samples, 0.11%)</title><rect x="1055.1" y="709" width="1.3" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="1058.08" y="719.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="474.5" y="725" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="477.50" y="735.5" ></text>
+</g>
+<g >
+<title>CRYPTO_malloc (737,373,730 samples, 1.17%)</title><rect x="836.9" y="725" width="13.7" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="839.87" y="735.5" ></text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.30] (121,212,120 samples, 0.19%)</title><rect x="286.4" y="757" width="2.3" height="15.0" fill="rgb(235,140,33)" rx="2" ry="2" />
+<text  x="289.44" y="767.5" ></text>
+</g>
+<g >
+<title>irqentry_exit_to_user_mode (20,202,020 samples, 0.03%)</title><rect x="835.9" y="677" width="0.4" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="838.92" y="687.5" ></text>
+</g>
+<g >
+<title>handle_softirqs (10,101,010 samples, 0.02%)</title><rect x="529.7" y="677" width="0.2" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="532.71" y="687.5" ></text>
+</g>
+<g >
+<title>MysqlPool::executeTransaction (70,707,070 samples, 0.11%)</title><rect x="287.2" y="533" width="1.3" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="290.19" y="543.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Copy_assign_base&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="287.9" y="389" width="0.2" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="290.95" y="399.5" ></text>
+</g>
+<g >
+<title>std::_Tuple_impl&lt;0ul, sql::PreparedStatement*, std::default_delete&lt;sql::PreparedStatement&gt; &gt;::_Tuple_impl (10,101,010 samples, 0.02%)</title><rect x="287.4" y="357" width="0.2" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="290.38" y="367.5" ></text>
+</g>
+<g >
+<title>sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="1038.7" y="693" width="0.2" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="1041.68" y="703.5" ></text>
+</g>
+<g >
+<title>blk_done_softirq (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="549" width="0.2" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="1061.47" y="559.5" ></text>
+</g>
+<g >
+<title>irqentry_exit_to_user_mode (10,101,010 samples, 0.02%)</title><rect x="1189.6" y="693" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1192.62" y="703.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (10,101,010 samples, 0.02%)</title><rect x="1057.3" y="581" width="0.2" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1060.34" y="591.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct_aux&lt;char*&gt; (10,101,010 samples, 0.02%)</title><rect x="288.1" y="245" width="0.2" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="291.13" y="255.5" ></text>
+</g>
+<g >
+<title>netif_receive_skb_list_internal (10,101,010 samples, 0.02%)</title><rect x="529.7" y="597" width="0.2" height="15.0" fill="rgb(238,151,36)" rx="2" ry="2" />
+<text  x="532.71" y="607.5" ></text>
+</g>
+<g >
+<title>net_rx_action (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="293" width="0.2" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="1059.02" y="303.5" ></text>
+</g>
+<g >
+<title>SHA256_Final (4,797,979,750 samples, 7.59%)</title><rect x="357.9" y="741" width="89.5" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="360.86" y="751.5" >SHA256_Final</text>
+</g>
+<g >
+<title>EVP_MD_get_size (101,010,100 samples, 0.16%)</title><rect x="324.9" y="741" width="1.9" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="327.88" y="751.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char*&gt; (10,101,010 samples, 0.02%)</title><rect x="288.1" y="229" width="0.2" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="291.13" y="239.5" ></text>
+</g>
+<g >
+<title>std::_Function_handler&lt;MysqlPool::QueryResult  (60,606,060 samples, 0.10%)</title><rect x="287.4" y="501" width="1.1" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="290.38" y="511.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;sql::SQLString, std::pair&lt;sql::SQLString const, unsigned int&gt;, std::_Select1st&lt;std::pair&lt;sql::SQLString const, unsigned int&gt; &gt;, std::less&lt;sql::SQLString&gt;, std::allocator&lt;std::pair&lt;sql::SQLString const, unsigned int&gt; &gt; &gt;::_M_get_insert_unique_pos (10,101,010 samples, 0.02%)</title><rect x="1057.9" y="741" width="0.2" height="15.0" fill="rgb(237,151,36)" rx="2" ry="2" />
+<text  x="1060.90" y="751.5" ></text>
+</g>
+<g >
+<title>[unknown] (11,696,969,580 samples, 18.49%)</title><rect x="836.9" y="741" width="218.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="839.87" y="751.5" >[unknown]</text>
+</g>
+<g >
+<title>std::__detail::__variant::_Variant_base&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="325" width="0.2" height="15.0" fill="rgb(218,62,15)" rx="2" ry="2" />
+<text  x="291.32" y="335.5" ></text>
+</g>
+<g >
+<title>x64_sys_call (10,101,010 samples, 0.02%)</title><rect x="286.6" y="581" width="0.2" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="289.63" y="591.5" ></text>
+</g>
+<g >
+<title>irqentry_exit (10,101,010 samples, 0.02%)</title><rect x="850.4" y="677" width="0.2" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="853.43" y="687.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (10,101,010 samples, 0.02%)</title><rect x="211.6" y="725" width="0.2" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="214.63" y="735.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::__gen_vtable_impl&lt;std::__detail::__variant::_Multi_array&lt;void  (10,101,010 samples, 0.02%)</title><rect x="288.3" y="197" width="0.2" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="291.32" y="207.5" ></text>
+</g>
+<g >
+<title>__napi_poll (10,101,010 samples, 0.02%)</title><rect x="529.7" y="645" width="0.2" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="532.71" y="655.5" ></text>
+</g>
+<g >
+<title>std::initializer_list&lt;std::variant&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="287.8" y="437" width="0.1" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="290.76" y="447.5" ></text>
+</g>
+<g >
+<title>sql::mysql::NativeAPI::MySQL_NativeConnectionWrapper::store_result (10,101,010 samples, 0.02%)</title><rect x="1056.6" y="741" width="0.2" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="1059.59" y="751.5" ></text>
+</g>
+<g >
+<title>tcp_cleanup_rbuf (20,202,020 samples, 0.03%)</title><rect x="1055.8" y="533" width="0.4" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="1058.83" y="543.5" ></text>
+</g>
+<g >
+<title>OPENSSL_cleanse (585,858,580 samples, 0.93%)</title><rect x="346.7" y="741" width="11.0" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="349.74" y="751.5" ></text>
+</g>
+<g >
+<title>EVP_PKEY_CTX_free (40,404,040 samples, 0.06%)</title><rect x="959.5" y="725" width="0.8" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="962.54" y="735.5" ></text>
+</g>
+<g >
+<title>sock_recvmsg (60,606,060 samples, 0.10%)</title><rect x="1055.1" y="597" width="1.1" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="1058.08" y="607.5" ></text>
+</g>
+<g >
+<title>__netif_receive_skb (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="245" width="1.1" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1062.79" y="255.5" ></text>
+</g>
+<g >
+<title>xmit_one.constprop.0 (10,101,010 samples, 0.02%)</title><rect x="1060.9" y="293" width="0.2" height="15.0" fill="rgb(248,200,47)" rx="2" ry="2" />
+<text  x="1063.92" y="303.5" ></text>
+</g>
+<g >
+<title>sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="850.4" y="693" width="0.2" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="853.43" y="703.5" ></text>
+</g>
+<g >
+<title>__slab_free (10,101,010 samples, 0.02%)</title><rect x="43.9" y="581" width="0.2" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="46.92" y="591.5" ></text>
+</g>
+<g >
+<title>std::variant&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.1" y="421" width="0.2" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="291.13" y="431.5" ></text>
+</g>
+<g >
+<title>ip_local_deliver (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="197" width="1.1" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="1062.79" y="207.5" ></text>
+</g>
+<g >
+<title>std::_Function_base::_Base_manager&lt;do_register (10,101,010 samples, 0.02%)</title><rect x="288.5" y="501" width="0.2" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="291.51" y="511.5" ></text>
+</g>
+<g >
+<title>ip_rcv (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="213" width="0.2" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="1059.02" y="223.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (10,101,010 samples, 0.02%)</title><rect x="1056.6" y="677" width="0.2" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1059.59" y="687.5" ></text>
+</g>
+<g >
+<title>process_timeout (10,101,010 samples, 0.02%)</title><rect x="211.6" y="629" width="0.2" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="214.63" y="639.5" ></text>
+</g>
+<g >
+<title>std::__invoke_impl&lt;void, void  (121,212,120 samples, 0.19%)</title><rect x="286.4" y="677" width="2.3" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="289.44" y="687.5" ></text>
+</g>
+<g >
+<title>ip_queue_xmit (20,202,020 samples, 0.03%)</title><rect x="1055.8" y="469" width="0.4" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="1058.83" y="479.5" ></text>
+</g>
+<g >
+<title>sock_recvmsg (10,101,010 samples, 0.02%)</title><rect x="1056.2" y="613" width="0.2" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="1059.21" y="623.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_loop (10,101,010 samples, 0.02%)</title><rect x="529.9" y="661" width="0.2" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="532.90" y="671.5" ></text>
+</g>
+<g >
+<title>CRYPTO_gcm128_finish (10,101,010 samples, 0.02%)</title><rect x="52.2" y="757" width="0.2" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="55.21" y="767.5" ></text>
+</g>
+<g >
+<title>blk_mq_end_request (10,101,010 samples, 0.02%)</title><rect x="320.4" y="613" width="0.1" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="323.36" y="623.5" ></text>
+</g>
+<g >
+<title>handle_softirqs (10,101,010 samples, 0.02%)</title><rect x="320.4" y="677" width="0.1" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="323.36" y="687.5" ></text>
+</g>
+<g >
+<title>__lock_text_start (50,505,050 samples, 0.08%)</title><rect x="1059.8" y="37" width="0.9" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="1062.79" y="47.5" ></text>
+</g>
+<g >
+<title>__alloc_skb (10,101,010 samples, 0.02%)</title><rect x="1059.2" y="517" width="0.2" height="15.0" fill="rgb(226,100,23)" rx="2" ry="2" />
+<text  x="1062.22" y="527.5" ></text>
+</g>
+<g >
+<title>rcu_core (10,101,010 samples, 0.02%)</title><rect x="446.8" y="645" width="0.2" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="449.80" y="655.5" ></text>
+</g>
+<g >
+<title>tcp_send_ack (20,202,020 samples, 0.03%)</title><rect x="1055.8" y="517" width="0.4" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="1058.83" y="527.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (10,101,010 samples, 0.02%)</title><rect x="835.7" y="693" width="0.2" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="838.74" y="703.5" ></text>
+</g>
+<g >
+<title>__rseq_handle_notify_resume (10,101,010 samples, 0.02%)</title><rect x="1058.3" y="661" width="0.2" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="1061.28" y="671.5" ></text>
+</g>
+<g >
+<title>tcp_push (90,909,090 samples, 0.14%)</title><rect x="1059.4" y="533" width="1.7" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="1062.41" y="543.5" ></text>
+</g>
+<g >
+<title>__softirqentry_text_start (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="325" width="1.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1062.79" y="335.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Variadic_union&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.1" y="309" width="0.2" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="291.13" y="319.5" ></text>
+</g>
+<g >
+<title>tcp_sendmsg (121,212,120 samples, 0.19%)</title><rect x="1058.8" y="565" width="2.3" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="1061.85" y="575.5" ></text>
+</g>
+<g >
+<title>EVP_CIPHER_CTX_get_iv_length (10,101,010 samples, 0.02%)</title><rect x="850.6" y="725" width="0.2" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="853.62" y="735.5" ></text>
+</g>
+<g >
+<title>irqentry_exit (10,101,010 samples, 0.02%)</title><rect x="1131.0" y="709" width="0.2" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="1134.02" y="719.5" ></text>
+</g>
+<g >
+<title>mysql_stmt_close (20,202,020 samples, 0.03%)</title><rect x="1057.5" y="693" width="0.4" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1060.53" y="703.5" ></text>
+</g>
+<g >
+<title>finish_task_switch.isra.0 (10,101,010 samples, 0.02%)</title><rect x="447.2" y="613" width="0.2" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="450.18" y="623.5" ></text>
+</g>
+<g >
+<title>irqentry_exit (10,101,010 samples, 0.02%)</title><rect x="285.7" y="709" width="0.2" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="288.69" y="719.5" ></text>
+</g>
+<g >
+<title>std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;void  (121,212,120 samples, 0.19%)</title><rect x="286.4" y="741" width="2.3" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="289.44" y="751.5" ></text>
+</g>
+<g >
+<title>handle_softirqs (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="309" width="1.1" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="1062.79" y="319.5" ></text>
+</g>
+<g >
+<title>sysvec_reschedule_ipi (10,101,010 samples, 0.02%)</title><rect x="1131.0" y="725" width="0.2" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="1134.02" y="735.5" ></text>
+</g>
+<g >
+<title>[libgcc_s.so.1] (10,101,010 samples, 0.02%)</title><rect x="1056.4" y="709" width="0.2" height="15.0" fill="rgb(244,179,43)" rx="2" ry="2" />
+<text  x="1059.40" y="719.5" ></text>
+</g>
+<g >
+<title>irqentry_exit_to_user_mode (20,202,020 samples, 0.03%)</title><rect x="447.0" y="677" width="0.4" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="449.99" y="687.5" ></text>
+</g>
+<g >
+<title>napi_complete_done (10,101,010 samples, 0.02%)</title><rect x="529.7" y="613" width="0.2" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="532.71" y="623.5" ></text>
+</g>
+<g >
+<title>__local_bh_enable_ip (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="357" width="0.2" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="1059.02" y="367.5" ></text>
+</g>
+<g >
+<title>tcp_v4_rcv (60,606,060 samples, 0.10%)</title><rect x="1059.8" y="149" width="1.1" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="1062.79" y="159.5" ></text>
+</g>
+<g >
+<title>ip_protocol_deliver_rcu (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="165" width="0.2" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="1059.02" y="175.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Move_ctor_base&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="277" width="0.2" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="291.32" y="287.5" ></text>
+</g>
+<g >
+<title>ip_local_deliver (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="197" width="0.2" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="1059.02" y="207.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_loop (10,101,010 samples, 0.02%)</title><rect x="474.5" y="661" width="0.2" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="477.50" y="671.5" ></text>
+</g>
+<g >
+<title>cfree (3,757,575,720 samples, 5.94%)</title><rect x="1061.1" y="757" width="70.1" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="1064.11" y="767.5" >cfree</text>
+</g>
+<g >
+<title>call_timer_fn (10,101,010 samples, 0.02%)</title><rect x="835.7" y="629" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="838.74" y="639.5" ></text>
+</g>
+<g >
+<title>ksys_write (131,313,130 samples, 0.21%)</title><rect x="1058.7" y="661" width="2.4" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="1061.66" y="671.5" ></text>
+</g>
+<g >
+<title>tcp_update_pacing_rate (10,101,010 samples, 0.02%)</title><rect x="1060.7" y="101" width="0.2" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="1063.73" y="111.5" ></text>
+</g>
+<g >
+<title>HttpRequest::HttpRequest (10,101,010 samples, 0.02%)</title><rect x="286.4" y="629" width="0.2" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="289.44" y="639.5" ></text>
+</g>
+<g >
+<title>sql::mysql::NativeAPI::MySQL_NativeStatementWrapper::~MySQL_NativeStatementWrapper (60,606,060 samples, 0.10%)</title><rect x="1056.8" y="741" width="1.1" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1059.77" y="751.5" ></text>
+</g>
+<g >
+<title>kmalloc_reserve (10,101,010 samples, 0.02%)</title><rect x="1059.2" y="501" width="0.2" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1062.22" y="511.5" ></text>
+</g>
+<g >
+<title>mempool_free (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="405" width="0.2" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="1061.47" y="415.5" ></text>
+</g>
+<g >
+<title>std::__detail::__variant::_Uninitialized&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, false&gt;::_Uninitialized&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;&gt; (10,101,010 samples, 0.02%)</title><rect x="288.1" y="293" width="0.2" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="291.13" y="303.5" ></text>
+</g>
+<g >
+<title>__x64_sys_write (131,313,130 samples, 0.21%)</title><rect x="1058.7" y="677" width="2.4" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="1061.66" y="687.5" ></text>
+</g>
+<g >
+<title>put_pid.part.0 (10,101,010 samples, 0.02%)</title><rect x="43.9" y="613" width="0.2" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="46.92" y="623.5" ></text>
+</g>
+<g >
+<title>ip_finish_output2 (70,707,070 samples, 0.11%)</title><rect x="1059.8" y="373" width="1.3" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="1062.79" y="383.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_reschedule_ipi (20,202,020 samples, 0.03%)</title><rect x="447.0" y="725" width="0.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="449.99" y="735.5" ></text>
+</g>
+<g >
+<title>__dev_queue_xmit (10,101,010 samples, 0.02%)</title><rect x="1060.9" y="325" width="0.2" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="1063.92" y="335.5" ></text>
+</g>
+<g >
+<title>mysql_store_result (10,101,010 samples, 0.02%)</title><rect x="1056.6" y="725" width="0.2" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="1059.59" y="735.5" ></text>
+</g>
+<g >
+<title>__kmalloc_node_track_caller (10,101,010 samples, 0.02%)</title><rect x="1059.2" y="485" width="0.2" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="1062.22" y="495.5" ></text>
+</g>
+<g >
+<title>[libmysqlclient.so.21.2.45] (10,101,010 samples, 0.02%)</title><rect x="1189.8" y="693" width="0.2" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1192.81" y="703.5" ></text>
+</g>
+<g >
+<title>ip_local_out (10,101,010 samples, 0.02%)</title><rect x="1056.0" y="437" width="0.2" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="1059.02" y="447.5" ></text>
+</g>
+<g >
+<title>common_interrupt (10,101,010 samples, 0.02%)</title><rect x="320.4" y="709" width="0.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="323.36" y="719.5" ></text>
+</g>
+<g >
+<title>virtblk_request_done (10,101,010 samples, 0.02%)</title><rect x="1058.5" y="517" width="0.2" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1061.47" y="527.5" ></text>
+</g>
+<g >
+<title>EVP_MD_CTX_set_flags (131,313,130 samples, 0.21%)</title><rect x="81.0" y="757" width="2.5" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="84.04" y="767.5" ></text>
+</g>
+<g >
+<title>new_sync_read (70,707,070 samples, 0.11%)</title><rect x="1055.1" y="629" width="1.3" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="1058.08" y="639.5" ></text>
+</g>
+<g >
+<title>do_register (80,808,080 samples, 0.13%)</title><rect x="287.2" y="549" width="1.5" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="290.19" y="559.5" ></text>
+</g>
+<g >
+<title>wake_up_process (10,101,010 samples, 0.02%)</title><rect x="211.6" y="613" width="0.2" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="214.63" y="623.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (20,202,020 samples, 0.03%)</title><rect x="285.3" y="741" width="0.4" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="288.31" y="751.5" ></text>
+</g>
+<g >
+<title>[unknown] (60,606,060 samples, 0.10%)</title><rect x="1056.8" y="725" width="1.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1059.77" y="735.5" ></text>
+</g>
+<g >
+<title>handle_softirqs (10,101,010 samples, 0.02%)</title><rect x="835.7" y="677" width="0.2" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="838.74" y="687.5" ></text>
+</g>
+<g >
+<title>rcu_core_si (10,101,010 samples, 0.02%)</title><rect x="446.8" y="661" width="0.2" height="15.0" fill="rgb(237,150,36)" rx="2" ry="2" />
+<text  x="449.80" y="671.5" ></text>
+</g>
+<g >
+<title>std::__do_visit&lt;void, std::__detail::__variant::_Variant_storage&lt;false, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, unsigned long, int, MysqlPool::Blob, decltype (10,101,010 samples, 0.02%)</title><rect x="288.3" y="213" width="0.2" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="291.32" y="223.5" ></text>
+</g>
+</g>
+</svg>

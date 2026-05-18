@@ -382,9 +382,41 @@ function isMainConversation(room, conversationId) {
   return !mainConversationId || normalizedConversationId === mainConversationId;
 }
 function resolveStoredChatView(rooms) {
-  const preferredRoom = rooms.find((room) => room.id === PERSONAL_ROOM_ID && room.isAvailable) || rooms[0];
-  const activeRoomId = preferredRoom?.id || PERSONAL_ROOM_ID;
-  return { activeRoomId, conversationId: preferredRoom?.conversationId || DEFAULT_CONVERSATION_ID, conversationOverride: null };
+  const availableRooms = rooms.filter((room) => room?.isAvailable);
+  const preferredRoom = availableRooms.find((room) => room.id === PERSONAL_ROOM_ID) || availableRooms[0] || rooms[0];
+  const storedView = readStoredChatView();
+  const storedActiveRoomId = typeof storedView.activeRoomId === "string" ? storedView.activeRoomId.trim() : "";
+  const storedBackendRoomId = normalizeConversationId(
+    storedView.backendRoomId ??
+    storedView.room_id ??
+    storedView.roomId ??
+    getCookieValue("room_id")
+  );
+  const storedConversationId = normalizeConversationId(
+    storedView.conversationId ??
+    storedView.conversation_id ??
+    getCookieValue("conversation_id")
+  );
+  const roomFromStoredId = storedActiveRoomId
+    ? availableRooms.find((room) => room.id === storedActiveRoomId)
+    : null;
+  const roomFromBackendId = storedBackendRoomId
+    ? availableRooms.find((room) => room.roomId === storedBackendRoomId)
+    : null;
+  const roomFromConversation = storedConversationId
+    ? availableRooms.find((room) => getRoomConversationIds(room).has(storedConversationId))
+    : null;
+  const activeRoom = roomFromStoredId || roomFromBackendId || roomFromConversation || preferredRoom;
+  const activeRoomId = activeRoom?.id || PERSONAL_ROOM_ID;
+  const roomConversationIds = getRoomConversationIds(activeRoom);
+  const conversationId = storedConversationId && roomConversationIds.has(storedConversationId)
+    ? storedConversationId
+    : activeRoom?.conversationId || DEFAULT_CONVERSATION_ID;
+  return {
+    activeRoomId,
+    conversationId,
+    conversationOverride: conversationId !== activeRoom?.conversationId ? { roomId: activeRoomId, conversationId } : null
+  };
 }
 function syncRoomCookies(rooms, activeRoomId) {
   const personalRoom = rooms.find((room) => room.id === PERSONAL_ROOM_ID);

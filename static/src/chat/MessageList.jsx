@@ -51,6 +51,7 @@ export default function MessageList({
   itemAnimationMode = "standard",
   stickToBottom = true, className = "", innerClassName = "",
   viewportRef, renderEmpty,
+  aiMembers = [],
   assistantState = null,
   onContextMenu,
   hasMoreHistory = false,
@@ -195,6 +196,7 @@ export default function MessageList({
                 hiddenMessageId={hiddenMessageId}
                 itemAnimationMode={itemAnimationMode}
                 onContextMenu={onContextMenu}
+                aiMembers={aiMembers}
               />
             ))}
             {hasAssistantState ? <AssistantStatusRow key={`assistant-${assistantState.status}`} state={assistantState} /> : null}

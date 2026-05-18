@@ -6,6 +6,7 @@ demos/
 build/
 static/dist/
 static/node_modules/
+.cache/
 
 # 运行时日志
 logs/
@@ -13,6 +14,10 @@ logs/
 # 本地笔记 / AI 上下文
 000_READ_BEFORE_EVERY_CHANGE/
 mentor/
+.claude/
+.deepseek/
+.agents/
+.vscode/
 
 # 临时截图
 *.png

@@ -1837,6 +1837,7 @@ export default function ChatRoom({
             <MessageList
               messages={visibleMessages}
               assistantState={assistantState}
+              aiMembers={effectiveAiMembers}
               onScrolled={onScrolled}
               hiddenMessageId={hiddenMessageId}
               shouldAnimateEntry={false}

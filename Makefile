@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -g -O0 -std=c++20 -Wall -Wno-sign-compare -I include -I third_party
+CXXFLAGS = -g -O0 -std=c++20 -Wall -Wno-sign-compare -I include -I third_party -fsanitize=address
 DEPFLAGS = -MMD -MP
 
 TARGET = build/server.out
@@ -14,7 +14,7 @@ OBJS = $(SRCS:src/%.cpp=build/%.o)
 OBJS := $(OBJS:src/%.cc=build/%.o)
 DEPS = $(OBJS:.o=.d)
 
-LIBS = -lprotobuf -lmysqlclient -lhiredis -lpthread -lcrypto -lmysqlcppconn -lssl
+LIBS = -lprotobuf -lmysqlclient -lhiredis -lpthread -lcrypto -lmysqlcppconn -lssl -fsanitize=address
 
 $(TARGET): $(OBJS)
 	$(CXX) $(OBJS) -o $(TARGET) $(LIBS)

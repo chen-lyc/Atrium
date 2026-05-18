@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
 import katex from "katex";
 import { EASE } from "../constants.js";
+import { getModelDisplayName } from "../utils.js";
 
 const ANIMATION_PRESETS = {
   standard: {
@@ -311,10 +312,40 @@ function renderMessageContent(text) {
   return nodes.length ? nodes : <p className="message-text">{source}</p>;
 }
 
-export default function MessageItem({ message, hiddenMessageId, itemAnimationMode = "standard", onContextMenu }) {
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+}
+
+function resolveAiProvider(member) {
+  const provider = normalizeText(member?.provider).toLowerCase();
+  if (provider && provider !== "other") return provider;
+  const model = normalizeText(member?.model).toLowerCase();
+  if (model.startsWith("deepseek")) return "deepseek";
+  if (model.startsWith("qwen")) return "qwen";
+  return "";
+}
+
+function hasSameProviderAiMember(message, aiMembers = []) {
+  const provider = resolveAiProvider(message);
+  if (!provider) return false;
+  return (Array.isArray(aiMembers) ? aiMembers : [])
+    .filter((member) => resolveAiProvider(member) === provider)
+    .length > 1;
+}
+
+function getMessageAuthorName(message, aiMembers = []) {
+  const fallbackName = normalizeText(message?.nickname) || "AI";
+  if (!message?.isAI) return fallbackName;
+  const model = normalizeText(message.model);
+  if (!model || !hasSameProviderAiMember(message, aiMembers)) return fallbackName;
+  return getModelDisplayName({ model, provider: message.provider }, model);
+}
+
+export default function MessageItem({ message, hiddenMessageId, itemAnimationMode = "standard", onContextMenu, aiMembers = [] }) {
   const isHiddenForFlight = message.id === hiddenMessageId;
   const participantType = message.isAI ? "ai" : message.isSelf ? "self" : "human";
   const avatarSrc = message.avatarUrl || (message.isAI ? "/avatars/deepseek-logo.svg" : "");
+  const authorName = getMessageAuthorName(message, aiMembers);
   const resolvedAnimationMode = message.source === "local-welcome" ? "welcome" : itemAnimationMode;
   const animationPreset = isHiddenForFlight
     ? ANIMATION_PRESETS.flightTarget
@@ -377,11 +408,11 @@ export default function MessageItem({ message, hiddenMessageId, itemAnimationMod
               <img className="message-avatar" src={avatarSrc} alt="" />
             ) : (
               <span className={`message-avatar-fallback is-${participantType}`} aria-hidden="true">
-                {String(message.nickname || "用").slice(0, 1)}
+                {String(authorName || "用").slice(0, 1)}
               </span>
             )}
             <span className="message-author-button">
-              <span className="message-author">{message.nickname}</span>
+              <span className="message-author">{authorName}</span>
             </span>
             {message.isSelf ? <span className="message-you">• 你</span> : null}
             {message.isAI ? <span className="message-badge is-ai">AI</span> : null}
