@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { EASE, STATUS_LABEL } from "../constants.js";
+import { EASE, MESSAGE_TYPE, STATUS_LABEL } from "../constants.js";
 import {
   createRoom,
   fetchFriendRequests,
@@ -28,6 +28,41 @@ import {
 
 const NOTE_TOAST_MS = 2200;
 const CHAT_SURFACE_STORAGE_KEY = "atrium.chat.surface";
+const HOME_VISIT_STATS_STORAGE_KEY = "atrium.home.visitStats.v1";
+const HOME_MEMORY_ANCHOR_PAGE_LIMIT = 36;
+const HOME_MEMORY_ANCHOR_MAX_PAGES = 3;
+const HOME_MEMORY_ANCHOR_LIMIT = 2;
+const HOME_PATH_LIMIT = 5;
+const HOME_PATH_RECENT_MS = 3 * 24 * 60 * 60 * 1000;
+const HOME_SPACE_RECENT_MS = 30 * 24 * 60 * 60 * 1000;
+const HOME_RECALL_TRACE_LIMIT = 112;
+const AI_NO_REPLY_TOKEN = "<NO_REPLY>";
+const HOME_RECALL_HIGHLIGHT_PATTERN = /(DeepSeek|Qwen|Claude|GPT-?4o?|prompt|WebSocket|Redis|MySQL|Home|AI|bug|TODO|\/api\/[^\s，。；;]+|[A-Za-z0-9_-]+\.(?:jsx|js|cpp|h|css|md)|错误|问题|方案|实现|架构|模型|摘要)/i;
+const HOME_RECALL_SPLIT_PATTERN = /(DeepSeek|Qwen|Claude|GPT-?4o?|prompt|WebSocket|Redis|MySQL|Home|AI|bug|TODO|\/api\/[^\s，。；;]+|[A-Za-z0-9_-]+\.(?:jsx|js|cpp|h|css|md)|错误|问题|方案|实现|架构|模型|摘要)/gi;
+const LOW_SIGNAL_HOME_ANCHOR_TEXTS = new Set([
+  "hi",
+  "hello",
+  "ok",
+  "okay",
+  "test",
+  "你好",
+  "您好",
+  "哈喽",
+  "在吗",
+  "好",
+  "好的",
+  "可以",
+  "行",
+  "嗯",
+  "嗯嗯",
+  "啊",
+  "哦",
+  "收到",
+  "谢谢",
+  "谢了",
+  "继续",
+  "测试"
+]);
 const ROLE_LABELS = {
   0: "房主",
   1: "管理员",
@@ -52,6 +87,55 @@ function writeStoredChatSurface(nextSurface) {
   } catch {
     // UI position persistence is best-effort only.
   }
+}
+
+function getHomeVisitStorageKey(currentUserId = "") {
+  const userKey = String(currentUserId || "anonymous").trim() || "anonymous";
+  return `${HOME_VISIT_STATS_STORAGE_KEY}:${userKey}`;
+}
+
+function readStoredHomeVisitStats(currentUserId = "") {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(getHomeVisitStorageKey(currentUserId)) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredHomeVisitStats(currentUserId = "", nextStats = {}) {
+  try {
+    window.localStorage.setItem(getHomeVisitStorageKey(currentUserId), JSON.stringify(nextStats));
+  } catch {
+    // Visit tracking is a replaceable frontend-only stand-in for future backend fields.
+  }
+}
+
+function getHomeObjectKey(roomId, conversationId) {
+  return `${roomId || "room"}:${Number(conversationId) || 0}`;
+}
+
+function normalizeHomeVisitTimestamp(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value < 10_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const trimmedValue = value.trim();
+    if (/^\d+$/.test(trimmedValue)) {
+      const numericValue = Number(trimmedValue);
+      if (Number.isFinite(numericValue) && numericValue > 0) {
+        return numericValue < 10_000_000_000 ? numericValue * 1000 : numericValue;
+      }
+    }
+    const parsedValue = Date.parse(trimmedValue);
+    return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : 0;
+  }
+  return 0;
+}
+
+function normalizeHomeVisitCount(value) {
+  const count = Number(value || 0);
+  return Number.isSafeInteger(count) && count > 0 ? count : 0;
 }
 
 function HeaderStatus({ modelLabel, connectionState }) {
@@ -244,38 +328,397 @@ function getConversationActivityMs(conversation) {
   return Number(conversation?.lastActivityAtMs || conversation?.updatedAtMs || conversation?.createdAtMs || 0);
 }
 
-function getConversationPreview(conversation, room) {
-  if (conversation?.lastMessagePreview) return conversation.lastMessagePreview;
-  if (conversation?.isMain) return `${room?.name || "房间"}的公共时间线`;
-  return "进入对话后继续阅读和推进。";
+function normalizeHomeMemoryAnchorTextValue(value) {
+  const text = String(value || "")
+    .replace(/!\[[^\]]*]\([^)]+\)/g, "图片")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text || text === AI_NO_REPLY_TOKEN) return "";
+  return text;
 }
 
-function getHomeConversationEntries(rooms = [], homeRoom = null) {
+function getCompactHomeAnchorText(text) {
+  return String(text || "")
+    .replace(/[。.!！?？~～,，、;；:："'“”‘’()[\]{}<>《》\s…]+/g, "")
+    .toLowerCase();
+}
+
+function isLowSignalHomeMemoryAnchor(text) {
+  const compactText = getCompactHomeAnchorText(text);
+  if (!compactText || compactText.length <= 1) return true;
+  if (LOW_SIGNAL_HOME_ANCHOR_TEXTS.has(compactText)) return true;
+  return compactText.length <= 4 && /^[嗯啊哦好行是对不可以了]+$/.test(compactText);
+}
+
+function isMeaningfulHomeMemoryAnchorText(text) {
+  const normalizedText = normalizeHomeMemoryAnchorTextValue(text);
+  return Boolean(normalizedText && !isLowSignalHomeMemoryAnchor(normalizedText));
+}
+
+function getConversationFallbackMemoryAnchors(conversation) {
+  const lastMessagePreview = normalizeHomeMemoryAnchorTextValue(conversation?.lastMessagePreview);
+  return isMeaningfulHomeMemoryAnchorText(lastMessagePreview) ? [lastMessagePreview] : [];
+}
+
+function getConversationVisitStats(conversation) {
+  return {
+    lastVisitedAtMs: normalizeHomeVisitTimestamp(
+      conversation?.lastVisitedAtMs ??
+      conversation?.last_visited_at_ms ??
+      conversation?.last_visited_at ??
+      conversation?.lastVisitedAt
+    ),
+    visitCount: normalizeHomeVisitCount(conversation?.visitCount ?? conversation?.visit_count)
+  };
+}
+
+function getHomeThinkingObjectEntries(rooms = [], homeRoom = null) {
   const homeRoomId = homeRoom?.id;
   const homeMainConversationId = homeRoom?.mainConversationId || homeRoom?.conversationId || 0;
   return rooms
     .flatMap((item) => {
       const mainConversationId = item?.mainConversationId || item?.conversationId || 0;
-      return (item?.conversations || []).map((conversation) => ({
-        ...conversation,
-        roomId: item.id,
-        backendRoomId: item.roomId,
-        roomName: item.name,
-        roomType: item.type,
-        roomTone: item.tone,
-        isMain: conversation.id === mainConversationId || conversation.isMain === true,
-        title: conversation.id === mainConversationId
-          ? item.id === homeRoomId ? "Home" : `${item.name || "房间"} · 公共时间线`
-          : conversation.name || `对话 ${conversation.id}`,
-        preview: getConversationPreview(conversation, item),
-        activityMs: getConversationActivityMs(conversation) || conversation.id
-      }));
+      return (item?.conversations || []).map((conversation) => {
+        const isRoomTimeline = conversation.id === mainConversationId || conversation.isMain === true;
+        return {
+          objectKey: getHomeObjectKey(item.id, conversation.id),
+          conversationId: conversation.id,
+          roomId: item.id,
+          backendRoomId: item.roomId,
+          roomName: item.name,
+          roomType: item.type,
+          roomTone: item.tone,
+          isRoomTimeline,
+          workingLabel: isRoomTimeline
+            ? item.id === homeRoomId ? "Home" : `${item.name || "房间"} · 公共时间线`
+            : conversation.name || `思考对象 ${conversation.id}`,
+          fallbackAnchors: getConversationFallbackMemoryAnchors(conversation),
+          backendVisit: getConversationVisitStats(conversation),
+          activityMs: getConversationActivityMs(conversation) || conversation.id
+        };
+      });
     })
-    .filter((conversation) => !(conversation.roomId === homeRoomId && conversation.id === homeMainConversationId))
-    .sort((a, b) => (b.activityMs || 0) - (a.activityMs || 0) || b.id - a.id);
+    .filter((thinkingObject) => !(thinkingObject.roomId === homeRoomId && thinkingObject.conversationId === homeMainConversationId))
+    .sort((a, b) => (b.activityMs || 0) - (a.activityMs || 0) || b.conversationId - a.conversationId);
 }
 
-function HomeAiStack({ members = [] }) {
+function normalizeHomeMessageText(message) {
+  const value =
+    message?.content ??
+    message?.text ??
+    message?.message ??
+    message?.body ??
+    message?.payload?.content ??
+    "";
+  return normalizeHomeMemoryAnchorTextValue(value);
+}
+
+function normalizeHomeMessageTimestamp(message) {
+  const value = message?.send_time_ms ?? message?.sendTimeMs ?? message?.timestamp ?? message?.created_at_ms ?? message?.createdAtMs ?? message?.created_at ?? message?.createdAt;
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value < 10_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const trimmedValue = value.trim();
+    if (/^\d+$/.test(trimmedValue)) {
+      const numericValue = Number(trimmedValue);
+      if (Number.isFinite(numericValue) && numericValue > 0) {
+        return numericValue < 10_000_000_000 ? numericValue * 1000 : numericValue;
+      }
+    }
+    const parsedValue = Date.parse(trimmedValue);
+    return Number.isFinite(parsedValue) ? parsedValue : 0;
+  }
+  return 0;
+}
+
+function normalizeHomeMessageId(message) {
+  const value = Number(message?.id ?? message?.message_id ?? message?.messageId ?? 0);
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function normalizeHomeMessageUserId(message) {
+  const value = message?.user_id ?? message?.userId ?? message?.send_id ?? message?.sendId ?? message?.sender_id ?? message?.senderId;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return "";
+}
+
+function isHomeSystemMessage(message) {
+  const messageType = Number(message?.message_type ?? message?.messageType ?? message?.type ?? 0);
+  const senderType = String(message?.sender_type ?? message?.senderType ?? message?.participant_type ?? message?.participantType ?? "").toLowerCase();
+  const role = String(message?.role ?? message?.message_role ?? message?.messageRole ?? "").toLowerCase();
+  return messageType === MESSAGE_TYPE.SYSTEM || senderType === "system" || role === "system";
+}
+
+function isHomeAiMessage(message) {
+  const senderType = String(message?.sender_type ?? message?.senderType ?? message?.participant_type ?? message?.participantType ?? "").toLowerCase();
+  const role = String(message?.role ?? message?.message_role ?? message?.messageRole ?? "").toLowerCase();
+  return Boolean(
+    senderType === "ai" ||
+    senderType === "assistant" ||
+    role === "ai" ||
+    role === "assistant" ||
+    message?.ai_id ||
+    message?.aiId ||
+    message?.model ||
+    message?.provider
+  );
+}
+
+function getHomeMemoryAnchorSignalScore(text) {
+  let score = 0;
+  const textLength = Array.from(text || "").length;
+  score += Math.min(5, Math.floor(textLength / 18));
+  if (textLength >= 10) score += 1;
+  if (/[?？]/.test(text)) score += 2;
+  if (/(```|`|=>|::|\/api|bug|todo|fix|错误|问题|方案|实现|架构|内存|算法|旅行|计划|对比|结论|设计|后端|前端|模型|摘要)/i.test(text)) score += 2;
+  return score;
+}
+
+function toHomeMemoryAnchorCandidates(messages = [], currentUserId = "") {
+  const normalizedCurrentUserId = String(currentUserId || "").trim();
+  return messages
+    .map((message) => {
+      const text = normalizeHomeMessageText(message);
+      if (!text || isHomeSystemMessage(message) || !isMeaningfulHomeMemoryAnchorText(text)) return null;
+      const userId = normalizeHomeMessageUserId(message);
+      const isAi = isHomeAiMessage(message);
+      const isOwnUser = Boolean(normalizedCurrentUserId && userId && userId === normalizedCurrentUserId && !isAi);
+      const isHuman = !isAi;
+      return {
+        text,
+        id: normalizeHomeMessageId(message),
+        timestamp: normalizeHomeMessageTimestamp(message),
+        score: getHomeMemoryAnchorSignalScore(text) + (isOwnUser ? 4 : isHuman ? 2 : 1)
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score || b.timestamp - a.timestamp || b.id - a.id);
+}
+
+function selectHomeMemoryAnchors(candidates = []) {
+  const seen = new Set();
+  return candidates
+    .slice()
+    .sort((a, b) => b.score - a.score || b.timestamp - a.timestamp || b.id - a.id)
+    .filter((candidate) => {
+      const compactText = getCompactHomeAnchorText(candidate.text);
+      if (!compactText || seen.has(compactText)) return false;
+      seen.add(compactText);
+      return true;
+    })
+    .slice(0, HOME_MEMORY_ANCHOR_LIMIT)
+    .map((candidate) => candidate.text);
+}
+
+function getHomeMemoryAnchorCursor(messages = []) {
+  const candidates = messages
+    .map((message) => ({
+      id: normalizeHomeMessageId(message),
+      timestamp: normalizeHomeMessageTimestamp(message)
+    }))
+    .filter((message) => message.id && message.timestamp)
+    .sort((a, b) => a.timestamp - b.timestamp || a.id - b.id);
+  const oldest = candidates[0];
+  return oldest ? { before_time: String(oldest.timestamp), before_id: String(oldest.id) } : null;
+}
+
+async function fetchHomeThinkingObjectAnchors(conversationId, currentUserId = "", signal) {
+  let cursor = null;
+  const collectedCandidates = [];
+  for (let page = 0; page < HOME_MEMORY_ANCHOR_MAX_PAGES; page += 1) {
+    const params = new URLSearchParams();
+    params.set("limit", String(HOME_MEMORY_ANCHOR_PAGE_LIMIT));
+    if (cursor) {
+      params.set("before_time", cursor.before_time);
+      params.set("before_id", cursor.before_id);
+    }
+    const response = await fetch(`/api/conversations/${conversationId}/messages?${params.toString()}`, {
+      method: "GET",
+      credentials: "include",
+      signal
+    });
+    if (!response.ok) return [];
+    const data = await response.json();
+    const messages = Array.isArray(data?.messages) ? data.messages : [];
+    collectedCandidates.push(...toHomeMemoryAnchorCandidates(messages, currentUserId));
+    const selectedAnchors = selectHomeMemoryAnchors(collectedCandidates);
+    if (selectedAnchors.length >= HOME_MEMORY_ANCHOR_LIMIT) return selectedAnchors;
+    if (!data?.has_more || !messages.length) break;
+    cursor = getHomeMemoryAnchorCursor(messages);
+    if (!cursor) break;
+  }
+  return selectHomeMemoryAnchors(collectedCandidates);
+}
+
+function getStableHomeHash(value) {
+  const source = String(value || "");
+  let hash = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    hash = ((hash << 5) - hash + source.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function isLikelyTestingThinkingObject(thinkingObject, memoryAnchors = []) {
+  const label = getCompactHomeAnchorText(thinkingObject?.workingLabel || "");
+  const roomName = getCompactHomeAnchorText(thinkingObject?.roomName || "");
+  const anchorText = getCompactHomeAnchorText(memoryAnchors.join(" "));
+  if (!memoryAnchors.length) return true;
+  return Boolean(
+    /^(test|test\d+|测试|新建对话测试\d*|createtest)$/.test(label) ||
+    /test|测试/.test(label) && !/(方案|实现|算法|模型|旅行|设计|架构|内存|问题)/.test(anchorText) ||
+    /test|测试/.test(roomName) && !anchorText
+  );
+}
+
+function resolveHomeThinkingObjectVisit(thinkingObject, storedVisit = {}, memoryAnchors = [], index = 0) {
+  const backendLastVisitedAtMs = thinkingObject.backendVisit?.lastVisitedAtMs || 0;
+  const backendVisitCount = thinkingObject.backendVisit?.visitCount || 0;
+  const storedLastVisitedAtMs = normalizeHomeVisitTimestamp(storedVisit?.lastVisitedAtMs);
+  const storedVisitCount = normalizeHomeVisitCount(storedVisit?.visitCount);
+  const hasRealVisit = Boolean(backendLastVisitedAtMs || backendVisitCount || storedLastVisitedAtMs || storedVisitCount);
+  if (hasRealVisit) {
+    return {
+      lastVisitedAtMs: Math.max(backendLastVisitedAtMs, storedLastVisitedAtMs),
+      visitCount: Math.max(backendVisitCount, storedVisitCount),
+      source: storedLastVisitedAtMs || storedVisitCount ? "local" : "backend"
+    };
+  }
+
+  const now = Date.now();
+  const stableHash = getStableHomeHash(`${thinkingObject.objectKey}:${thinkingObject.workingLabel}:${index}`);
+  if (isLikelyTestingThinkingObject(thinkingObject, memoryAnchors)) {
+    return {
+      lastVisitedAtMs: now - (38 + stableHash % 42) * 24 * 60 * 60 * 1000,
+      visitCount: stableHash % 2,
+      source: "mock"
+    };
+  }
+
+  const mockDays = [1, 2, 4, 8, 14, 24];
+  return {
+    lastVisitedAtMs: now - mockDays[stableHash % mockDays.length] * 24 * 60 * 60 * 1000,
+    visitCount: 1 + (stableHash % 4),
+    source: "mock"
+  };
+}
+
+function getHomeThinkingObjectScore(thinkingObject) {
+  const visit = thinkingObject.visit || {};
+  const now = Date.now();
+  const ageMs = visit.lastVisitedAtMs ? now - visit.lastVisitedAtMs : Number.POSITIVE_INFINITY;
+  const recencyScore = Number.isFinite(ageMs) ? Math.max(0, HOME_SPACE_RECENT_MS - ageMs) / HOME_SPACE_RECENT_MS : 0;
+  return recencyScore * 10 + (visit.visitCount || 0) * 2 + (thinkingObject.hasMemoryAnchors ? 2 : 0);
+}
+
+function buildHomeThinkingObjectSections(thinkingObjects = []) {
+  const now = Date.now();
+  const rankedObjects = thinkingObjects
+    .slice()
+    .sort((a, b) => getHomeThinkingObjectScore(b) - getHomeThinkingObjectScore(a) || b.conversationId - a.conversationId);
+
+  const pathCandidates = rankedObjects.filter((thinkingObject) => {
+    const visit = thinkingObject.visit || {};
+    const ageMs = visit.lastVisitedAtMs ? now - visit.lastVisitedAtMs : Number.POSITIVE_INFINITY;
+    return thinkingObject.hasMemoryAnchors &&
+      !thinkingObject.isTestingObject &&
+      (ageMs <= HOME_PATH_RECENT_MS || (visit.visitCount || 0) >= 3);
+  });
+  const path = pathCandidates.slice(0, HOME_PATH_LIMIT);
+  const pathKeys = new Set(path.map((thinkingObject) => thinkingObject.objectKey));
+
+  const sameSpace = rankedObjects.filter((thinkingObject) => {
+    if (pathKeys.has(thinkingObject.objectKey)) return false;
+    if (thinkingObject.isTestingObject && (thinkingObject.visit?.visitCount || 0) <= 1) return false;
+    const visit = thinkingObject.visit || {};
+    const ageMs = visit.lastVisitedAtMs ? now - visit.lastVisitedAtMs : Number.POSITIVE_INFINITY;
+    return Boolean((visit.visitCount || 0) > 0 || ageMs <= HOME_SPACE_RECENT_MS);
+  });
+  const sameSpaceKeys = new Set(sameSpace.map((thinkingObject) => thinkingObject.objectKey));
+
+  const storage = rankedObjects.filter((thinkingObject) => !pathKeys.has(thinkingObject.objectKey) && !sameSpaceKeys.has(thinkingObject.objectKey));
+  return { path, sameSpace, storage };
+}
+
+function formatHomeVisitMeta(thinkingObject) {
+  const visit = thinkingObject?.visit || {};
+  const lastVisited = visit.lastVisitedAtMs ? `上次打开 ${formatHomeTimestamp(visit.lastVisitedAtMs)}` : "尚未主动打开";
+  const count = visit.visitCount ? `回访 ${visit.visitCount} 次` : "";
+  return count ? `${lastVisited} · ${count}` : lastVisited;
+}
+
+function getHomeVisitProperties(thinkingObject) {
+  const visit = thinkingObject?.visit || {};
+  const properties = [];
+  if (thinkingObject?.roomName) properties.push(thinkingObject.roomName);
+  properties.push(visit.lastVisitedAtMs ? `${formatHomeTimestamp(visit.lastVisitedAtMs)}打开` : "未主动打开");
+  if (visit.visitCount) properties.push(`${visit.visitCount} 次回访`);
+  return properties;
+}
+
+function truncateHomeRecallTrace(text, limit = HOME_RECALL_TRACE_LIMIT) {
+  const chars = Array.from(text || "");
+  if (chars.length <= limit) return text;
+  return `${chars.slice(0, limit).join("").trim()}...`;
+}
+
+function normalizeHomeRecallTraceSource(value) {
+  return normalizeHomeMemoryAnchorTextValue(value)
+    .replace(/```[\s\S]*?```/g, "代码片段")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*\*/g, "")
+    .replace(/^\s*(?:\[\d+][,，：:\s]*)+/g, "")
+    .replace(/(^|\s)>+\s?/g, " ")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function scoreHomeRecallTrace(text) {
+  const length = Array.from(text || "").length;
+  let score = 0;
+  if (length >= 12 && length <= 140) score += 4;
+  if (length > 220) score -= 4;
+  if (/[?？]/.test(text)) score += 3;
+  if (/(我|我们|需要|为什么|怎么|如何|设计|问题|修正|实现|决定)/.test(text)) score += 2;
+  if (/^(原因|首先|其次|总结|结论|直接回答你|这个问题很关键)/.test(text)) score -= 3;
+  if (/代码片段|错误栈|Traceback|Exception/.test(text)) score -= 2;
+  return score;
+}
+
+function getHomeRecallTrace(memoryAnchors = []) {
+  const candidates = memoryAnchors
+    .map((anchor) => normalizeHomeRecallTraceSource(anchor))
+    .filter(Boolean)
+    .sort((a, b) => scoreHomeRecallTrace(b) - scoreHomeRecallTrace(a));
+  const text = candidates[0] || "";
+  return text ? truncateHomeRecallTrace(text) : "还没有清晰的内容痕迹";
+}
+
+function renderHomeRecallTrace(text, objectKey) {
+  const parts = String(text || "").split(HOME_RECALL_SPLIT_PATTERN).filter(Boolean);
+  let emphasisCount = 0;
+  return parts.map((part, index) => {
+    const shouldEmphasize = emphasisCount < 3 && HOME_RECALL_HIGHLIGHT_PATTERN.test(part);
+    if (shouldEmphasize) emphasisCount += 1;
+    return (
+      <span
+        className={shouldEmphasize ? "home-recall-emphasis" : undefined}
+        key={`${objectKey}-recall-${index}`}
+      >
+        {part}
+      </span>
+    );
+  });
+}
+
+function HomeAiStack({ members = [], quiet = false }) {
+  if (quiet) {
+    return members.length ? <span className="home-ai-quiet">{members.length} 位 AI</span> : null;
+  }
   const visibleMembers = members.slice(0, 3);
   if (!visibleMembers.length) {
     return <span className="home-ai-empty">无 AI</span>;
@@ -294,27 +737,134 @@ function HomeAiStack({ members = [] }) {
   );
 }
 
+function HomePathObjectCard({ thinkingObject, members = [], onOpen = () => {} }) {
+  const recallTrace = getHomeRecallTrace(thinkingObject.memoryAnchors);
+  const properties = getHomeVisitProperties(thinkingObject);
+  return (
+    <button
+      type="button"
+      className="home-path-card focus-ring"
+      onClick={() => onOpen(thinkingObject.roomId, thinkingObject.conversationId)}
+    >
+      <span className="home-card-title">{thinkingObject.workingLabel}</span>
+      <span className={`home-recall-line ${thinkingObject.hasMemoryAnchors ? "" : "is-empty"}`}>
+        {renderHomeRecallTrace(recallTrace, thinkingObject.objectKey)}
+      </span>
+      <span className="home-property-row">
+        {properties.map((property) => (
+          <span key={`${thinkingObject.objectKey}-${property}`}>{property}</span>
+        ))}
+        <HomeAiStack members={members} quiet />
+      </span>
+    </button>
+  );
+}
+
+function HomeCompactObjectRow({ thinkingObject, onOpen = () => {} }) {
+  return (
+    <button
+      type="button"
+      className="home-compact-row focus-ring"
+      onClick={() => onOpen(thinkingObject.roomId, thinkingObject.conversationId)}
+    >
+      <span className="home-compact-title">{thinkingObject.workingLabel}</span>
+      <span className="home-compact-meta">
+        <span>{thinkingObject.roomName || "房间"}</span>
+        <time>{formatHomeVisitMeta(thinkingObject)}</time>
+      </span>
+    </button>
+  );
+}
+
+function HomeStorageRow({ thinkingObject, onOpen = () => {} }) {
+  return (
+    <button
+      type="button"
+      className="home-storage-row focus-ring"
+      onClick={() => onOpen(thinkingObject.roomId, thinkingObject.conversationId)}
+    >
+      <span>{thinkingObject.workingLabel}</span>
+      <small>{thinkingObject.hasMemoryAnchors ? formatHomeVisitMeta(thinkingObject) : "内容太少"}</small>
+    </button>
+  );
+}
+
 function HomeDashboard({
   nickname = "",
   room = null,
   rooms = [],
   roomAiMembersByRoomId = {},
+  currentUserId = "",
+  homeVisitStats = {},
   onOpenConversation = () => {},
   onCreateConversation = () => {},
   onOpenAi = () => {}
 }) {
-  const conversations = getHomeConversationEntries(rooms, room);
-  const hasConversations = conversations.length > 0;
+  const thinkingObjects = getHomeThinkingObjectEntries(rooms, room);
+  const hasThinkingObjects = thinkingObjects.length > 0;
   const homeName = nickname ? `${nickname} 的 Home` : "Home";
+  const [thinkingObjectAnchors, setThinkingObjectAnchors] = useState({});
+  const [storageOpen, setStorageOpen] = useState(false);
+  const thinkingObjectKey = thinkingObjects.map((thinkingObject) => thinkingObject.objectKey).join("|");
+
+  useEffect(() => {
+    if (!thinkingObjects.length) return undefined;
+    const missingThinkingObjects = thinkingObjects.filter((thinkingObject) => {
+      return !thinkingObject.fallbackAnchors.length && !thinkingObjectAnchors[thinkingObject.objectKey];
+    });
+    if (!missingThinkingObjects.length) return undefined;
+
+    const controller = new AbortController();
+    Promise.all(
+      missingThinkingObjects.map((thinkingObject) => {
+        return fetchHomeThinkingObjectAnchors(thinkingObject.conversationId, currentUserId, controller.signal)
+          .then((anchors) => [thinkingObject.objectKey, anchors])
+          .catch((error) => {
+            if (error?.name === "AbortError") return null;
+            return [thinkingObject.objectKey, []];
+          });
+      })
+    ).then((entries) => {
+      if (controller.signal.aborted) return;
+      setThinkingObjectAnchors((current) => {
+        const next = { ...current };
+        entries.forEach((entry) => {
+          if (!entry) return;
+          const [key, anchors] = entry;
+          next[key] = Array.isArray(anchors) ? anchors : [];
+        });
+        return next;
+      });
+    });
+    return () => controller.abort();
+  }, [thinkingObjectKey, currentUserId]);
+
+  const enrichedThinkingObjects = thinkingObjects.map((thinkingObject, index) => {
+    const hasFetchedAnchors = Object.prototype.hasOwnProperty.call(thinkingObjectAnchors, thinkingObject.objectKey);
+    const fetchedAnchors = hasFetchedAnchors ? thinkingObjectAnchors[thinkingObject.objectKey] : null;
+    const memoryAnchors = Array.isArray(fetchedAnchors) ? fetchedAnchors : thinkingObject.fallbackAnchors;
+    const visit = resolveHomeThinkingObjectVisit(thinkingObject, homeVisitStats[thinkingObject.objectKey], memoryAnchors, index);
+    return {
+      ...thinkingObject,
+      memoryAnchors,
+      visit,
+      hasMemoryAnchors: memoryAnchors.length > 0,
+      isTestingObject: isLikelyTestingThinkingObject(thinkingObject, memoryAnchors)
+    };
+  });
+  const homeSections = buildHomeThinkingObjectSections(enrichedThinkingObjects);
+  const pathCount = homeSections.path.length;
+  const sameSpaceCount = homeSections.sameSpace.length;
+  const storageCount = homeSections.storage.length;
 
   return (
-    <section className={`home-dashboard ${hasConversations ? "has-conversations" : "is-empty"}`} aria-label="Home">
+    <section className={`home-dashboard ${hasThinkingObjects ? "has-thinking-objects" : "is-empty"}`} aria-label="Home">
       <div className="home-dashboard-inner">
         <header className="home-hero">
           <div className="home-hero-copy">
             <span className="home-kicker">个人讨论室 · 默认入口</span>
             <h1>{homeName}</h1>
-            <p>从这里扫过最近的讨论、摘录和 AI 阵容，再决定进入哪一条思考线。</p>
+            <p>回到最近留下痕迹的事情，而不是翻找一条条对话记录。</p>
           </div>
           <div className="home-hero-actions">
             <button type="button" className="home-action is-primary focus-ring" onClick={onCreateConversation}>
@@ -326,7 +876,7 @@ function HomeDashboard({
           </div>
         </header>
 
-        {!hasConversations ? (
+        {!hasThinkingObjects ? (
           <section className="home-empty-panel" aria-label="开始使用 Atrium">
             <div className="home-empty-grid" aria-hidden="true">
               <span />
@@ -347,39 +897,73 @@ function HomeDashboard({
             </div>
           </section>
         ) : (
-          <section className="home-conversation-section" aria-label="对话近况">
-            <div className="home-section-head">
-              <div>
-                <h2>继续思考</h2>
-                <p>{conversations.length} 条对话按最近活动排列</p>
-              </div>
-            </div>
-            <div className="home-conversation-grid">
-              {conversations.map((conversation) => {
-                const members = roomAiMembersByRoomId[conversation.backendRoomId] || [];
-                const unreadCount = Number(conversation.unreadCount || 0);
-                return (
-                  <button
-                    key={`${conversation.roomId}-${conversation.id}`}
-                    type="button"
-                    className={`home-conversation-card focus-ring ${unreadCount > 0 ? "has-unread" : ""}`}
-                    onClick={() => onOpenConversation(conversation.roomId, conversation.id)}
-                  >
-                    <span className="home-card-meta">
-                      <span>{conversation.roomName || "房间"}</span>
-                      <time>{formatHomeTimestamp(conversation.activityMs)}</time>
-                    </span>
-                    <span className="home-card-title">{conversation.title}</span>
-                    <span className="home-card-preview">{conversation.preview}</span>
-                    <span className="home-card-foot">
-                      <HomeAiStack members={members} />
-                      {unreadCount > 0 ? <span className="home-unread">{unreadCount > 9 ? "9+" : unreadCount}</span> : null}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
+          <div className="home-thinking-sections" aria-label="思考对象">
+            {pathCount ? (
+              <section className="home-path-section" aria-label="路径上的事情">
+                <div className="home-section-head">
+                  <div>
+                    <h2>路径上</h2>
+                    <p>{pathCount} 个最近或高频回访的思考对象</p>
+                  </div>
+                </div>
+                <div className="home-path-list">
+                  {homeSections.path.map((thinkingObject) => (
+                    <HomePathObjectCard
+                      key={thinkingObject.objectKey}
+                      thinkingObject={thinkingObject}
+                      members={roomAiMembersByRoomId[thinkingObject.backendRoomId] || []}
+                      onOpen={onOpenConversation}
+                    />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {sameSpaceCount ? (
+              <section className="home-same-space-section" aria-label="同空间">
+                <div className="home-section-head is-compact">
+                  <div>
+                    <h2>同空间</h2>
+                    <p>访问过，但最近没回去</p>
+                  </div>
+                </div>
+                <div className="home-compact-list">
+                  {homeSections.sameSpace.map((thinkingObject) => (
+                    <HomeCompactObjectRow
+                      key={thinkingObject.objectKey}
+                      thinkingObject={thinkingObject}
+                      onOpen={onOpenConversation}
+                    />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {storageCount ? (
+              <section className="home-storage-section" aria-label="更早和测试性对话">
+                <button
+                  type="button"
+                  className="home-storage-toggle focus-ring"
+                  onClick={() => setStorageOpen((value) => !value)}
+                  aria-expanded={storageOpen}
+                >
+                  <span>更早 / 测试性</span>
+                  <small>{storageCount} 个可展开</small>
+                </button>
+                {storageOpen ? (
+                  <div className="home-storage-list">
+                    {homeSections.storage.map((thinkingObject) => (
+                      <HomeStorageRow
+                        key={thinkingObject.objectKey}
+                        thinkingObject={thinkingObject}
+                        onOpen={onOpenConversation}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
+          </div>
         )}
 
         <aside className="home-notes-panel" aria-label="笔记窥看">
@@ -522,6 +1106,7 @@ export default function ChatRoom({
   const noteToastTimerRef = useRef(null);
   const [mainRoomMembers, setMainRoomMembers] = useState([]);
   const [mainRoomMembersState, setMainRoomMembersState] = useState("idle");
+  const [homeVisitStats, setHomeVisitStats] = useState(() => readStoredHomeVisitStats(currentUserId));
 
   const roomTone = room?.tone === "public" ? "public" : "personal";
   const activeBackendRoomId = Number(room?.roomId || 0);
@@ -558,6 +1143,10 @@ export default function ChatRoom({
       window.clearTimeout(noteToastTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    setHomeVisitStats(readStoredHomeVisitStats(currentUserId));
+  }, [currentUserId]);
 
   useEffect(() => {
     if (!currentUserId) {
@@ -685,6 +1274,49 @@ export default function ChatRoom({
         roomName
       }
     }));
+  }
+
+  function recordHomeConversationVisit(roomId, conversationId) {
+    const normalizedConversationId = Number(conversationId || 0);
+    if (!roomId || !normalizedConversationId) return;
+    const homeRoom = Array.isArray(rooms) ? rooms.find((item) => item.id === "personal" || item.type === 1) : null;
+    const homeMainConversationId = homeRoom?.mainConversationId || homeRoom?.conversationId || 0;
+    if (homeRoom?.id === roomId && normalizedConversationId === homeMainConversationId) return;
+    const objectKey = getHomeObjectKey(roomId, normalizedConversationId);
+    setHomeVisitStats((current) => {
+      const currentEntry = current[objectKey] || {};
+      const nextStats = {
+        ...current,
+        [objectKey]: {
+          lastVisitedAtMs: Date.now(),
+          visitCount: normalizeHomeVisitCount(currentEntry.visitCount) + 1
+        }
+      };
+      writeStoredHomeVisitStats(currentUserId, nextStats);
+      return nextStats;
+    });
+  }
+
+  function handleActiveRoomSelect(roomId) {
+    const nextRoom = Array.isArray(rooms) ? rooms.find((item) => item.id === roomId) : null;
+    const nextConversationId = nextRoom?.mainConversationId || nextRoom?.conversationId || 0;
+    const isAlreadyOpen = nextRoom?.id === activeRoomId && nextConversationId === activeConversationId;
+    if (nextRoom?.id && nextConversationId && !isAlreadyOpen) {
+      recordHomeConversationVisit(nextRoom.id, nextConversationId);
+    }
+    onRoomSelect(roomId);
+  }
+
+  function handleActiveConversationSelect(conversationId) {
+    if (activeRoomId && conversationId && conversationId !== activeConversationId) {
+      recordHomeConversationVisit(activeRoomId, conversationId);
+    }
+    onConversationSelect(conversationId);
+  }
+
+  function handleHomeObjectOpen(roomId, conversationId) {
+    recordHomeConversationVisit(roomId, conversationId);
+    onNavigateConversation(roomId, conversationId);
   }
 
   function insertAiMention(member) {
@@ -849,14 +1481,14 @@ export default function ChatRoom({
           readOnly={readOnly}
           rooms={rooms}
           activeRoomId={activeRoomId}
-          onRoomSelect={(id) => { onRoomSelect(id); setMobileSidebarOpen(false); }}
+          onRoomSelect={(id) => { handleActiveRoomSelect(id); setMobileSidebarOpen(false); }}
           roomName={roomName}
           mode={sidebarMode}
           onModeChange={updateSidebarMode}
           room={room}
           conversations={roomConversations}
           activeConversationId={activeConversationId}
-          onConversationSelect={(id) => { onConversationSelect(id); setMobileSidebarOpen(false); }}
+          onConversationSelect={(id) => { handleActiveConversationSelect(id); setMobileSidebarOpen(false); }}
           onCreateConversation={onCreateConversationDraft}
           onRenameConversation={handleRenameConversation}
           onDeleteConversation={onDeleteConversation}
@@ -968,7 +1600,9 @@ export default function ChatRoom({
               room={room}
               rooms={rooms}
               roomAiMembersByRoomId={roomAiMembersByRoomId}
-              onOpenConversation={onNavigateConversation}
+              currentUserId={currentUserId}
+              homeVisitStats={homeVisitStats}
+              onOpenConversation={handleHomeObjectOpen}
               onCreateConversation={onCreateConversationDraft}
               onOpenAi={() => openWorkspace(activeRoomId, "ai")}
             />
