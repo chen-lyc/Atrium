@@ -70,6 +70,8 @@ const ROLE_LABELS = {
 };
 const MAIN_SEATLINE_MEMBER_LIMIT = 5;
 const MAIN_SEATLINE_AI_LIMIT = 5;
+const SIDEBAR_SURFACE_HOME = "home";
+const SIDEBAR_SURFACE_DEFAULT = "default";
 
 function readStoredChatSurface() {
   try {
@@ -165,6 +167,10 @@ function getVisibleMemberCount(room, members) {
   const rawCount = Number(room?.memberCount ?? room?.member_count ?? room?.membersCount ?? room?.members_count);
   const normalizedCount = Number.isSafeInteger(rawCount) && rawCount >= 0 ? rawCount : 0;
   return Math.max(normalizedCount, members.length);
+}
+
+function getDefaultSidebarCollapsed(sidebarSurface) {
+  return sidebarSurface === SIDEBAR_SURFACE_HOME;
 }
 
 function RoomMemberAvatar({ member, currentUserId = "" }) {
@@ -490,6 +496,9 @@ function toHomeMemoryAnchorCandidates(messages = [], currentUserId = "") {
         text,
         id: normalizeHomeMessageId(message),
         timestamp: normalizeHomeMessageTimestamp(message),
+        isAi,
+        isOwnUser,
+        isHuman,
         score: getHomeMemoryAnchorSignalScore(text) + (isOwnUser ? 4 : isHuman ? 2 : 1)
       };
     })
@@ -497,19 +506,40 @@ function toHomeMemoryAnchorCandidates(messages = [], currentUserId = "") {
     .sort((a, b) => b.score - a.score || b.timestamp - a.timestamp || b.id - a.id);
 }
 
-function selectHomeMemoryAnchors(candidates = []) {
+function selectHomeAnchorTexts(candidates = [], {
+  limit = HOME_MEMORY_ANCHOR_LIMIT,
+  filter = () => true,
+  sort = "score"
+} = {}) {
   const seen = new Set();
   return candidates
     .slice()
-    .sort((a, b) => b.score - a.score || b.timestamp - a.timestamp || b.id - a.id)
+    .filter(filter)
+    .sort((a, b) => {
+      if (sort === "recent") return b.timestamp - a.timestamp || b.score - a.score || b.id - a.id;
+      return b.score - a.score || b.timestamp - a.timestamp || b.id - a.id;
+    })
     .filter((candidate) => {
       const compactText = getCompactHomeAnchorText(candidate.text);
       if (!compactText || seen.has(compactText)) return false;
       seen.add(compactText);
       return true;
     })
-    .slice(0, HOME_MEMORY_ANCHOR_LIMIT)
+    .slice(0, limit)
     .map((candidate) => candidate.text);
+}
+
+function selectHomeMemoryAnchors(candidates = []) {
+  return selectHomeAnchorTexts(candidates);
+}
+
+function buildHomeAnchorBundle(candidates = []) {
+  return {
+    anchors: selectHomeMemoryAnchors(candidates),
+    userAnchors: selectHomeAnchorTexts(candidates, { filter: (candidate) => !candidate.isAi }),
+    aiAnchors: selectHomeAnchorTexts(candidates, { filter: (candidate) => candidate.isAi }),
+    recentAnchors: selectHomeAnchorTexts(candidates, { sort: "recent" })
+  };
 }
 
 function getHomeMemoryAnchorCursor(messages = []) {
@@ -539,17 +569,17 @@ async function fetchHomeThinkingObjectAnchors(conversationId, currentUserId = ""
       credentials: "include",
       signal
     });
-    if (!response.ok) return [];
+    if (!response.ok) return buildHomeAnchorBundle(collectedCandidates);
     const data = await response.json();
     const messages = Array.isArray(data?.messages) ? data.messages : [];
     collectedCandidates.push(...toHomeMemoryAnchorCandidates(messages, currentUserId));
     const selectedAnchors = selectHomeMemoryAnchors(collectedCandidates);
-    if (selectedAnchors.length >= HOME_MEMORY_ANCHOR_LIMIT) return selectedAnchors;
+    if (selectedAnchors.length >= HOME_MEMORY_ANCHOR_LIMIT) return buildHomeAnchorBundle(collectedCandidates);
     if (!data?.has_more || !messages.length) break;
     cursor = getHomeMemoryAnchorCursor(messages);
     if (!cursor) break;
   }
-  return selectHomeMemoryAnchors(collectedCandidates);
+  return buildHomeAnchorBundle(collectedCandidates);
 }
 
 function getStableHomeHash(value) {
@@ -658,6 +688,32 @@ function getHomeVisitProperties(thinkingObject) {
   return properties;
 }
 
+function getHomeObjectStateLabel(thinkingObject, members = [], { isWarmest = false } = {}) {
+  const visit = thinkingObject?.visit || {};
+  const visitCount = normalizeHomeVisitCount(visit.visitCount);
+  const lastVisitedAtMs = normalizeHomeVisitTimestamp(visit.lastVisitedAtMs);
+  const ageMs = lastVisitedAtMs ? Date.now() - lastVisitedAtMs : Number.POSITIVE_INFINITY;
+  if (!thinkingObject?.hasMemoryAnchors) return "内容还少";
+  if (isWarmest && ageMs <= 24 * 60 * 60 * 1000) return "刚停在这里";
+  if (isWarmest) return "最近停在这里";
+  if (ageMs <= 24 * 60 * 60 * 1000) return "今天回访";
+  if (visitCount >= 3) return "反复回访";
+  if (members.length > 1) return "多 AI 参与";
+  if (members.length === 1) return "单 AI 陪同";
+  return "有痕迹";
+}
+
+function getHomeObjectCardClass(thinkingObject, members = [], { isWarmest = false } = {}) {
+  const classNames = [];
+  if (members.length > 1) classNames.push("is-multi-ai");
+  else if (members.length === 1) classNames.push("is-single-ai");
+  else classNames.push("is-no-ai");
+  if (isWarmest) classNames.push("is-warmest");
+  if ((thinkingObject?.visit?.visitCount || 0) >= 3) classNames.push("is-returning");
+  if (!thinkingObject?.hasMemoryAnchors) classNames.push("is-quiet");
+  return classNames.join(" ");
+}
+
 function truncateHomeRecallTrace(text, limit = HOME_RECALL_TRACE_LIMIT) {
   const chars = Array.from(text || "");
   if (chars.length <= limit) return text;
@@ -737,15 +793,29 @@ function HomeAiStack({ members = [], quiet = false }) {
   );
 }
 
-function HomePathObjectCard({ thinkingObject, members = [], onOpen = () => {} }) {
-  const recallTrace = getHomeRecallTrace(thinkingObject.memoryAnchors);
+function HomePathObjectCard({
+  thinkingObject,
+  members = [],
+  index = 0,
+  isActive = false,
+  isWarmest = false,
+  onPreview = () => {},
+  onOpen = () => {}
+}) {
+  const recallTrace = getHomeRecallTrace(thinkingObject.userMemoryAnchors || thinkingObject.memoryAnchors);
   const properties = getHomeVisitProperties(thinkingObject);
   return (
-    <button
+    <motion.button
       type="button"
-      className="home-path-card focus-ring"
+      className={`home-path-card focus-ring ${getHomeObjectCardClass(thinkingObject, members, { isWarmest })} ${isActive ? "is-active" : ""}`}
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: Math.min(index * 0.085, 0.36), duration: 0.28, ease: EASE }}
+      onMouseEnter={() => onPreview(thinkingObject.objectKey)}
+      onFocus={() => onPreview(thinkingObject.objectKey)}
       onClick={() => onOpen(thinkingObject.roomId, thinkingObject.conversationId)}
     >
+      <span className="home-card-state">{getHomeObjectStateLabel(thinkingObject, members, { isWarmest })}</span>
       <span className="home-card-title">{thinkingObject.workingLabel}</span>
       <span className={`home-recall-line ${thinkingObject.hasMemoryAnchors ? "" : "is-empty"}`}>
         {renderHomeRecallTrace(recallTrace, thinkingObject.objectKey)}
@@ -756,15 +826,17 @@ function HomePathObjectCard({ thinkingObject, members = [], onOpen = () => {} })
         ))}
         <HomeAiStack members={members} quiet />
       </span>
-    </button>
+    </motion.button>
   );
 }
 
-function HomeCompactObjectRow({ thinkingObject, onOpen = () => {} }) {
+function HomeCompactObjectRow({ thinkingObject, isActive = false, onPreview = () => {}, onOpen = () => {} }) {
   return (
     <button
       type="button"
-      className="home-compact-row focus-ring"
+      className={`home-compact-row focus-ring ${isActive ? "is-active" : ""}`}
+      onMouseEnter={() => onPreview(thinkingObject.objectKey)}
+      onFocus={() => onPreview(thinkingObject.objectKey)}
       onClick={() => onOpen(thinkingObject.roomId, thinkingObject.conversationId)}
     >
       <span className="home-compact-title">{thinkingObject.workingLabel}</span>
@@ -776,16 +848,103 @@ function HomeCompactObjectRow({ thinkingObject, onOpen = () => {} }) {
   );
 }
 
-function HomeStorageRow({ thinkingObject, onOpen = () => {} }) {
+function HomeStorageRow({ thinkingObject, isActive = false, onPreview = () => {}, onOpen = () => {} }) {
   return (
     <button
       type="button"
-      className="home-storage-row focus-ring"
+      className={`home-storage-row focus-ring ${isActive ? "is-active" : ""}`}
+      onMouseEnter={() => onPreview(thinkingObject.objectKey)}
+      onFocus={() => onPreview(thinkingObject.objectKey)}
       onClick={() => onOpen(thinkingObject.roomId, thinkingObject.conversationId)}
     >
       <span>{thinkingObject.workingLabel}</span>
       <small>{thinkingObject.hasMemoryAnchors ? formatHomeVisitMeta(thinkingObject) : "内容太少"}</small>
     </button>
+  );
+}
+
+function getHomePeekSlices(thinkingObject) {
+  const userTrace = getHomeRecallTrace(thinkingObject.userMemoryAnchors || thinkingObject.memoryAnchors);
+  const recentTrace = getHomeRecallTrace(thinkingObject.recentMemoryAnchors || thinkingObject.memoryAnchors);
+  const aiAnchors = thinkingObject.aiMemoryAnchors || [];
+  const aiTrace = aiAnchors.length ? getHomeRecallTrace(aiAnchors) : "";
+  const slices = [
+    { label: "用户留下", text: userTrace },
+    aiTrace ? { label: "AI 回声", text: aiTrace } : null,
+    { label: "最近停顿", text: recentTrace }
+  ].filter(Boolean);
+  const seen = new Set();
+  return slices.filter((slice) => {
+    const compactText = getCompactHomeAnchorText(slice.text);
+    if (!compactText || seen.has(compactText)) return false;
+    seen.add(compactText);
+    return true;
+  }).slice(0, 3);
+}
+
+function HomeObjectPeek({ thinkingObject = null, members = [], isWarmest = false, onOpen = () => {} }) {
+  if (!thinkingObject) {
+    return (
+      <aside className="home-peek-panel" aria-label="Home 侧旁窥看">
+        <div className="home-peek-empty">
+          <span>还没有可窥看的思考对象</span>
+          <p>建立一条对话后，这里会显示最近停顿、AI 参与和可回去的位置。</p>
+        </div>
+      </aside>
+    );
+  }
+
+  const recallTrace = getHomeRecallTrace(thinkingObject.recentMemoryAnchors || thinkingObject.memoryAnchors);
+  const peekSlices = getHomePeekSlices(thinkingObject);
+  const properties = getHomeVisitProperties(thinkingObject);
+  return (
+    <aside className="home-peek-panel" aria-label="Home 侧旁窥看">
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.div
+          key={thinkingObject.objectKey}
+          className={`home-peek-card ${isWarmest ? "is-warmest" : ""}`}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -4 }}
+          transition={{ duration: 0.2, ease: EASE }}
+        >
+          <div className="home-peek-head">
+            <span>{getHomeObjectStateLabel(thinkingObject, members, { isWarmest })}</span>
+            <button
+              type="button"
+              className="home-peek-open focus-ring"
+              onClick={() => onOpen(thinkingObject.roomId, thinkingObject.conversationId)}
+            >
+              进入
+            </button>
+          </div>
+          <h2>{thinkingObject.workingLabel}</h2>
+          <p className={`home-peek-trace ${thinkingObject.hasMemoryAnchors ? "" : "is-empty"}`}>
+            {renderHomeRecallTrace(recallTrace, `${thinkingObject.objectKey}-peek`)}
+          </p>
+          <div className="home-peek-ai">
+            <HomeAiStack members={members} />
+          </div>
+          <div className="home-peek-slices" aria-label="思考截面">
+            {peekSlices.map((slice) => (
+              <span className="home-peek-slice" key={`${thinkingObject.objectKey}-peek-${slice.label}`}>
+                <small>{slice.label}</small>
+                <span>{truncateHomeRecallTrace(normalizeHomeRecallTraceSource(slice.text), 76)}</span>
+              </span>
+            ))}
+          </div>
+          <div className="home-peek-meta">
+            {properties.map((property) => (
+              <span key={`${thinkingObject.objectKey}-peek-${property}`}>{property}</span>
+            ))}
+          </div>
+        </motion.div>
+      </AnimatePresence>
+      <div className="home-peek-note">
+        <span>最近摘录</span>
+        <p>笔记列表还没接入；现在先把可摘录的消息痕迹放在这里，避免每次都跳进完整对话确认。</p>
+      </div>
+    </aside>
   );
 }
 
@@ -804,13 +963,14 @@ function HomeDashboard({
   const hasThinkingObjects = thinkingObjects.length > 0;
   const homeName = nickname ? `${nickname} 的 Home` : "Home";
   const [thinkingObjectAnchors, setThinkingObjectAnchors] = useState({});
+  const [previewObjectKey, setPreviewObjectKey] = useState("");
   const [storageOpen, setStorageOpen] = useState(false);
   const thinkingObjectKey = thinkingObjects.map((thinkingObject) => thinkingObject.objectKey).join("|");
 
   useEffect(() => {
     if (!thinkingObjects.length) return undefined;
     const missingThinkingObjects = thinkingObjects.filter((thinkingObject) => {
-      return !thinkingObject.fallbackAnchors.length && !thinkingObjectAnchors[thinkingObject.objectKey];
+      return !thinkingObjectAnchors[thinkingObject.objectKey];
     });
     if (!missingThinkingObjects.length) return undefined;
 
@@ -831,7 +991,7 @@ function HomeDashboard({
         entries.forEach((entry) => {
           if (!entry) return;
           const [key, anchors] = entry;
-          next[key] = Array.isArray(anchors) ? anchors : [];
+          next[key] = anchors && typeof anchors === "object" ? anchors : { anchors: [] };
         });
         return next;
       });
@@ -841,12 +1001,27 @@ function HomeDashboard({
 
   const enrichedThinkingObjects = thinkingObjects.map((thinkingObject, index) => {
     const hasFetchedAnchors = Object.prototype.hasOwnProperty.call(thinkingObjectAnchors, thinkingObject.objectKey);
-    const fetchedAnchors = hasFetchedAnchors ? thinkingObjectAnchors[thinkingObject.objectKey] : null;
-    const memoryAnchors = Array.isArray(fetchedAnchors) ? fetchedAnchors : thinkingObject.fallbackAnchors;
+    const fetchedAnchorRecord = hasFetchedAnchors ? thinkingObjectAnchors[thinkingObject.objectKey] : null;
+    const fetchedAnchors = Array.isArray(fetchedAnchorRecord)
+      ? fetchedAnchorRecord
+      : Array.isArray(fetchedAnchorRecord?.anchors)
+        ? fetchedAnchorRecord.anchors
+        : null;
+    const memoryAnchors = fetchedAnchors || thinkingObject.fallbackAnchors;
+    const userMemoryAnchors = Array.isArray(fetchedAnchorRecord?.userAnchors) && fetchedAnchorRecord.userAnchors.length
+      ? fetchedAnchorRecord.userAnchors
+      : memoryAnchors;
+    const aiMemoryAnchors = Array.isArray(fetchedAnchorRecord?.aiAnchors) ? fetchedAnchorRecord.aiAnchors : [];
+    const recentMemoryAnchors = Array.isArray(fetchedAnchorRecord?.recentAnchors) && fetchedAnchorRecord.recentAnchors.length
+      ? fetchedAnchorRecord.recentAnchors
+      : memoryAnchors;
     const visit = resolveHomeThinkingObjectVisit(thinkingObject, homeVisitStats[thinkingObject.objectKey], memoryAnchors, index);
     return {
       ...thinkingObject,
       memoryAnchors,
+      userMemoryAnchors,
+      aiMemoryAnchors,
+      recentMemoryAnchors,
       visit,
       hasMemoryAnchors: memoryAnchors.length > 0,
       isTestingObject: isLikelyTestingThinkingObject(thinkingObject, memoryAnchors)
@@ -856,6 +1031,21 @@ function HomeDashboard({
   const pathCount = homeSections.path.length;
   const sameSpaceCount = homeSections.sameSpace.length;
   const storageCount = homeSections.storage.length;
+  const previewCandidates = [...homeSections.path, ...homeSections.sameSpace, ...homeSections.storage];
+  const fallbackPreviewObject = previewCandidates[0] || null;
+  const previewObject = previewCandidates.find((thinkingObject) => thinkingObject.objectKey === previewObjectKey) || fallbackPreviewObject;
+  const previewMembers = previewObject ? roomAiMembersByRoomId[previewObject.backendRoomId] || [] : [];
+  const previewKeySignature = previewCandidates.map((thinkingObject) => thinkingObject.objectKey).join("|");
+  const warmestObject = previewCandidates
+    .slice()
+    .filter((thinkingObject) => thinkingObject.visit?.lastVisitedAtMs)
+    .sort((a, b) => b.visit.lastVisitedAtMs - a.visit.lastVisitedAtMs)[0] || null;
+  const warmestObjectKey = warmestObject?.objectKey || "";
+
+  useEffect(() => {
+    if (!previewObjectKey || previewCandidates.some((thinkingObject) => thinkingObject.objectKey === previewObjectKey)) return;
+    setPreviewObjectKey("");
+  }, [previewKeySignature, previewObjectKey]);
 
   return (
     <section className={`home-dashboard ${hasThinkingObjects ? "has-thinking-objects" : "is-empty"}`} aria-label="Home">
@@ -911,7 +1101,11 @@ function HomeDashboard({
                     <HomePathObjectCard
                       key={thinkingObject.objectKey}
                       thinkingObject={thinkingObject}
+                      index={homeSections.path.findIndex((item) => item.objectKey === thinkingObject.objectKey)}
                       members={roomAiMembersByRoomId[thinkingObject.backendRoomId] || []}
+                      isActive={previewObject?.objectKey === thinkingObject.objectKey}
+                      isWarmest={warmestObjectKey === thinkingObject.objectKey}
+                      onPreview={setPreviewObjectKey}
                       onOpen={onOpenConversation}
                     />
                   ))}
@@ -932,6 +1126,8 @@ function HomeDashboard({
                     <HomeCompactObjectRow
                       key={thinkingObject.objectKey}
                       thinkingObject={thinkingObject}
+                      isActive={previewObject?.objectKey === thinkingObject.objectKey}
+                      onPreview={setPreviewObjectKey}
                       onOpen={onOpenConversation}
                     />
                   ))}
@@ -956,6 +1152,8 @@ function HomeDashboard({
                       <HomeStorageRow
                         key={thinkingObject.objectKey}
                         thinkingObject={thinkingObject}
+                        isActive={previewObject?.objectKey === thinkingObject.objectKey}
+                        onPreview={setPreviewObjectKey}
                         onOpen={onOpenConversation}
                       />
                     ))}
@@ -966,18 +1164,14 @@ function HomeDashboard({
           </div>
         )}
 
-        <aside className="home-notes-panel" aria-label="笔记窥看">
-          <div className="home-section-head">
-            <div>
-              <h2>最近摘录</h2>
-              <p>笔记功能先保留前端入口</p>
-            </div>
-          </div>
-          <div className="home-note-empty">
-            <span>还没有笔记</span>
-            <p>在对话中右键消息，使用“摘录到笔记”。</p>
-          </div>
-        </aside>
+        {hasThinkingObjects ? (
+          <HomeObjectPeek
+            thinkingObject={previewObject}
+            members={previewMembers}
+            isWarmest={warmestObjectKey === previewObject?.objectKey}
+            onOpen={onOpenConversation}
+          />
+        ) : null}
       </div>
     </section>
   );
@@ -1075,10 +1269,25 @@ export default function ChatRoom({
   const resolvedTransitionMode =
     transitionMode === "enter-from-auth" ? "enter" : transitionMode === "exit-to-auth" ? "exit" : "idle";
   const visibleMessages = hideMessageContent ? [] : messages;
+  const roomTone = room?.tone === "public" ? "public" : "personal";
+  const activeBackendRoomId = Number(room?.roomId || 0);
+  const isPersonalMainConversation = room?.id === "personal" || Number(room?.type) === 1;
+  const isOrdinaryMainConversation = isMainConversation && !isPersonalMainConversation;
+  const isHomeDashboard = isMainConversation && isPersonalMainConversation && !draftConversation;
 
   const [contextMenu, setContextMenu] = useState(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const initialChatSurfaceRef = useRef(null);
+  if (initialChatSurfaceRef.current == null) initialChatSurfaceRef.current = readStoredChatSurface();
+  const initialWorkspacePanelOpen = initialChatSurfaceRef.current.workspacePanelOpen === true;
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    const initialSurface = isHomeDashboard && !initialWorkspacePanelOpen ? SIDEBAR_SURFACE_HOME : SIDEBAR_SURFACE_DEFAULT;
+    return getDefaultSidebarCollapsed(initialSurface);
+  });
+  const sidebarPreferenceRef = useRef({
+    [SIDEBAR_SURFACE_HOME]: null,
+    [SIDEBAR_SURFACE_DEFAULT]: null
+  });
   const [sidebarMode, setSidebarMode] = useState(() => {
     try {
       return localStorage.getItem("atrium.chat.sidebarMode") || "conversations";
@@ -1090,9 +1299,9 @@ export default function ChatRoom({
     setSidebarMode(mode);
     try { localStorage.setItem("atrium.chat.sidebarMode", mode); } catch {}
   };
-  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(() => readStoredChatSurface().workspacePanelOpen === true);
+  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(() => initialWorkspacePanelOpen);
   const [workspacePanelTab, setWorkspacePanelTab] = useState(() => {
-    const tab = readStoredChatSurface().workspacePanelTab;
+    const tab = initialChatSurfaceRef.current.workspacePanelTab;
     return ["room", "ai", "members"].includes(tab) ? tab : "room";
   });
   const [accountCenterOpen, setAccountCenterOpen] = useState(false);
@@ -1107,12 +1316,6 @@ export default function ChatRoom({
   const [mainRoomMembers, setMainRoomMembers] = useState([]);
   const [mainRoomMembersState, setMainRoomMembersState] = useState("idle");
   const [homeVisitStats, setHomeVisitStats] = useState(() => readStoredHomeVisitStats(currentUserId));
-
-  const roomTone = room?.tone === "public" ? "public" : "personal";
-  const activeBackendRoomId = Number(room?.roomId || 0);
-  const isPersonalMainConversation = room?.id === "personal" || Number(room?.type) === 1;
-  const isOrdinaryMainConversation = isMainConversation && !isPersonalMainConversation;
-  const isHomeDashboard = isMainConversation && isPersonalMainConversation && !draftConversation;
   const fallbackSeatMember = {
     userId: currentUserId || "self",
     username,
@@ -1120,6 +1323,8 @@ export default function ChatRoom({
     avatarUrl,
     role: 2
   };
+  const isPureHomeDashboard = isHomeDashboard && !workspacePanelOpen && !accountCenterOpen && !createRoomOpen;
+  const sidebarSurface = isPureHomeDashboard ? SIDEBAR_SURFACE_HOME : SIDEBAR_SURFACE_DEFAULT;
 
   useEffect(() => {
     if (!contextMenu) return undefined;
@@ -1147,6 +1352,11 @@ export default function ChatRoom({
   useEffect(() => {
     setHomeVisitStats(readStoredHomeVisitStats(currentUserId));
   }, [currentUserId]);
+
+  useEffect(() => {
+    const userPreference = sidebarPreferenceRef.current[sidebarSurface];
+    setSidebarCollapsed(userPreference ?? getDefaultSidebarCollapsed(sidebarSurface));
+  }, [sidebarSurface]);
 
   useEffect(() => {
     if (!currentUserId) {
@@ -1502,7 +1712,11 @@ export default function ChatRoom({
       <button
         type="button"
         className="sidebar-collapse-btn focus-ring"
-        onClick={() => setSidebarCollapsed((value) => !value)}
+        onClick={() => setSidebarCollapsed((value) => {
+          const nextValue = !value;
+          sidebarPreferenceRef.current[sidebarSurface] = nextValue;
+          return nextValue;
+        })}
         aria-label={sidebarCollapsed ? "打开侧边栏" : "收起侧边栏"}
         aria-expanded={!sidebarCollapsed}
         title={sidebarCollapsed ? "打开侧边栏" : "收起侧边栏"}
