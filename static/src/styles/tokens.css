@@ -1,0 +1,112 @@
+/* Theme tokens shared by every Atrium surface. */
+:root,
+html[data-theme="light"] {
+    --bg-page: #fbfbfa;
+    --bg-sidebar: #f7f7f5;
+    --bg-main: #fbfbfa;
+    --bg-hover: #f3f3f2;
+    --bg-active: #efefee;
+    --bg-room-hover: #f1f1ef;
+    --bg-room-active: #efefee;
+    --bg-modal: rgba(15, 15, 15, 0.18);
+    --launch-fill: rgba(47, 52, 55, 0.08);
+    --line: #ebebea;
+    --text: #2f3437;
+    --text-name: #37352f;
+    --text-muted: #787774;
+    --text-subtle: #9b9a97;
+    --button: #2f3437;
+    --button-text: #ffffff;
+    --accent: #2f80ed;
+    --success: #238a52;
+    --warning: #b67a00;
+    --danger: #d44c47;
+    --line-arch: color-mix(in srgb, var(--text-subtle) 20%, transparent);
+    --line-arch-contact: color-mix(in srgb, var(--text-subtle) 22%, var(--bg-main) 78%);
+    --line-arch-normal: color-mix(in srgb, var(--text-subtle) 24%, transparent);
+    --line-arch-broadcast: color-mix(in srgb, var(--text-subtle) 13%, transparent);
+    --arch-cable-bed: color-mix(in srgb, var(--bg-main) 96%, white 4%);
+    --arch-contact-shadow: color-mix(in srgb, var(--text) 8%, transparent);
+    --pulse-color: color-mix(in srgb, var(--accent) 75%, transparent);
+    --radius: 8px;
+    --title: 16px;
+    --body: 15px;
+    --meta: 12px;
+    --content-max: clamp(780px, 76vw, 1180px);
+    --easing: cubic-bezier(0.22, 1, 0.36, 1);
+    --shadow-modal: 0 18px 50px rgba(15, 15, 15, 0.12);
+    --focus-ring: 0 0 0 2px rgba(47, 52, 55, 0.14);
+}
+
+
+html[data-theme="dark"] {
+    --bg-page: #191919;
+    --bg-sidebar: #20201f;
+    --bg-main: #191919;
+    --bg-hover: #242423;
+    --bg-active: #2a2a29;
+    --bg-room-hover: #2a2a28;
+    --bg-room-active: #30302d;
+    --bg-modal: rgba(0, 0, 0, 0.36);
+    --launch-fill: rgba(236, 236, 233, 0.08);
+    --line: #2e2e2c;
+    --text: #ecece9;
+    --text-name: #ecece9;
+    --text-muted: #a0a09c;
+    --text-subtle: #6f6f6b;
+    --button: #ecece9;
+    --button-text: #171717;
+    --accent: #58a6ff;
+    --success: #4ea669;
+    --warning: #d4a11d;
+    --danger: #ef6b67;
+    --line-arch: color-mix(in srgb, var(--text-subtle) 25%, transparent);
+    --line-arch-contact: color-mix(in srgb, var(--text-subtle) 36%, var(--bg-main) 64%);
+    --line-arch-normal: color-mix(in srgb, var(--text-subtle) 32%, transparent);
+    --line-arch-broadcast: color-mix(in srgb, var(--text-subtle) 18%, transparent);
+    --arch-cable-bed: color-mix(in srgb, var(--bg-main) 92%, white 8%);
+    --arch-contact-shadow: color-mix(in srgb, var(--text) 12%, transparent);
+    --pulse-color: color-mix(in srgb, var(--accent) 80%, transparent);
+    --shadow-modal: 0 18px 50px rgba(0, 0, 0, 0.42);
+    --focus-ring: 0 0 0 2px rgba(236, 236, 233, 0.14);
+}
+
+@media (prefers-color-scheme: dark) {
+    html[data-theme="system"],
+    html:not([data-theme]) {
+        --bg-page: #191919;
+        --bg-sidebar: #20201f;
+        --bg-main: #191919;
+        --bg-hover: #242423;
+        --bg-active: #2a2a29;
+        --bg-room-hover: #2a2a28;
+        --bg-room-active: #30302d;
+        --bg-modal: rgba(0, 0, 0, 0.36);
+        --launch-fill: rgba(236, 236, 233, 0.08);
+        --line: #2e2e2c;
+        --text: #ecece9;
+        --text-name: #ecece9;
+        --text-muted: #a0a09c;
+        --text-subtle: #6f6f6b;
+        --button: #ecece9;
+        --button-text: #171717;
+        --accent: #58a6ff;
+        --success: #4ea669;
+        --warning: #d4a11d;
+        --danger: #ef6b67;
+        --line-arch: color-mix(in srgb, var(--text-subtle) 25%, transparent);
+        --line-arch-contact: color-mix(in srgb, var(--text-subtle) 36%, var(--bg-main) 64%);
+        --line-arch-normal: color-mix(in srgb, var(--text-subtle) 32%, transparent);
+        --line-arch-broadcast: color-mix(in srgb, var(--text-subtle) 18%, transparent);
+        --arch-cable-bed: color-mix(in srgb, var(--bg-main) 92%, white 8%);
+        --arch-contact-shadow: color-mix(in srgb, var(--text) 12%, transparent);
+        --pulse-color: color-mix(in srgb, var(--accent) 80%, transparent);
+        --shadow-modal: 0 18px 50px rgba(0, 0, 0, 0.42);
+        --focus-ring: 0 0 0 2px rgba(236, 236, 233, 0.14);
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+

@@ -36,6 +36,7 @@ const ASSISTANT_IDLE_STATE = Object.freeze({
 });
 const AI_DISPLAY_NAME = "deepseek";
 const AI_AVATAR_URL = "/avatars/deepseek-logo.svg";
+const AI_STREAM_INTERRUPTED_STATUS = "interrupted";
 
 function cleanText(value) {
   return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
@@ -108,6 +109,34 @@ function getQuotaExceededMessage(raw) {
   return values.some((value) => /QuotaExceeded|quota/i.test(String(value || "")))
     ? "今日 AI 额度已用完，明天会自动恢复"
     : "";
+}
+
+function normalizeAiStreamErrorValue(value) {
+  if (value === true) return "Unknown";
+  if (value === false || value == null) return "";
+  if (typeof value === "string" || typeof value === "number") return cleanText(value);
+  if (typeof value !== "object") return "";
+  const candidates = [
+    value.error,
+    value.code,
+    value.type,
+    value.name,
+    value.reason,
+    value.message
+  ];
+  return candidates.map(normalizeAiStreamErrorValue).find(Boolean) || "Unknown";
+}
+
+function getAiStreamErrorType(payload = {}) {
+  if (!payload || typeof payload !== "object") return "";
+  const candidates = [
+    payload.error,
+    payload.error_type,
+    payload.errorType,
+    payload.code,
+    payload.reason
+  ];
+  return candidates.map(normalizeAiStreamErrorValue).find(Boolean) || "";
 }
 
 function isNoReplyText(value) {
@@ -455,7 +484,8 @@ export default function useWebSocket({
   function createStreamMessageId(streamId, payload = {}) {
     const serverMessageId = normalizeServerMessageId(payload);
     if (serverMessageId) return `ai-server-${serverMessageId}`;
-    return createId(`ai-${String(streamId).replace(/[^a-zA-Z0-9_-]/g, "") || "stream"}`);
+    const streamToken = cleanText(streamId).replace(/[^a-zA-Z0-9_-]/g, "");
+    return createId(`ai-${streamToken || "stream"}`);
   }
 
   function createStreamState(streamId, payload = {}) {
@@ -519,6 +549,79 @@ export default function useWebSocket({
     };
   }
 
+  function createTerminalStreamState(streamId, payload = {}) {
+    const streamRoomId = normalizeIncomingRoomId(payload) || activeRoomIdRef.current;
+    const streamConversationId = normalizeIncomingConversationId(payload) || activeConversationIdRef.current;
+    if (!streamRoomId || !streamConversationId) return null;
+    return {
+      messageId: createStreamMessageId(streamId, payload),
+      serverId: normalizeServerMessageId(payload),
+      roomId: streamRoomId,
+      conversationId: streamConversationId,
+      model: getAiModel(payload),
+      provider: getAiProvider(payload),
+      nickname: getAiAuthorName(payload),
+      avatarUrl: typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || AI_AVATAR_URL,
+      timestamp: normalizeIncomingTimestamp(payload),
+      timelineOrder: nextTimelineOrder(),
+      visible: false
+    };
+  }
+
+  function finishAiStreamInterruption(streamId, payload = {}, errorType = "Unknown") {
+    const stream = activeAiStreamRef.current || createTerminalStreamState(streamId, payload);
+    if (!stream) {
+      resetAssistantState();
+      return;
+    }
+    const serverId = normalizeServerMessageId(payload) || stream.serverId || "";
+    const model = getAiModel(payload, stream.model);
+    const provider = getAiProvider(payload, stream.provider);
+    const nickname = getAiAuthorName(payload, stream.nickname || AI_DISPLAY_NAME);
+    const avatarUrl = typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || stream.avatarUrl || AI_AVATAR_URL;
+    const normalizedErrorType = cleanText(errorType) || "Unknown";
+
+    stream.serverId = serverId;
+    stream.model = model;
+    stream.provider = provider;
+    stream.nickname = nickname;
+    stream.avatarUrl = avatarUrl;
+
+    updateMessagesForContext(stream.roomId, stream.conversationId, (prev) =>
+      prev.some((message) => message.id === stream.messageId)
+        ? prev.map((message) =>
+            message.id === stream.messageId
+              ? {
+                  ...message,
+                  serverId: serverId || message.serverId || "",
+                  nickname,
+                  avatarUrl,
+                  model,
+                  provider,
+                  senderType: "ai",
+                  status: AI_STREAM_INTERRUPTED_STATUS,
+                  aiErrorType: normalizedErrorType
+                }
+              : message
+          )
+        : [
+            ...prev,
+            {
+              ...buildStreamMessage(serverId || stream.messageId, stream, "", AI_STREAM_INTERRUPTED_STATUS),
+              serverId,
+              nickname,
+              avatarUrl,
+              model,
+              provider,
+              senderType: "ai",
+              aiErrorType: normalizedErrorType
+            }
+          ]
+    );
+    activeAiStreamRef.current = null;
+    resetAssistantState();
+  }
+
   function handleAiStreamStart(streamId, payload = {}) {
     if (isNoReplyPayload(payload)) {
       activeAiStreamRef.current = null;
@@ -576,7 +679,7 @@ export default function useWebSocket({
                   nickname,
                   model,
                   provider,
-                  status: message.status === "failed" ? "failed" : "streaming"
+                  status: message.status === "failed" || message.status === AI_STREAM_INTERRUPTED_STATUS ? message.status : "streaming"
                 }
               : message
           )
@@ -586,6 +689,11 @@ export default function useWebSocket({
 
   function handleAiStreamEnd(streamId, payload = {}) {
     const stream = activeAiStreamRef.current;
+    const errorType = getAiStreamErrorType(payload);
+    if (errorType) {
+      finishAiStreamInterruption(streamId, payload, errorType);
+      return;
+    }
     if (isNoReplyPayload(payload)) {
       if (stream) {
         updateMessagesForContext(stream.roomId, stream.conversationId, (prev) =>
@@ -648,25 +756,7 @@ export default function useWebSocket({
   }
 
   function handleAiStreamError(streamId, payload = {}) {
-    const stream = activeAiStreamRef.current;
-    if (!stream) return;
-    const model = getAiModel(payload, stream.model);
-    const provider = getAiProvider(payload, stream.provider);
-    const nickname = getAiAuthorName(payload, stream.nickname || AI_DISPLAY_NAME);
-    if (!stream.visible) {
-      activeAiStreamRef.current = null;
-      resetAssistantState();
-      return;
-    }
-    updateMessagesForContext(stream.roomId, stream.conversationId, (prev) =>
-      prev.map((message) =>
-        message.id === stream.messageId
-          ? { ...message, model, provider, nickname, status: "failed" }
-          : message
-      )
-    );
-    activeAiStreamRef.current = null;
-    resetAssistantState();
+    finishAiStreamInterruption(streamId, payload, getAiStreamErrorType(payload) || "Unknown");
   }
 
   function clearPendingResolveTimer(messageId) {
@@ -824,8 +914,9 @@ export default function useWebSocket({
 
         ws.onmessage = async (event) => {
           if (cancelled) return;
+          let rawData = "";
           try {
-            const rawData =
+            rawData =
               typeof event.data === "string"
                 ? event.data
                 : event.data instanceof Blob
@@ -835,16 +926,7 @@ export default function useWebSocket({
             if (isNoReplyText(rawData)) {
               return;
             }
-            if (/QuotaExceeded|quota/i.test(rawData)) {
-              showAssistantQuota("今日 AI 额度已用完，明天会自动恢复");
-              return;
-            }
             const raw = JSON.parse(rawData);
-            const quotaMessage = getQuotaExceededMessage(raw);
-            if (quotaMessage) {
-              showAssistantQuota(quotaMessage);
-              return;
-            }
             const envelopeType = typeof raw.type === "number" ? raw.type : undefined;
             const payload = raw.data || raw;
             if (envelopeType === WS_EVENT.USER_MSG) {
@@ -867,8 +949,17 @@ export default function useWebSocket({
               handleAiStreamError(raw.stream_id, payload);
               return;
             }
+            const quotaMessage = getQuotaExceededMessage(raw);
+            if (quotaMessage) {
+              showAssistantQuota(quotaMessage);
+              return;
+            }
             handleUserMessage(payload);
           } catch (error) {
+            if (/QuotaExceeded|quota/i.test(rawData)) {
+              showAssistantQuota("今日 AI 额度已用完，明天会自动恢复");
+              return;
+            }
             console.warn("Invalid message payload:", error);
           }
         };

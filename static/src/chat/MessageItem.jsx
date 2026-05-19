@@ -351,8 +351,11 @@ export default function MessageItem({ message, hiddenMessageId, itemAnimationMod
     ? ANIMATION_PRESETS.flightTarget
     : ANIMATION_PRESETS[resolvedAnimationMode] || ANIMATION_PRESETS.standard;
   const shouldShowDivider = message.showDivider && message.source !== "local-welcome";
-  const aiStateLabel = message.isAI && message.status === "failed" ? "生成失败" : "";
-  const messageStatusClass = message.status ? ` is-status-${message.status}` : "";
+  const aiInterrupted = message.isAI && (message.status === "interrupted" || message.status === "failed");
+  const visibleStatus = aiInterrupted ? "interrupted" : message.status;
+  const messageStatusClass = visibleStatus ? ` is-status-${visibleStatus}` : "";
+  const hasMessageText = String(message.text || "").trim().length > 0;
+  const shouldShowAuthor = message.showAuthor || (aiInterrupted && !hasMessageText);
 
   function handleContextMenu(e) {
     if (onContextMenu) onContextMenu(e, message);
@@ -389,6 +392,7 @@ export default function MessageItem({ message, hiddenMessageId, itemAnimationMod
       data-message-id={message.id}
       data-participant-type={participantType}
       data-message-role={message.isAI ? "assistant" : "message"}
+      data-ai-error-type={aiInterrupted && message.aiErrorType ? message.aiErrorType : undefined}
       onContextMenu={handleContextMenu}
     >
       {shouldShowDivider ? <div className="time-divider">{message.dividerLabel}</div> : null}
@@ -402,7 +406,7 @@ export default function MessageItem({ message, hiddenMessageId, itemAnimationMod
           opacity: { duration: isHiddenForFlight ? 0.04 : 0.12, ease: EASE }
         }}
       >
-        {message.showAuthor ? (
+        {shouldShowAuthor ? (
           <div className="message-meta">
             {avatarSrc ? (
               <img className="message-avatar" src={avatarSrc} alt="" />
@@ -419,7 +423,7 @@ export default function MessageItem({ message, hiddenMessageId, itemAnimationMod
             <span className="message-time">{message.timeLabel}</span>
           </div>
         ) : null}
-        <div className="message-text-shell">
+        <div className={`message-text-shell ${hasMessageText ? "" : "is-empty"}`.trim()}>
           <div className="message-content">{renderMessageContent(message.text)}</div>
         </div>
         {message.isSelf && message.status !== "sent" ? (
@@ -427,9 +431,9 @@ export default function MessageItem({ message, hiddenMessageId, itemAnimationMod
             {message.status === "failed" ? "发送失败" : "发送中"}
           </div>
         ) : null}
-        {aiStateLabel ? (
-          <div className={`message-state ${message.status === "failed" ? "is-failed" : ""}`}>
-            {aiStateLabel}
+        {aiInterrupted ? (
+          <div className="message-ai-interruption" role="status" aria-label="AI 回复中断" title="AI 回复中断">
+            <span className="message-ai-interruption-dot" aria-hidden="true" />
           </div>
         ) : null}
       </motion.article>
