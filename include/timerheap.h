@@ -1,6 +1,5 @@
 #pragma once
 
-#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -19,7 +18,7 @@ class TimerHeap {
     void tick();
     int getNextTimeout();
     std::vector<int> getExpired() {
-        return move(m_expired);
+        return std::move(m_expired);
     }
     void update(int fd, long long timeout);
     void remove(int fd);

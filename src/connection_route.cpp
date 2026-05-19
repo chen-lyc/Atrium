@@ -70,9 +70,12 @@ void ConvAiScheduler::submit(uint64_t conversation_id, uint64_t ai_id, uint64_t 
         lock_guard<mutex> lock(m_mutex);
         if (!from_ai) {
             m_conv_user_msg_id[conversation_id] = trigger_message_id;
+            m_failed_ais.erase(key);
         } else {
             auto it = m_conv_user_msg_id.find(conversation_id);
             if (it != m_conv_user_msg_id.end() && it->second > trigger_message_id) return;
+            auto failed_it = m_failed_ais.find(key);
+            if (failed_it != m_failed_ais.end() && failed_it->second == FaultStatus::Failed) return;
         }
         auto it = m_conv_to_state.find(key);
         if (it == m_conv_to_state.end()) {
@@ -113,8 +116,8 @@ void ConvAiScheduler::finish(uint64_t conversation_id, uint64_t ai_id, std::opti
         if (pending_trigger_id.has_value()) {
             trigger_message_id = pending_trigger_id.value();
             context_until_message_id = completed_ai_message_id.has_value()
-                                           ? max(trigger_message_id, completed_ai_message_id.value())
-                                           : trigger_message_id;
+                ? max(trigger_message_id, completed_ai_message_id.value())
+                : trigger_message_id;
             pending_trigger_id = nullopt;
             callback = m_conv_to_handle[key];
             trigger = true;
@@ -123,4 +126,9 @@ void ConvAiScheduler::finish(uint64_t conversation_id, uint64_t ai_id, std::opti
         }
     }
     if (trigger) callback(trigger_message_id, context_until_message_id);
+}
+
+void ConvAiScheduler::setFailed(uint64_t conversation_id, uint64_t ai_id) {
+    lock_guard<mutex> lock(m_mutex);
+    m_failed_ais[{conversation_id, ai_id}] = FaultStatus::Failed;
 }

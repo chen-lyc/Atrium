@@ -56,6 +56,7 @@ class ConvAiScheduler {
     }
     void submit(uint64_t conversation_id, uint64_t ai_id, uint64_t trigger_message_id, Launcher launcher, bool from_ai = false);
     void finish(uint64_t conversation_id, uint64_t ai_id, std::optional<uint64_t> completed_ai_message_id);
+    void setFailed(uint64_t conversation_id, uint64_t ai_id);
 
   private:
     struct ConversationStatus {
@@ -66,6 +67,11 @@ class ConvAiScheduler {
     std::unordered_map<ConvAiKey, ConversationStatus, ConvAiKeyHash> m_conv_to_state;
     std::unordered_map<ConvAiKey, Launcher, ConvAiKeyHash> m_conv_to_handle;
     std::unordered_map<uint64_t, uint64_t> m_conv_user_msg_id;
+    enum class FaultStatus {
+        Ok,
+        Failed,
+    };
+    std::unordered_map<ConvAiKey, FaultStatus, ConvAiKeyHash> m_failed_ais;
     std::mutex m_mutex;
 };
 

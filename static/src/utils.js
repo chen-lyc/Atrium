@@ -809,8 +809,15 @@ export function getThinkingModeLabel(member) {
 export function resolveThinkingAdapterUrl(thinkingKey, availableAdapters = []) {
   const option = THINKING_MODE_OPTIONS.find((item) => item.key === thinkingKey);
   if (!option || option.key === "default" || option.isCustom) return "";
-  const available = new Set((Array.isArray(availableAdapters) ? availableAdapters : []).filter(Boolean));
-  return option.adapterAliases.find((alias) => available.has(alias)) || option.adapterAliases[0] || "";
+  const availableBasenames = new Set(
+    (Array.isArray(availableAdapters) ? availableAdapters : [])
+      .filter(Boolean)
+      .map((path) => {
+        const last = String(path).split("/").pop();
+        return last;
+      })
+  );
+  return option.adapterAliases.find((alias) => availableBasenames.has(alias)) || "";
 }
 
 function buildAiMemberBody(member) {

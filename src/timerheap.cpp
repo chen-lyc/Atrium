@@ -6,7 +6,7 @@ using namespace std;
 
 static long long getMilliseconds() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
+        std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }
 
@@ -19,9 +19,9 @@ void TimerHeap::add(int fd, long long timeout) {
 void TimerHeap::tick() {
     while (!m_timers.empty() && getMilliseconds() >= m_timers[0].expire_time) {
         LOG_DEBUG("tick: fd = %d, tick: now=%lld expire=%lld, expired",
-                  m_timers[0].fd,
-                  getMilliseconds(),
-                  m_timers[0].expire_time);
+            m_timers[0].fd,
+            getMilliseconds(),
+            m_timers[0].expire_time);
 
         m_expired.push_back(m_timers[0].fd);
         swap(m_timers[0], m_timers[m_timers.size() - 1]);
@@ -73,6 +73,8 @@ void TimerHeap::remove(int fd) {
         LOG_DEBUG("timer heap remove: fd not found");
         return;
     }
+    auto it = find(m_expired.begin(), m_expired.end(), fd);
+    if (it != m_expired.end()) m_expired.erase(it);
 
     int index = m_timers_index[fd];
     swap(m_timers[index], m_timers[m_timers.size() - 1]);

@@ -189,6 +189,7 @@ enum class EventType {
     AiStreamDelta,
     AiStreamEnd,
     AiStreamError,
+    SystemMsg,
 };
 
 enum class MessageType {

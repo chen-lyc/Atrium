@@ -533,7 +533,9 @@ void Reactor::process(Connection &conn) {
                         }
                         if (real_room_id != room_id) {
                             LOG_WARN("ws room mismatch, expected=%llu actual=%llu conv=%llu",
-                                room_id, real_room_id, conversation_id);
+                                room_id,
+                                real_room_id,
+                                conversation_id);
                             sendError(conn, WS_PROTOCOLERROR);
                             return false;
                         }
@@ -553,7 +555,8 @@ void Reactor::process(Connection &conn) {
                             in["data"]["client_message_id"]};
                         if (msg.type >= static_cast<int>(chatdb::MessageType::SYSTEM) || msg.type < static_cast<int>(chatdb::MessageType::TEXT)) {
                             LOG_WARN("invalid message type=%d, expected TEXT(1)/IMAGE(2)/FILE(3), conv=%llu",
-                                msg.type, conversation_id);
+                                msg.type,
+                                conversation_id);
                             sendError(conn, WS_PROTOCOLERROR);
                             return false;
                         }
@@ -586,32 +589,32 @@ void Reactor::process(Connection &conn) {
                         LOG_DEBUG("fd = %d websocket payload: %s", conn.fd, payload_data.c_str());
 
                         for (auto &m : ai_members) {
-                                const char *api_key_ptr = nullptr;
-                                if (m.provider == "deepseek") api_key_ptr = std::getenv("DEEPSEEK_API_KEY");
-                                else if (m.provider == "qwen") api_key_ptr = std::getenv("QWEN_API_KEY");
-                                if (!api_key_ptr || !api_key_ptr[0]) continue;
+                            const char *api_key_ptr = nullptr;
+                            if (m.provider == "deepseek") api_key_ptr = std::getenv("DEEPSEEK_API_KEY");
+                            else if (m.provider == "qwen") api_key_ptr = std::getenv("QWEN_API_KEY");
+                            if (!api_key_ptr || !api_key_ptr[0]) continue;
 
-                                auto launcher = [reactor_ptr = this, conversation_id = conversation_id, user_id = conn.user_id, room_id = room_id, ai_id = m.ai_id, provider = m.provider, ai_model = m.model](uint64_t trigger_message_id, uint64_t context_until_message_id) mutable {
-                                    chatdb::Message ai_msg{
-                                        conversation_id,
-                                        ai_id,
-                                        static_cast<int>(chatdb::MessageType::TEXT),
-                                        "",
-                                        now_ms(),
-                                        nullopt};
-                                    uint64_t ai_message_id = 0;
-                                    MysqlPool::QueryResult ret = insert_hidden_message(ai_msg, now_ms(), ai_message_id);
-                                    if (ret != MysqlPool::QueryResult::Success) {
-                                        LOG_WARN("insert hidden ai message failed, conversation_id = %llu", conversation_id);
-                                        ConvAiScheduler::getInstance().finish(conversation_id, ai_id, nullopt);
-                                        return;
-                                    }
+                            auto launcher = [reactor_ptr = this, conversation_id = conversation_id, user_id = conn.user_id, room_id = room_id, ai_id = m.ai_id, provider = m.provider, ai_model = m.model](uint64_t trigger_message_id, uint64_t context_until_message_id) mutable {
+                                chatdb::Message ai_msg{
+                                    conversation_id,
+                                    ai_id,
+                                    static_cast<int>(chatdb::MessageType::TEXT),
+                                    "",
+                                    now_ms(),
+                                    nullopt};
+                                uint64_t ai_message_id = 0;
+                                MysqlPool::QueryResult ret = insert_hidden_message(ai_msg, now_ms(), ai_message_id);
+                                if (ret != MysqlPool::QueryResult::Success) {
+                                    LOG_WARN("insert hidden ai message failed, conversation_id = %llu", conversation_id);
+                                    ConvAiScheduler::getInstance().finish(conversation_id, ai_id, nullopt);
+                                    return;
+                                }
 
-                                    unique_ptr<AiReplyTask> task = make_unique<AiReplyTask>(*reactor_ptr, provider, conversation_id, trigger_message_id, context_until_message_id, user_id, room_id, ai_id, ai_model, ai_message_id);
-                                    ThreadPool<Reactor::AiReplyTask>::getInstance().enqueue(std::move(task));
-                                };
-                                ConvAiScheduler::getInstance().submit(conversation_id, m.ai_id, message_id, launcher);
-                            }
+                                unique_ptr<AiReplyTask> task = make_unique<AiReplyTask>(*reactor_ptr, provider, conversation_id, trigger_message_id, context_until_message_id, user_id, room_id, ai_id, ai_model, ai_message_id);
+                                ThreadPool<Reactor::AiReplyTask>::getInstance().enqueue(std::move(task));
+                            };
+                            ConvAiScheduler::getInstance().submit(conversation_id, m.ai_id, message_id, launcher);
+                        }
                     } catch (const json::exception &e) {
                         LOG_WARN("bad json: %s", e.what());
                         sendError(conn, WS_PROTOCOLERROR);
@@ -649,7 +652,7 @@ void Reactor::process(Connection &conn) {
                 LOG_DEBUG("fd = %d build response frame size: %zu", conn.fd, response.size());
 
                 if (broadcast) {
-                    broadcast_frame = std::move(response);
+                    broadcast_frame += std::move(response);
                     LOG_DEBUG("fd = %d std::move response to broadcast frame size: %zu", conn.fd, broadcast_frame.size());
                 } else {
                     conn.outbuf += std::move(response);
@@ -730,7 +733,9 @@ void Reactor::AiReplyTask::process() {
             m_provider.c_str());
         return;
     } else if (state != AiClientStatus::Success) {
-        static const array<const char *, 6> kStatusNames = {
+        static const array<const char *, 8> kStatusNames = {
+            "Success",
+            "NoReply",
             "ModelNotRegistered",
             "BuildRequestFailed",
             "NetworkError",
@@ -747,6 +752,9 @@ void Reactor::AiReplyTask::process() {
             m_ai_model.c_str(),
             m_provider.c_str());
         if (m_send_start_frame) sendError();
+        if (state != AiClientStatus::NetworkError || m_round > 0) { // 网络错误进行一次尝试
+            ConvAiScheduler::getInstance().setFailed(m_conversation_id, m_ai_id);
+        }
         return;
     }
 
@@ -754,6 +762,7 @@ void Reactor::AiReplyTask::process() {
     if (ret != MysqlPool::QueryResult::Success) {
         LOG_WARN("complete ai message failed, ai reply: %s", m_ai_reply.data());
         if (m_send_start_frame) sendError();
+        ConvAiScheduler::getInstance().setFailed(m_conversation_id, m_ai_id);
         return;
     }
 
@@ -1077,14 +1086,15 @@ void Reactor::closeFile(Connection &conn) {
 }
 
 void Reactor::closeNow(int fd) {
+    if (m_conns.find(fd) == m_conns.end()) return;
     for (auto it = m_conns[fd]->room_ids.begin(); it != m_conns[fd]->room_ids.end(); ++it) {
         ConnRoute::getInstance().removeRoomConn(*it, m_index, fd);
     }
     ConnRoute::getInstance().removeUserConn(m_conns[fd]->user_id, m_index, fd);
     epoll_ctl(m_epollfd, EPOLL_CTL_DEL, fd, nullptr);
     m_timer_heap.remove(fd);
-    close(fd);
     m_conns.erase(fd);
+    close(fd);
 }
 
 FrameResult Reactor::checkFrame(Connection &conn) {
