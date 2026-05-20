@@ -62,50 +62,60 @@ AsyncLogger::~AsyncLogger() {
 
 constexpr size_t STACK_BUF_SIZE = 1024;
 
-void AsyncLogger::logf(LOGLEVEL level, const char *fmt, ...) {
-    va_list args, args_copy;
-    va_start(args, fmt);
-    va_copy(args_copy, args);
+void AsyncLogger::logf(LOGLEVEL level, const char *file, int line, const char *func, const char *fmt, ...) {
+    if (level < getMinLevel()) return;
 
     char stack_buf[STACK_BUF_SIZE];
-    int n = vsnprintf(stack_buf, STACK_BUF_SIZE, fmt, args);
-
-    if (n >= STACK_BUF_SIZE) {
-        unique_ptr<char[]> heap_buf = make_unique<char[]>(n + 1);
-        vsnprintf(heap_buf.get(), n + 1, fmt, args_copy);
-        log(level, string_view(heap_buf.get(), n));
-    } else if (n >= 0) {
-        log(level, string_view(stack_buf, n));
-    } else {
-        log(ERROR, "vsnprintf failed");
-    }
-    va_end(args);
-    va_end(args_copy);
-}
-
-void AsyncLogger::logf(LOGLEVEL level, const char *file, int line, const char *fmt, ...) {
-    if (level < getMinLevel()) {
+    int prefix_len = snprintf(stack_buf, STACK_BUF_SIZE, "%s:%d %s ", file, line, func);
+    if (prefix_len < 0) {
+        log(ERROR, "snprintf prefix failed");
         return;
     }
 
     va_list args, args_copy;
     va_start(args, fmt);
     va_copy(args_copy, args);
+    if (prefix_len < STACK_BUF_SIZE) {
+        int body_len = vsnprintf(stack_buf + prefix_len, STACK_BUF_SIZE - prefix_len, fmt, args);
+        if (body_len < 0) {
+            va_end(args);
+            va_end(args_copy);
+            log(ERROR, "vsnprintf body failed");
+            return;
+        }
+        int total_len = prefix_len + body_len;
+        if (total_len < STACK_BUF_SIZE) {
+            va_end(args);
+            va_end(args_copy);
+            log(level, string_view(stack_buf, total_len));
+            return;
+        }
 
-    char stack_buf[STACK_BUF_SIZE];
-    int n = vsnprintf(stack_buf, STACK_BUF_SIZE, fmt, args);
+        unique_ptr<char[]> heap_buf = make_unique<char[]>(total_len + 1);
+        memcpy(heap_buf.get(), stack_buf, prefix_len);
+        vsnprintf(heap_buf.get() + prefix_len, body_len + 1, fmt, args_copy);
 
-    if (n >= STACK_BUF_SIZE) {
-        unique_ptr<char[]> heap_buf = make_unique<char[]>(n + 1);
-        vsnprintf(heap_buf.get(), n + 1, fmt, args_copy);
-        log(level, string_view(heap_buf.get(), n));
-    } else if (n >= 0) {
-        log(level, string_view(stack_buf, n));
-    } else {
-        log(ERROR, "vsnprintf failed");
+        va_end(args);
+        va_end(args_copy);
+        log(level, string_view(heap_buf.get(), total_len));
+        return;
     }
+
+    int body_len = vsnprintf(nullptr, 0, fmt, args);
+    if (body_len < 0) {
+        va_end(args);
+        va_end(args_copy);
+        log(ERROR, "vsnprintf body failed");
+        return;
+    }
+    int total_len = prefix_len + body_len;
+    unique_ptr<char[]> heap_buf = make_unique<char[]>(total_len + 1);
+    snprintf(heap_buf.get(), prefix_len + 1, "%s:%d %s ", file, line, func);
+    vsnprintf(heap_buf.get() + prefix_len, body_len + 1, fmt, args_copy);
+
     va_end(args);
     va_end(args_copy);
+    log(level, string_view(heap_buf.get(), total_len));
 }
 
 void AsyncLogger::log(LOGLEVEL level, string_view message) {

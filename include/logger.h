@@ -10,19 +10,19 @@
 #define IF_DEBUG if (AsyncLogger::getMinLevel() == AsyncLogger::DEBUG)
 
 #define LOG_DEBUG(fmt, ...) \
-    AsyncLogger::getInstance().logf(AsyncLogger::DEBUG, fmt, ##__VA_ARGS__)
+    AsyncLogger::getInstance().logf(AsyncLogger::DEBUG, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
 
 #define LOG_INFO(fmt, ...) \
-    AsyncLogger::getInstance().logf(AsyncLogger::INFO, fmt, ##__VA_ARGS__)
+    AsyncLogger::getInstance().logf(AsyncLogger::INFO, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
 
 #define LOG_WARN(fmt, ...) \
-    AsyncLogger::getInstance().logf(AsyncLogger::WARN, "%s:%d %s " fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
+    AsyncLogger::getInstance().logf(AsyncLogger::WARN, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
 
 #define LOG_ERROR(fmt, ...) \
-    AsyncLogger::getInstance().logf(AsyncLogger::ERROR, "%s:%d %s " fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
+    AsyncLogger::getInstance().logf(AsyncLogger::ERROR, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
 
 #define LOG_FATAL(fmt, ...) \
-    AsyncLogger::getInstance().logf(AsyncLogger::FATAL, "%s:%d %s " fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
+    AsyncLogger::getInstance().logf(AsyncLogger::FATAL, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
 
 class AsyncLogger {
   public:
@@ -36,8 +36,7 @@ class AsyncLogger {
 
     static AsyncLogger &getInstance();
     ~AsyncLogger();
-    void logf(LOGLEVEL level, const char *fmt, ...);
-    void logf(LOGLEVEL level, const char *file, int line, const char *fmt, ...);
+    void logf(LOGLEVEL level, const char *file, int line, const char *func, const char *fmt, ...);
     void setFilePath(const std::string file_path);
     void setLevel(std::string_view min_level);
     static void setLevel(LOGLEVEL min_level) {
