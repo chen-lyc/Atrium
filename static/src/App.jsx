@@ -82,6 +82,7 @@ const REDUCED_LOGOUT_RITUAL = {
 const SEND_FLIGHT_COOLDOWN_MS = 260;
 const MESSAGE_FLIGHT_TARGET_RETRY_FRAMES = 3;
 const CHAT_VIEW_STORAGE_KEY = "atrium.chat.view";
+const DRAFT_CONVERSATION_HISTORY_FLAG = "atriumDraftConversation";
 
 function readStoredChatView() {
   try {
@@ -587,6 +588,35 @@ export default function App() {
     setComposerError("");
   }
 
+  function pushDraftConversationHistory() {
+    try {
+      if (window.history.state?.[DRAFT_CONVERSATION_HISTORY_FLAG]) return;
+      window.history.pushState({
+        ...(window.history.state || {}),
+        path: "/chat",
+        [DRAFT_CONVERSATION_HISTORY_FLAG]: true
+      }, "", "/chat");
+    } catch {
+      // Browser history is an enhancement; the in-page back control still works.
+    }
+  }
+
+  function closeDraftConversation() {
+    setDraftConversation(null);
+    clearComposer();
+    setMessageFlight(null);
+    setHiddenMessageId(null);
+    setHeaderScrolled(false);
+  }
+
+  function handleCancelConversationDraft() {
+    if (window.history.state?.[DRAFT_CONVERSATION_HISTORY_FLAG]) {
+      window.history.back();
+      return;
+    }
+    closeDraftConversation();
+  }
+
   function clearAuthIdentity() {
     setAuthedNickname("");
     setAuthedUsername("");
@@ -757,6 +787,11 @@ export default function App() {
   useEffect(() => {
     function handlePopState() {
       if (authedNickname && (appStage === "chat" || sceneTransition?.kind === "login")) {
+        if (draftConversation) {
+          closeDraftConversation();
+          if (window.location.pathname !== "/chat") window.history.replaceState({ path: "/chat" }, "", "/chat");
+          return;
+        }
         if (window.location.pathname !== "/chat") window.history.replaceState({ path: "/chat" }, "", "/chat");
         return;
       }
@@ -771,7 +806,7 @@ export default function App() {
     }
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [appStage, authedNickname, sceneTransition]);
+  }, [appStage, authedNickname, draftConversation, sceneTransition]);
 
   useEffect(() => { if (shouldKeepSocketEnabled) setWsEnabled(true); else setWsEnabled(false); }, [shouldKeepSocketEnabled]);
   useEffect(() => { return () => { clearRitualTimers(); window.clearTimeout(roomSwitchTimerRef.current); window.clearTimeout(launchTimerRef.current); if (launchFrameRef.current != null) window.cancelAnimationFrame(launchFrameRef.current); if (focusFrameRef.current != null) window.cancelAnimationFrame(focusFrameRef.current); }; }, []);
@@ -977,6 +1012,7 @@ export default function App() {
     } catch {
       inheritedMembers = [];
     }
+    pushDraftConversationHistory();
     setDraftConversation({ aiMembers: inheritedMembers });
     clearComposer(); setMessageFlight(null); setHiddenMessageId(null); setHeaderScrolled(false);
     return { conversationId: 0, isDraft: true };
@@ -1300,6 +1336,7 @@ export default function App() {
               onNavigateConversation={handleNavigateConversation}
               draftConversation={draftConversation}
               onDraftAiMembersChange={handleDraftAiMembersChange}
+              onCancelConversationDraft={handleCancelConversationDraft}
               onDeleteConversation={handleDeleteConversation}
               onCreateConversationDraft={handleCreateConversationDraft}
               onConversationAiMembersChange={handleConversationAiMembersChange}

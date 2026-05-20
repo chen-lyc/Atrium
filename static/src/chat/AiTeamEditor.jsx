@@ -153,6 +153,28 @@ const SEAT_ADAPTER_VISUAL_PROFILES = Object.freeze({
 });
 const SEAT_EXPLICIT_THINKING_KEYS = new Set(THINKING_MODE_OPTIONS.map((option) => option.key));
 
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+    return window.matchMedia(query).matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+    const media = window.matchMedia(query);
+    const handleChange = () => setMatches(media.matches);
+    handleChange();
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", handleChange);
+      return () => media.removeEventListener("change", handleChange);
+    }
+    media.addListener(handleChange);
+    return () => media.removeListener(handleChange);
+  }, [query]);
+
+  return matches;
+}
+
 function normalizeModelKey(model) {
   return String(model || "").trim().toLowerCase();
 }
@@ -518,7 +540,7 @@ function ThinkingPicker({
 function AiIdentity({ member, compact = false, members = null }) {
   const preferModel = hasProviderCollision(members) && member?.model;
   const displayName = preferModel
-    ? (compact ? getAiShortName(member) : String(member.model).trim())
+    ? (compact ? getAiShortName(member) : getModelDisplayName(member, String(member.model).trim()))
     : (compact ? getAiShortName(member) : getAiMemberName(member));
   return (
     <span className={`ai-identity ${compact ? "is-compact" : ""}`}>
@@ -577,9 +599,17 @@ function AiModelSelector({
   const [pending, setPending] = useState(false);
   const [status, setStatus] = useState("");
   const selectorRef = useRef(null);
+  const modelRowRefs = useRef(new Map());
+  const isMobileAiSurface = useMediaQuery("(max-width: 760px)");
   const selectedById = useMemo(() => new Map(members.map((member) => [Number(member.aiId), member])), [members]);
   const groups = useMemo(() => groupModelsByProvider(mergeAiMemberOptions(models, members)), [models, members]);
   const canEdit = !readOnly && !pending;
+
+  function setModelRowRef(aiId, node) {
+    if (!Number.isSafeInteger(aiId)) return;
+    if (node) modelRowRefs.current.set(aiId, node);
+    else modelRowRefs.current.delete(aiId);
+  }
 
   useEffect(() => {
     if (editingAiId == null) return undefined;
@@ -587,8 +617,8 @@ function AiModelSelector({
       if (event.target?.closest?.(".ai-model-card-wrap.is-editing")) return;
       setEditingAiId(null);
     }
-    document.addEventListener("mousedown", handlePointerDown);
-    return () => document.removeEventListener("mousedown", handlePointerDown);
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [editingAiId]);
 
   function toggleProvider(provider) {
@@ -617,10 +647,11 @@ function AiModelSelector({
   }
 
   async function applyThinking(model, thinkingKey, customText = "") {
-    const selectedMember = selectedById.get(model.aiId);
+    const modelAiId = Number(model.aiId);
+    const selectedMember = selectedById.get(modelAiId);
     const nextMember = buildMemberWithThinking(selectedMember || model, thinkingKey, customText, thinkingAdapters);
     const nextMembers = selectedMember
-      ? members.map((member) => member.aiId === model.aiId ? nextMember : member)
+      ? members.map((member) => Number(member.aiId) === modelAiId ? nextMember : member)
       : [...members, nextMember];
     try {
       await persist(nextMembers, selectedMember ? "已更新" : "已加入席位");
@@ -631,12 +662,31 @@ function AiModelSelector({
   }
 
   async function removeMember(model) {
+    const modelAiId = Number(model.aiId);
     try {
-      await persist(members.filter((member) => member.aiId !== model.aiId), "已移除");
+      await persist(members.filter((member) => Number(member.aiId) !== modelAiId), "已移除");
       setEditingAiId(null);
     } catch {
       // Inline status carries the failure reason.
     }
+  }
+
+  function handleModelPress(model, selectedMember, isEditing) {
+    if (!canEdit) return;
+    const modelAiId = Number(model.aiId);
+    setEditingAiId(isEditing ? null : modelAiId);
+  }
+
+  function focusModelRow(member) {
+    const aiId = Number(member?.aiId);
+    if (!Number.isSafeInteger(aiId)) return;
+    setEditingAiId(aiId);
+    window.requestAnimationFrame(() => {
+      const row = modelRowRefs.current.get(aiId);
+      if (!row) return;
+      row.scrollIntoView({ block: "center", behavior: "smooth" });
+      row.querySelector(".ai-model-card")?.focus({ preventScroll: true });
+    });
   }
 
   if (!groups.length) {
@@ -644,7 +694,35 @@ function AiModelSelector({
   }
 
   return (
-    <div className={`ai-model-selector ${className}`.trim()}>
+    <div
+      ref={selectorRef}
+      className={[
+        "ai-model-selector",
+        isMobileAiSurface ? "is-mobile-ai-surface" : "",
+        className
+      ].filter(Boolean).join(" ")}
+    >
+      {isMobileAiSurface ? (
+        <div className="ai-mobile-roster" aria-label="已入席 AI">
+          <div className="ai-mobile-roster-head">
+            <span>已入席</span>
+            <small>{members.length ? `${members.length} 位` : "可先不选 AI"}</small>
+          </div>
+          {members.length ? (
+            <AiSeatStrip
+              members={members}
+              thinkingAdapters={thinkingAdapters}
+              readOnly={true}
+              onChange={async () => members}
+              onSeatAction={focusModelRow}
+              emptyText=""
+              className="is-mobile-roster"
+            />
+          ) : (
+            <div className="ai-mobile-roster-empty">可先不选 AI</div>
+          )}
+        </div>
+      ) : null}
       <div className="ai-provider-grid">
         {groups.map((group) => {
           const isExpanded = expandedProviders.has(group.provider);
@@ -668,18 +746,28 @@ function AiModelSelector({
               </div>
               <div className="ai-model-card-row">
                 {visibleModels.map((model) => {
-                  const selectedMember = selectedById.get(model.aiId);
-                  const isEditing = editingAiId === model.aiId;
+                  const modelAiId = Number(model.aiId);
+                  const selectedMember = selectedById.get(modelAiId);
+                  const isEditing = editingAiId === modelAiId;
                   return (
-                    <div key={model.aiId} className={`ai-model-card-wrap ${isEditing ? "is-editing" : ""}`}>
+                    <div
+                      key={model.aiId}
+                      ref={(node) => setModelRowRef(modelAiId, node)}
+                      className={`ai-model-card-wrap ${isEditing ? "is-editing" : ""}`}
+                    >
                       <button
                         type="button"
                         className={`ai-model-card ${selectedMember ? "is-selected" : ""}`}
-                        onClick={() => canEdit && setEditingAiId(isEditing ? null : model.aiId)}
+                        onClick={() => handleModelPress(model, selectedMember, isEditing)}
                         disabled={!canEdit}
                       >
                         <AiIdentity member={model} members={members} />
-                        {selectedMember ? <span className="ai-selected-mark" aria-hidden="true">✓</span> : null}
+                        {selectedMember ? (
+                          <span className="ai-selected-mark" aria-hidden="true">
+                            <span className="ai-selected-check">✓</span>
+                            <span className="ai-selected-text">已入席</span>
+                          </span>
+                        ) : null}
                       </button>
                       <AnimatePresence>
                         {isEditing ? (
@@ -725,6 +813,7 @@ function AiSeatStrip({
   const [hoverCard, setHoverCard] = useState(null);
   const [pending, setPending] = useState(false);
   const timerRef = useRef(null);
+  const isMobileSeatSurface = useMediaQuery("(max-width: 760px)");
 
   useEffect(() => () => window.clearTimeout(timerRef.current), []);
 
@@ -734,8 +823,8 @@ function AiSeatStrip({
       if (event.target?.closest?.(".ai-seat-popover")) return;
       setThinkingOpenAiId(null);
     }
-    document.addEventListener("mousedown", handlePointerDown);
-    return () => document.removeEventListener("mousedown", handlePointerDown);
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [thinkingOpenAiId]);
 
   function getHoverCardPosition(target) {
@@ -800,11 +889,11 @@ function AiSeatStrip({
   }
 
   const hasExternalAction = typeof onSeatAction === "function";
-  const canOpen = !presentationOnly && !hasExternalAction;
-  const canShowSummary = !presentationOnly && hasExternalAction && showHoverSummary;
+  const canOpen = !isMobileSeatSurface && !presentationOnly && !hasExternalAction;
+  const canShowSummary = !isMobileSeatSurface && !presentationOnly && hasExternalAction && showHoverSummary;
   const canReveal = canOpen || canShowSummary;
-  const canActivate = !presentationOnly;
-  const canEdit = !readOnly && !presentationOnly;
+  const canActivate = !presentationOnly && (!isMobileSeatSurface || hasExternalAction);
+  const canEdit = !isMobileSeatSurface && !readOnly && !presentationOnly;
   const hoverMember = canShowSummary && hoverCard
     ? members.find((member) => member.aiId === hoverCard.aiId)
     : null;
@@ -966,8 +1055,8 @@ function AiRosterList({
       if (event.target?.closest?.(".ai-roster-row.is-editing")) return;
       setEditingAiId(null);
     }
-    document.addEventListener("mousedown", handlePointerDown);
-    return () => document.removeEventListener("mousedown", handlePointerDown);
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [editingAiId]);
 
   async function persist(nextMembers) {

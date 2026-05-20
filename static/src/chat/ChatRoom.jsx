@@ -243,6 +243,7 @@ function ConversationPrepPanel({
   availableAis = [],
   thinkingAdapters = [],
   readOnly = false,
+  onCancel = () => {},
   onChangeTeam = async () => [],
   loadError = ""
 }) {
@@ -259,6 +260,20 @@ function ConversationPrepPanel({
       transition={{ duration: 0.18, ease: EASE }}
       aria-label="新对话 AI 阵容"
     >
+      <div className="conversation-prep-head">
+        <button
+          type="button"
+          className="conversation-prep-back focus-ring"
+          onClick={onCancel}
+          aria-label="返回 Home"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M9.8 3.4 5.2 8l4.6 4.6" />
+          </svg>
+          <span>Home</span>
+        </button>
+        <span>新建对话</span>
+      </div>
       <div className="conversation-prep-seats">
         <AiSeatStrip
           members={conversationAiMembers}
@@ -312,6 +327,7 @@ export default function ChatRoom({
   onConversationSelect = () => {}, onNavigateConversation = () => {}, onDeleteConversation = () => {},
   draftConversation = null,
   onDraftAiMembersChange = async () => [],
+  onCancelConversationDraft = () => {},
   onCreateConversationDraft = async () => null,
   onConversationAiMembersChange = async () => [],
   onRoomAiMembersSave = async () => [],
@@ -722,7 +738,7 @@ export default function ChatRoom({
   const stageTransition = resolvedTransitionMode === "idle" ? { duration: 0 } : messagesMotion.transition;
 
   return (
-    <div className={`shell is-moment-${currentMoment} ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}>
+    <div className={`shell is-moment-${currentMoment} ${draftConversation ? "is-ai-draft" : ""} ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}>
       <button
         type="button"
         className={`mobile-menu-btn ${mobileSidebarOpen ? "is-open" : ""}`}
@@ -902,6 +918,7 @@ export default function ChatRoom({
                 availableAis={availableAis}
                 thinkingAdapters={thinkingAdapters}
                 readOnly={readOnly}
+                onCancel={onCancelConversationDraft}
                 onChangeTeam={onDraftAiMembersChange}
                 loadError={aiConfigError?.room || aiConfigError?.thinking || ""}
               />
@@ -918,6 +935,7 @@ export default function ChatRoom({
               isFading={isFading}
               fadeDuration={fadeDuration}
               viewportRef={messagesViewportRef}
+              emptyLayerClassName={draftConversation ? "is-ai-start" : ""}
               renderEmpty={hideMessageContent ? () => null : () => (
                 isOrdinaryMainConversation ? (
                   <div className={`empty-state empty-state--room is-main-conversation is-${roomTone}`}>

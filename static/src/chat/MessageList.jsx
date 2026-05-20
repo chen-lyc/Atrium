@@ -50,7 +50,7 @@ export default function MessageList({
   isFading = false, fadeDuration = 600,
   itemAnimationMode = "standard",
   stickToBottom = true, className = "", innerClassName = "",
-  viewportRef, renderEmpty,
+  viewportRef, renderEmpty, emptyLayerClassName = "",
   aiMembers = [],
   assistantState = null,
   onContextMenu,
@@ -207,7 +207,7 @@ export default function MessageList({
           {!hasMessages ? (
             <motion.div
               key="empty-state"
-              className="empty-state-layer"
+              className={`empty-state-layer ${emptyLayerClassName}`.trim()}
               initial={{ opacity: 1 }}
               animate={{ opacity: isFading ? 0 : 1 }}
               exit={{ opacity: 0 }}
