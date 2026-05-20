@@ -26,7 +26,7 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bench.exe .
 python3 gen_seed.py --room-id <ROOM_ID> --start-id 1000 > seed_users.sql
 
 # 2. 导入数据库
-mysql -u root -p webserver < seed_users.sql
+mysql -u lyc -p webserver < seed_users.sql
 ```
 
 ## 清理
@@ -34,7 +34,7 @@ mysql -u root -p webserver < seed_users.sql
 ```bash
 # 压测完成后，删除所有测试用户
 python3 gen_cleanup.py --room-id <ROOM_ID> --start-id 1000 > cleanup.sql
-mysql -u root -p webserver < cleanup.sql
+mysql -u lyc -p webserver < cleanup.sql
 ```
 
 `gen_seed.py` 参数：

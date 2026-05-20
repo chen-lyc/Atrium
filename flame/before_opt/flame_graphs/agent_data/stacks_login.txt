@@ -1,0 +1,139 @@
+server.out;CRYPTO_clear_free 606060600
+server.out;CRYPTO_free 232323230
+server.out;ENGINE_finish 343434340
+server.out;EVP_DigestFinal_ex 101010100
+server.out;EVP_MD_CTX_set_flags 20202020
+server.out;EVP_MD_get_size 40404040
+server.out;OPENSSL_cleanse 1383838370
+server.out;SHA256_Final 50505050
+server.out;[libcrypto.so.3] 989898980
+server.out;[libcrypto.so.3];__asan::Allocator::QuarantineChunk 242424240
+server.out;[libcrypto.so.3];__asan::GetMallocContextSize 202020200
+server.out;[libcrypto.so.3];__asan::GetMallocContextSize;asm_sysvec_apic_timer_interrupt;sysvec_apic_timer_interrupt;irq_exit_rcu;handle_softirqs;run_timer_softirq;__run_timers.part.0;call_timer_fn;tcp_delack_timer;tcp_delack_timer_handler;tcp_send_ack;__tcp_send_ack.part.0;__tcp_transmit_skb;ip_queue_xmit;__ip_queue_xmit;ip_local_out;ip_output;ip_finish_output;migrate_enable 10101010
+server.out;[libcrypto.so.3];__asan::asan_free 252525250
+server.out;[libcrypto.so.3];__interceptor_free 767676760
+server.out;[libcrypto.so.3];__sanitizer::BufferedStackTrace::UnwindImpl 333333330
+server.out;[libcrypto.so.3];__sanitizer::StackTrace::GetCurrentPc 111111110
+server.out;[libstdc++.so.6.0.30];std::thread::_State_impl<std::thread::_Invoker<std::tuple<void ;std::thread::_Invoker<std::tuple<void ;std::thread::_Invoker<std::tuple<void ;std::__invoke<void ;std::__invoke_impl<void, void ;Reactor::loop;Reactor::process;std::unordered_map<int, std::vector<int, std::allocator<int> >, std::hash<int>, std::equal_to<int>, std::allocator<std::pair<int const, std::vector<int, std::allocator<int> > > > >::~unordered_map;std::_Hashtable<int, std::pair<int const, std::vector<int, std::allocator<int> > >, std::allocator<std::pair<int const, std::vector<int, std::allocator<int> > > >, std::__detail::_Select1st, std::equal_to<int>, std::hash<int>, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, true> >::~_Hashtable;std::_Hashtable<int, std::pair<int const, std::vector<int, std::allocator<int> > >, std::allocator<std::pair<int const, std::vector<int, std::allocator<int> > > >, std::__detail::_Select1st, std::equal_to<int>, std::hash<int>, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, true> >::_M_begin 10101010
+server.out;[unknown];EVP_DigestFinal_ex 323232320
+server.out;[unknown];EVP_DigestUpdate 191919190
+server.out;[unknown];EVP_MD_CTX_copy_ex 40404040
+server.out;[unknown];EVP_MD_get_size 40404040
+server.out;[unknown];HMAC_CTX_copy 161616160
+server.out;[unknown];HMAC_Final 454545450
+server.out;[unknown];HMAC_Update 171717170
+server.out;[unknown];OPENSSL_cleanse 151515150
+server.out;[unknown];OSSL_PARAM_locate 10101010
+server.out;[unknown];OSSL_PARAM_locate;__interceptor_strcmp.part.0 10101010
+server.out;[unknown];RAND_get_rand_method 10101010
+server.out;[unknown];SHA256_Final 1060606050
+server.out;[unknown];SHA256_Update 707070700
+server.out;[unknown];SHA256_Update;__asan::QuickCheckForUnpoisonedRegion 424242420
+server.out;[unknown];SHA256_Update;__interceptor_memcpy 363636360
+server.out;[unknown];SHA256_Update;asm_sysvec_reschedule_ipi;sysvec_reschedule_ipi;irqentry_exit;irqentry_exit_to_user_mode;exit_to_user_mode_loop 10101010
+server.out;[unknown];[libcrypto.so.3] 3989898950
+server.out;[unknown];[unknown];CRYPTO_malloc 333333330
+server.out;[unknown];[unknown];EVP_MD_CTX_clear_flags 40404040
+server.out;[unknown];[unknown];EVP_MD_CTX_copy_ex 1909090890
+server.out;[unknown];[unknown];EVP_MD_CTX_test_flags 20202020
+server.out;[unknown];[unknown];HMAC_CTX_copy 606060600
+server.out;[unknown];[unknown];HMAC_CTX_copy;asm_sysvec_reschedule_ipi;sysvec_reschedule_ipi;irqentry_exit;irqentry_exit_to_user_mode;exit_to_user_mode_loop 10101010
+server.out;[unknown];[unknown];[libcrypto.so.3] 1272727260
+server.out;[unknown];[unknown];[libcrypto.so.3];__asan::Allocator::Allocate 727272720
+server.out;[unknown];[unknown];[libcrypto.so.3];__asan::GetMallocContextSize 60606060
+server.out;[unknown];[unknown];[libcrypto.so.3];__asan::asan_malloc 151515150
+server.out;[unknown];[unknown];[libcrypto.so.3];__asan::asan_malloc;asm_sysvec_reschedule_ipi;sysvec_reschedule_ipi;irqentry_exit;irqentry_exit_to_user_mode;exit_to_user_mode_loop 10101010
+server.out;[unknown];[unknown];[libcrypto.so.3];__interceptor_malloc 1262626250
+server.out;[unknown];[unknown];[libcrypto.so.3];__sanitizer::BufferedStackTrace::UnwindImpl 454545450
+server.out;[unknown];[unknown];[libcrypto.so.3];__sanitizer::StackTrace::GetCurrentPc 202020200
+server.out;[unknown];[unknown];__interceptor_malloc 232323230
+server.out;[unknown];__asan::Allocator::Allocate 6494949430
+server.out;[unknown];__asan::Allocator::Allocate;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault 20202020
+server.out;[unknown];__asan::Allocator::Allocate;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault;handle_pte_fault;do_wp_page;wp_page_copy;_raw_spin_lock;__pv_queued_spin_lock_slowpath 10101010
+server.out;[unknown];__asan::Allocator::Allocate;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault;handle_pte_fault;do_wp_page;wp_page_copy;alloc_pages_vma;__alloc_pages;__cond_resched 10101010
+server.out;[unknown];__asan::Allocator::Allocate;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault;handle_pte_fault;do_wp_page;wp_page_copy;alloc_pages_vma;__alloc_pages;get_page_from_freelist;clear_page_rep 10101010
+server.out;[unknown];__asan::Allocator::Allocate;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault;handle_pte_fault;do_wp_page;wp_page_copy;alloc_pages_vma;__alloc_pages;rcu_all_qs 10101010
+server.out;[unknown];__asan::Allocator::Allocate;asm_sysvec_apic_timer_interrupt;sysvec_apic_timer_interrupt;irq_exit_rcu;handle_softirqs;net_rx_action;__napi_poll;process_backlog;__netif_receive_skb;__netif_receive_skb_one_core;ip_rcv;ip_local_deliver;ip_local_deliver_finish;ip_protocol_deliver_rcu;tcp_v4_rcv;__inet_lookup_established 10101010
+server.out;[unknown];__asan::Allocator::Allocate;asm_sysvec_apic_timer_interrupt;sysvec_apic_timer_interrupt;irq_exit_rcu;handle_softirqs;rcu_core_si;rcu_core;rcu_do_batch;put_cred_rcu 10101010
+server.out;[unknown];__asan::Allocator::QuarantineChunk 1141414130
+server.out;[unknown];__asan::Allocator::QuarantineChunk;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault 10101010
+server.out;[unknown];__asan::Allocator::QuarantineChunk;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;arch_local_irq_enable 10101010
+server.out;[unknown];__asan::AsanTSDGet 313131310
+server.out;[unknown];__asan::AsanTSDGet;asm_sysvec_apic_timer_interrupt;sysvec_apic_timer_interrupt;irqentry_exit;irqentry_exit_to_user_mode;exit_to_user_mode_loop;__rseq_handle_notify_resume;rseq_ip_fixup;__get_user_8 10101010
+server.out;[unknown];__asan::GetCurrentThread 424242420
+server.out;[unknown];__asan::GetCurrentThread;asm_sysvec_apic_timer_interrupt;sysvec_apic_timer_interrupt;irqentry_exit;irqentry_exit_to_user_mode;exit_to_user_mode_loop;__rseq_handle_notify_resume;rseq_ip_fixup;__get_user_8 10101010
+server.out;[unknown];__asan::GetCurrentThreadStats 313131310
+server.out;[unknown];__asan::PoisonShadow 1181818170
+server.out;[unknown];__asan::asan_free 525252520
+server.out;[unknown];__interceptor_memcpy 90909090
+server.out;[unknown];__lsan::DisabledInThisThread 373737370
+server.out;[unknown];__memset_avx2_unaligned 636363630
+server.out;[unknown];__memset_avx2_unaligned_erms 575757570
+server.out;[unknown];__memset_avx2_unaligned_erms;asm_exc_page_fault;exc_page_fault;do_user_addr_fault 20202020
+server.out;[unknown];__memset_avx2_unaligned_erms;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;find_vma 10101010
+server.out;[unknown];__memset_avx2_unaligned_erms;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault;handle_pte_fault;do_anonymous_page;__mem_cgroup_charge;get_mem_cgroup_from_mm 10101010
+server.out;[unknown];__memset_avx2_unaligned_erms;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault;handle_pte_fault;do_anonymous_page;alloc_pages_vma;__alloc_pages;get_page_from_freelist 10101010
+server.out;[unknown];__memset_avx2_unaligned_erms;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault;handle_pte_fault;do_anonymous_page;alloc_pages_vma;__alloc_pages;get_page_from_freelist;clear_page_rep 10101010
+server.out;[unknown];__memset_avx2_unaligned_erms;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault;handle_pte_fault;do_anonymous_page;alloc_pages_vma;__alloc_pages;get_page_from_freelist;rmqueue 10101010
+server.out;[unknown];__memset_avx2_unaligned_erms;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;up_read;rwsem_wake.isra.0;wake_up_q;try_to_wake_up;__lock_text_start 10101010
+server.out;[unknown];__memset_avx2_unaligned_erms;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;vmacache_find 10101010
+server.out;[unknown];__sanitizer::BlockingMutex::Lock 30303030
+server.out;[unknown];__sanitizer::BlockingMutex::Unlock 20202020
+server.out;[unknown];__sanitizer::BlockingMutex::Unlock;entry_SYSCALL_64_after_hwframe;do_syscall_64;x64_sys_call;__x64_sys_futex;do_futex;futex_wake;wake_up_q;try_to_wake_up;__lock_text_start 10101010
+server.out;[unknown];__sanitizer::CombinedAllocator<__sanitizer::SizeClassAllocator64<__asan::AP64<__sanitizer::LocalAddressSpaceView> >, __sanitizer::LargeMmapAllocatorPtrArrayDynamic>::Allocate 787878780
+server.out;[unknown];__sanitizer::CombinedAllocator<__sanitizer::SizeClassAllocator64<__asan::AP64<__sanitizer::LocalAddressSpaceView> >, __sanitizer::LargeMmapAllocatorPtrArrayDynamic>::Deallocate 606060600
+server.out;[unknown];__sanitizer::MonotonicNanoTime 20202020
+server.out;[unknown];__sanitizer::RunFreeHooks 565656560
+server.out;[unknown];__sanitizer::RunMallocHooks 131313130
+server.out;[unknown];__sanitizer::SizeClassAllocator64<__asan::AP64<__sanitizer::LocalAddressSpaceView> >::GetFromAllocator 171717170
+server.out;[unknown];__sanitizer::SizeClassAllocator64<__asan::AP64<__sanitizer::LocalAddressSpaceView> >::MaybeReleaseToOS 20202020
+server.out;[unknown];__sanitizer::SizeClassAllocator64<__asan::AP64<__sanitizer::LocalAddressSpaceView> >::MaybeReleaseToOS;asm_sysvec_reschedule_ipi;sysvec_reschedule_ipi;irqentry_exit;irqentry_exit_to_user_mode;exit_to_user_mode_loop 10101010
+server.out;[unknown];__sanitizer::SizeClassAllocator64<__asan::AP64<__sanitizer::LocalAddressSpaceView> >::ReturnToAllocator 111111110
+server.out;[unknown];__sanitizer::SizeClassAllocator64LocalCache<__sanitizer::SizeClassAllocator64<__asan::AP64<__sanitizer::LocalAddressSpaceView> > >::Drain 10101010
+server.out;[unknown];__sanitizer::StackDepotBase<__sanitizer::StackDepotNode, 1, 20>::Put 343434340
+server.out;[unknown];__sanitizer::StackDepotPut 282828280
+server.out;[unknown];__sanitizer::StackDepotPut;asm_common_interrupt;common_interrupt;irq_exit_rcu;handle_softirqs;net_rx_action;__napi_poll;virtnet_poll;napi_complete_done;netif_receive_skb_list_internal;__netif_receive_skb_list_core;__netif_receive_skb_core.constprop.0;tpacket_rcv 10101010
+server.out;[unknown];__strpbrk_sse42;__asan::PoisonShadow 676767670
+server.out;[unknown];clock_gettime@@GLIBC_2.17;[[vdso]] 50505050
+server.out;[unknown];memcpy@GLIBC_2.2.5 131313130
+server.out;[unknown];pthread_getspecific@@GLIBC_2.34 1333333320
+server.out;[unknown];pthread_getspecific@plt 10101010
+server.out;[unknown];redisBufferWrite;__GI___libc_write;entry_SYSCALL_64_after_hwframe;do_syscall_64;x64_sys_call;__x64_sys_write;ksys_write;vfs_write;new_sync_write;sock_write_iter;__sock_sendmsg;inet_sendmsg;tcp_sendmsg;tcp_sendmsg_locked;tcp_push;__tcp_push_pending_frames;tcp_write_xmit;__tcp_transmit_skb;ip_queue_xmit;__ip_queue_xmit;ip_local_out;ip_output;ip_finish_output;__ip_finish_output;ip_finish_output2;__local_bh_enable_ip;do_softirq;__softirqentry_text_start;handle_softirqs;net_rx_action;__napi_poll;process_backlog;__netif_receive_skb;__netif_receive_skb_one_core;ip_rcv;ip_local_deliver;ip_local_deliver_finish;ip_protocol_deliver_rcu;sock_put 10101010
+server.out;__asan::Allocator::Allocate 3959595920
+server.out;__asan::Allocator::Allocate;asm_exc_page_fault;exc_page_fault;do_user_addr_fault 10101010
+server.out;__asan::Allocator::Allocate;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;find_vma;vmacache_find 10101010
+server.out;__asan::Allocator::Allocate;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault;handle_pte_fault;do_anonymous_page;_raw_spin_lock;__pv_queued_spin_lock_slowpath 10101010
+server.out;__asan::Allocator::Allocate;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault;handle_pte_fault;do_wp_page;wp_page_copy;ptep_clear_flush;flush_tlb_mm_range;native_flush_tlb_multi;on_each_cpu_cond_mask;smp_call_function_many_cond 30303030
+server.out;__asan::Allocator::Allocate;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault;handle_pte_fault;do_wp_page;wp_page_copy;ptep_clear_flush;flush_tlb_mm_range;native_flush_tlb_multi;on_each_cpu_cond_mask;smp_call_function_many_cond;send_call_function_single_ipi 10101010
+server.out;__asan::Allocator::Allocate;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault;handle_pte_fault;do_wp_page;wp_page_copy;ptep_clear_flush;flush_tlb_mm_range;native_flush_tlb_multi;on_each_cpu_cond_mask;smp_call_function_many_cond;send_call_function_single_ipi;native_send_call_func_single_ipi;native_write_msr 20202020
+server.out;__asan::Allocator::Allocate;asm_exc_page_fault;exc_page_fault;do_user_addr_fault;handle_mm_fault;__handle_mm_fault;handle_pte_fault;do_wp_page;wp_page_copy;ptep_clear_flush;flush_tlb_mm_range;native_flush_tlb_multi;on_each_cpu_cond_mask;smp_call_function_many_cond;send_call_function_single_ipi;native_send_call_func_single_ipi;x2apic_send_IPI 10101010
+server.out;__asan::Allocator::Allocate;asm_sysvec_apic_timer_interrupt;sysvec_apic_timer_interrupt;irq_exit_rcu;handle_softirqs;run_timer_softirq;__run_timers.part.0;call_timer_fn;tcp_write_timer;tcp_write_timer_handler;__sk_mem_reclaim;__sk_mem_reduce_allocated;mem_cgroup_uncharge_skmem;refill_stock 10101010
+server.out;__asan::Allocator::Allocate;asm_sysvec_reschedule_ipi;sysvec_reschedule_ipi;irqentry_exit;irqentry_exit_to_user_mode;exit_to_user_mode_loop 20202020
+server.out;__asan::AsanTSDGet 424242420
+server.out;__asan::AsanThread::stack_bottom 767676760
+server.out;__asan::AsanThread::stack_top 565656560
+server.out;__asan::GetCurrentThread 606060600
+server.out;__asan::GetCurrentThread;asm_common_interrupt;common_interrupt;irq_exit_rcu;handle_softirqs;net_rx_action;__napi_poll;virtnet_poll;napi_complete_done;netif_receive_skb_list_internal;__netif_receive_skb_list_core;ip_list_rcv;ip_sublist_rcv;ip_sublist_rcv_finish;ip_local_deliver;ip_local_deliver_finish;ip_protocol_deliver_rcu;tcp_v4_rcv;tcp_v4_do_rcv;tcp_rcv_established;__tcp_ack_snd_check;tcp_send_ack;__tcp_send_ack.part.0;__tcp_transmit_skb;ip_queue_xmit;__ip_queue_xmit;__sk_dst_check;ipv4_dst_check 10101010
+server.out;__asan::GetCurrentThreadStats 50505050
+server.out;__asan::PoisonShadow 313131310
+server.out;__asan::RZSize2Log 707070700
+server.out;__asan::RZSize2Log;asm_sysvec_apic_timer_interrupt;sysvec_apic_timer_interrupt;irq_exit_rcu;handle_softirqs;run_rebalance_domains;update_blocked_averages 10101010
+server.out;__interceptor_free 151515150
+server.out;__memset_avx2_unaligned 151515150
+server.out;__memset_avx2_unaligned_erms 181818180
+server.out;__sanitizer::BufferedStackTrace::Unwind 515151510
+server.out;__sanitizer::BufferedStackTrace::UnwindFast 1333333320
+server.out;__sanitizer::BufferedStackTrace::UnwindImpl 707070700
+server.out;__sanitizer::CombinedAllocator<__sanitizer::SizeClassAllocator64<__asan::AP64<__sanitizer::LocalAddressSpaceView> >, __sanitizer::LargeMmapAllocatorPtrArrayDynamic>::Allocate 212121210
+server.out;__sanitizer::CombinedAllocator<__sanitizer::SizeClassAllocator64<__asan::AP64<__sanitizer::LocalAddressSpaceView> >, __sanitizer::LargeMmapAllocatorPtrArrayDynamic>::Deallocate 222222220
+server.out;__sanitizer::Quarantine<__asan::QuarantineCallback, __asan::AsanChunk>::DoRecycle 10868686760
+server.out;__sanitizer::Quarantine<__asan::QuarantineCallback, __asan::AsanChunk>::DoRecycle;asm_sysvec_apic_timer_interrupt;sysvec_apic_timer_interrupt;irq_exit_rcu;handle_softirqs;rcu_core_si;rcu_core 10101010
+server.out;__sanitizer::Quarantine<__asan::QuarantineCallback, __asan::AsanChunk>::DoRecycle;asm_sysvec_apic_timer_interrupt;sysvec_apic_timer_interrupt;irq_exit_rcu;handle_softirqs;run_timer_softirq;__run_timers.part.0;call_timer_fn;tcp_delack_timer;tcp_delack_timer_handler;tcp_send_ack;__tcp_send_ack.part.0 10101010
+server.out;__sanitizer::RunMallocHooks 181818180
+server.out;__sanitizer::SizeClassAllocator64LocalCache<__sanitizer::SizeClassAllocator64<__asan::AP64<__sanitizer::LocalAddressSpaceView> > >::Refill 20202020
+server.out;__sanitizer::StackDepotBase<__sanitizer::StackDepotNode, 1, 20>::Put 1757575740
+server.out;__sanitizer::StackDepotBase<__sanitizer::StackDepotNode, 1, 20>::find 666666660
+server.out;__sanitizer::internal_mmap;entry_SYSCALL_64_after_hwframe;do_syscall_64;x64_sys_call;__x64_sys_mmap;ksys_mmap_pgoff;vm_mmap_pgoff;do_mmap;mmap_region;__mmap_region;__do_munmap;__split_vma;vm_area_dup;kmem_cache_alloc 10101010
+server.out;__sanitizer::internal_mmap;entry_SYSCALL_64_after_hwframe;do_syscall_64;x64_sys_call;__x64_sys_mmap;ksys_mmap_pgoff;vm_mmap_pgoff;up_write;rwsem_wake.isra.0;wake_up_q;try_to_wake_up;__lock_text_start 10101010
+server.out;pthread_getspecific@@GLIBC_2.34 2474747450
+server.out;pthread_getspecific@plt 30303030

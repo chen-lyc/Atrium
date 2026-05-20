@@ -751,7 +751,7 @@ void Reactor::AiReplyTask::process() {
             m_ai_id,
             m_ai_model.c_str(),
             m_provider.c_str());
-        if (m_send_start_frame) sendError();
+        sendError(name);
         if (state != AiClientStatus::NetworkError || m_round > 0) { // 网络错误进行一次尝试
             ConvAiScheduler::getInstance().setFailed(m_conversation_id, m_ai_id);
         }
@@ -761,7 +761,7 @@ void Reactor::AiReplyTask::process() {
     MysqlPool::QueryResult ret = complete_message_content(m_ai_message_id, m_ai_reply);
     if (ret != MysqlPool::QueryResult::Success) {
         LOG_WARN("complete ai message failed, ai reply: %s", m_ai_reply.data());
-        if (m_send_start_frame) sendError();
+        sendError("ServerError");
         ConvAiScheduler::getInstance().setFailed(m_conversation_id, m_ai_id);
         return;
     }
@@ -914,11 +914,12 @@ void Reactor::AiReplyTask::dispatchToOtherAis() {
     }
 }
 
-void Reactor::AiReplyTask::sendError() {
+void Reactor::AiReplyTask::sendError(std::string_view error) {
     json err;
     err["room_id"] = m_room_id;
     err["conversation_id"] = m_conversation_id;
     err["model"] = m_ai_model;
+    err["error"] = error;
 
     json frame;
     frame["type"] = static_cast<int>(chatdb::EventType::AiStreamError);

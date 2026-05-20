@@ -18,6 +18,8 @@ mentor/
 .deepseek/
 .agents/
 .vscode/
+.codex
+.clang-format
 
 # 临时截图
 *.png

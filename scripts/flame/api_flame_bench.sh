@@ -17,7 +17,7 @@ fi
 
 TEST_USER="test"
 TEST_PASS="123"
-CONC=20
+CONC=100
 
 BASE="http://127.0.0.1:8080"
 OHA=$(command -v oha)
@@ -117,14 +117,14 @@ INV_ROOM_ID=$(echo "$ROOMS" | /usr/bin/jq -r '.rooms[] | select(.type != 1) | .i
 [ -z "$INV_ROOM_ID" ] || [ "$INV_ROOM_ID" = "null" ] && INV_ROOM_ID="$ROOM_ID"
 echo "invitation room=$INV_ROOM_ID"
 
-# 清理残留 bench 房间
-$MYSQL -e "DELETE FROM conversations WHERE room_id IN (SELECT id FROM rooms WHERE name='bench-tmp')" 2>/dev/null || true
-$MYSQL -e "DELETE FROM room_members WHERE room_id IN (SELECT id FROM rooms WHERE name='bench-tmp')" 2>/dev/null || true
-$MYSQL -e "DELETE FROM rooms WHERE name='bench-tmp'" 2>/dev/null || true
-echo "cleaned old bench rooms"
-
-# 清理孤立 room_members（历史 benchmark 残留，users/participants 已删但 room_members 还在）
-$MYSQL -e "DELETE rm FROM room_members rm LEFT JOIN users u ON rm.user_id = u.id WHERE u.id IS NULL AND rm.user_id > 1000" 2>/dev/null || true
+# 预清理：执行完整清理 SQL
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+pre_cleanup() {
+  echo "=== Pre-cleanup ==="
+  /usr/bin/sudo /usr/bin/mysql webserver < "$SCRIPT_DIR/cleanup_db.sql" 2>&1 | tail -15
+  echo "  done"
+}
+pre_cleanup
 
 # ═══════════════════════════════════════
 # 2. 种子数据（可重复调用）
@@ -204,45 +204,8 @@ seed_data
 cleanup_seed_data() {
   echo ""
   echo "=== Cleanup bench data ==="
-  # AI 成员（ai_id=99999）
-  $MYSQL -e "DELETE FROM room_ai_members WHERE ai_id = 99999" 2>/dev/null || true
-  $MYSQL -e "DELETE FROM conversation_ai_members WHERE ai_id = 99999" 2>/dev/null || true
-
-  # bench-tmp 房间级联
-  $MYSQL -e "DELETE FROM room_ai_members WHERE room_id IN (SELECT id FROM rooms WHERE name='bench-tmp')" 2>/dev/null || true
-  $MYSQL -e "DELETE FROM invitations WHERE room_id IN (SELECT id FROM rooms WHERE name='bench-tmp')" 2>/dev/null || true
-  $MYSQL -e "DELETE FROM room_members WHERE room_id IN (SELECT id FROM rooms WHERE name='bench-tmp')" 2>/dev/null || true
-  $MYSQL -e "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE room_id IN (SELECT id FROM rooms WHERE name='bench-tmp'))" 2>/dev/null || true
-  $MYSQL -e "DELETE FROM conversation_ai_members WHERE conversation_id IN (SELECT id FROM conversations WHERE room_id IN (SELECT id FROM rooms WHERE name='bench-tmp'))" 2>/dev/null || true
-  $MYSQL -e "DELETE FROM conversations WHERE room_id IN (SELECT id FROM rooms WHERE name='bench-tmp')" 2>/dev/null || true
-  $MYSQL -e "DELETE FROM rooms WHERE name='bench-tmp'" 2>/dev/null || true
-
-  # bench-tmp 对话
-  $MYSQL -e "DELETE FROM conversation_ai_members WHERE conversation_id IN (SELECT id FROM conversations WHERE title='bench-tmp')" 2>/dev/null || true
-  $MYSQL -e "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE title='bench-tmp')" 2>/dev/null || true
-  $MYSQL -e "DELETE FROM conversations WHERE title='bench-tmp'" 2>/dev/null || true
-
-  # bench-invite-room 邀请种子房间级联
-  $MYSQL -e "DELETE FROM invitations WHERE room_id IN (SELECT id FROM rooms WHERE name='bench-invite-room')" 2>/dev/null || true
-  $MYSQL -e "DELETE FROM room_members WHERE room_id IN (SELECT id FROM rooms WHERE name='bench-invite-room')" 2>/dev/null || true
-  $MYSQL -e "DELETE FROM conversations WHERE room_id IN (SELECT id FROM rooms WHERE name='bench-invite-room')" 2>/dev/null || true
-  $MYSQL -e "DELETE FROM rooms WHERE name='bench-invite-room'" 2>/dev/null || true
-
-  if [ "$FRIEND_ID" != "0" ]; then
-    $MYSQL -e "DELETE FROM friendships WHERE user_a_id = ${FRIEND_ID} OR user_b_id = ${FRIEND_ID}" 2>/dev/null || true
-    $MYSQL -e "DELETE FROM friend_requests WHERE from_user_id = ${FRIEND_ID} OR to_user_id = ${FRIEND_ID}" 2>/dev/null || true
-    $MYSQL -e "DELETE FROM room_members WHERE user_id = ${FRIEND_ID}" 2>/dev/null || true
-    $MYSQL -e "DELETE FROM invitations WHERE inviter_id = ${FRIEND_ID} OR invitee_id = ${FRIEND_ID}" 2>/dev/null || true
-    $MYSQL -e "DELETE FROM ai_usage WHERE user_id = ${FRIEND_ID}" 2>/dev/null || true
-    $MYSQL -e "DELETE FROM users WHERE id = ${FRIEND_ID}" 2>/dev/null || true
-    $MYSQL -e "DELETE FROM participants WHERE id = ${FRIEND_ID}" 2>/dev/null || true
-    echo "deleted friend user $FRIEND_ID"
-  fi
-  if [ "$CONV_ID" != "0" ]; then
-    $MYSQL -e "DELETE FROM messages WHERE client_message_id LIKE 'bench_${CONV_ID}_%'" 2>/dev/null || true
-    echo "deleted seed messages"
-  fi
-  echo "Cleanup done"
+  /usr/bin/sudo /usr/bin/mysql webserver < "$SCRIPT_DIR/cleanup_db.sql" 2>&1 | tail -15
+  echo "=== Cleanup done ==="
 }
 
 cleanup_seed() {
@@ -381,8 +344,11 @@ if [ "$MODE" = "full" ]; then
 
     if [ "$NAME" = "register" ]; then
       $MYSQL -e "DELETE FROM users WHERE username='${REG_USER}'" 2>/dev/null && \
-        echo "  cleanup: deleted $REG_USER" || echo "  cleanup: delete $REG_USER failed (may already be gone)"
+        echo "  cleanup: deleted $REG_USER" || echo "  cleanup: register user already gone"
     fi
+    case "$NAME" in
+      rooms-create|room-convs-create|room-ai-create|conv-ai-create) pre_cleanup ;;
+    esac
     echo ""
   done
 
@@ -434,8 +400,16 @@ for api in "${APIS[@]}"; do
 
   if [ "$NAME" = "register" ]; then
     $MYSQL -e "DELETE FROM users WHERE username='${REG_USER}'" 2>/dev/null && \
-      echo "  cleanup: deleted $REG_USER" || echo "  cleanup: delete $REG_USER failed (may already be gone)"
+      echo "  cleanup: deleted $REG_USER" || echo "  cleanup: register user already gone"
   fi
+
+  # 创建类 API 跑完后立刻清垃圾
+  case "$NAME" in
+    rooms-create|room-convs-create|room-ai-create|conv-ai-create)
+      echo -n "  cleanup: "
+      /usr/bin/sudo /usr/bin/mysql webserver < "$SCRIPT_DIR/cleanup_db.sql" 2>&1 | grep -oP 'rooms\s+\K\d+|conversations\s+\K\d+|users\s+\K\d+' | tr '\n' ' '
+      echo "" ;;
+  esac
 
   if [ -f /tmp/perf_$$.data ] && [ -s /tmp/perf_$$.data ]; then
     /usr/bin/sudo /usr/bin/perf script -i /tmp/perf_$$.data 2>/dev/null \

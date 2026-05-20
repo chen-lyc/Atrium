@@ -1,6 +1,12 @@
 CXX = g++
-CXXFLAGS = -g -O0 -std=c++20 -Wall -Wno-sign-compare -I include -I third_party -fsanitize=address
+CXXFLAGS = -g -O0 -std=c++20 -Wall -Wno-sign-compare -I include -I third_party
 DEPFLAGS = -MMD -MP
+
+# ASan: make ASAN=1 开启，默认关闭（真实性能）
+ifdef ASAN
+	CXXFLAGS += -fsanitize=address
+	ASAN_LIB = -fsanitize=address
+endif
 
 TARGET = build/server.out
 
@@ -14,7 +20,7 @@ OBJS = $(SRCS:src/%.cpp=build/%.o)
 OBJS := $(OBJS:src/%.cc=build/%.o)
 DEPS = $(OBJS:.o=.d)
 
-LIBS = -lprotobuf -lmysqlclient -lhiredis -lpthread -lcrypto -lmysqlcppconn -lssl -fsanitize=address
+LIBS = -lprotobuf -lmysqlclient -lhiredis -lpthread -lcrypto -lmysqlcppconn -lssl $(ASAN_LIB)
 
 $(TARGET): $(OBJS)
 	$(CXX) $(OBJS) -o $(TARGET) $(LIBS)

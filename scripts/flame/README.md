@@ -13,6 +13,8 @@ scp -r scripts/flame ubuntu@你的服务器IP:~/WebServer/scripts/
 ### 2. 运行
 
 ```bash
+sudo mysql webserver < ~/WebServer/scripts/flame/cleanup_db.sql
+
 cd ~/WebServer/scripts/flame
 
 # 仅火焰图（默认）

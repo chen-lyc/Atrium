@@ -25,7 +25,7 @@ class Reactor {
         void process();
         void onChunk(AiSseData &data);
         void broadcastAiReply(const std::string reply);
-        void sendError();
+        void sendError(std::string_view error);
         void dispatchToOtherAis();
 
       private:
