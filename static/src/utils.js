@@ -255,9 +255,6 @@ export function normalizeIncomingMessage(payload, currentNickname, currentUserId
 }
 
 export function findPendingLocalMatch(prevMessages, incomingMessage) {
-  const incomingMessageId = Number(incomingMessage.id);
-  const hasIncomingServerId = Number.isSafeInteger(incomingMessageId) && incomingMessageId > 0;
-
   const exactIdMatch = [...prevMessages]
     .map((message, index) => ({ message, index }))
     .find(({ message }) => {
@@ -267,6 +264,7 @@ export function findPendingLocalMatch(prevMessages, incomingMessage) {
     })?.index;
 
   if (exactIdMatch != null) return exactIdMatch;
+  if (!incomingMessage.isSelf) return undefined;
 
   return [...prevMessages]
     .map((message, index) => ({ message, index }))
@@ -281,10 +279,10 @@ export function findPendingLocalMatch(prevMessages, incomingMessage) {
 }
 
 export function mergeIncomingMessage(prevMessages, incomingMessage) {
-  if (!incomingMessage.isSelf) {
+  let matchIndex = findPendingLocalMatch(prevMessages, incomingMessage);
+  if (!incomingMessage.isSelf && matchIndex == null) {
     return [...prevMessages, incomingMessage];
   }
-  let matchIndex = findPendingLocalMatch(prevMessages, incomingMessage);
   if (matchIndex == null) {
     const incomingText = incomingMessage.text;
     matchIndex = prevMessages.findIndex(

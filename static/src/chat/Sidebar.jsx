@@ -424,25 +424,14 @@ export default function Sidebar({
             exit={{ opacity: 0, y: resolvedMode === "conversations" ? -4 : 6 }}
             transition={{ duration: 0.18, ease: EASE }}
           >
-            <div className={`sidebar-tool-row ${resolvedMode === "conversations" ? "is-conversation-tools" : ""}`}>
-              {resolvedMode === "rooms" ? (
+            {resolvedMode === "rooms" ? (
+              <div className="sidebar-tool-row">
                 <button type="button" className="sidebar-tool is-primary focus-ring" onClick={onCreateRoom} disabled={readOnly}>
                   <PlusIcon />
                   <span>新建房间</span>
                 </button>
-              ) : (
-                <>
-                  <button type="button" className="sidebar-tool is-new-conversation focus-ring" onClick={createConversation} disabled={readOnly}>
-                    <PlusIcon />
-                    <span>新对话</span>
-                  </button>
-                  <button type="button" className="sidebar-tool is-search focus-ring" disabled title="搜索稍后开放">
-                    <SearchIcon />
-                    <span>搜索</span>
-                  </button>
-                </>
-              )}
-            </div>
+              </div>
+            ) : null}
 
             {resolvedMode === "conversations" ? (
               <div className="conversation-list" aria-label="当前房间的对话">
@@ -460,6 +449,20 @@ export default function Sidebar({
                     </span>
                   </button>
                 ) : null}
+                <button
+                  type="button"
+                  className="conversation-create-row focus-ring"
+                  onClick={createConversation}
+                  disabled={readOnly}
+                  aria-label="在当前房间新建对话"
+                >
+                  <PlusIcon />
+                  <span>新对话</span>
+                </button>
+                <button type="button" className="conversation-search-row focus-ring" disabled title="搜索稍后开放">
+                  <SearchIcon />
+                  <span>搜索</span>
+                </button>
                 <div className="conversation-scroll">
                   {normalConversations.length ? normalConversations.map((conversation) => {
                     const isActive = conversation.id === activeConversationId;

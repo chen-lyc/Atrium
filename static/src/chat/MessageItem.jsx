@@ -333,6 +333,14 @@ function hasSameProviderAiMember(message, aiMembers = []) {
     .length > 1;
 }
 
+function getAiAvatarSrc(message) {
+  if (!message?.isAI) return "";
+  const provider = resolveAiProvider(message);
+  if (provider === "qwen") return "/avatars/qwen-logo.svg";
+  if (provider === "deepseek") return "/avatars/deepseek-logo.svg";
+  return "";
+}
+
 function getMessageAuthorName(message, aiMembers = []) {
   const fallbackName = normalizeText(message?.nickname) || "AI";
   if (!message?.isAI) return fallbackName;
@@ -341,10 +349,27 @@ function getMessageAuthorName(message, aiMembers = []) {
   return getModelDisplayName({ model, provider: message.provider }, model);
 }
 
+function getAiInterruptionCopy(errorType) {
+  const normalized = normalizeText(errorType).toLowerCase();
+  if (normalized.includes("network")) {
+    return { label: "连接中断", detail: "这次没有连上" };
+  }
+  if (normalized.includes("quota")) {
+    return { label: "额度已用完", detail: "明天自动恢复" };
+  }
+  if (normalized.includes("unauthorized")) {
+    return { label: "授权失效", detail: "需要重新连接服务" };
+  }
+  if (normalized.includes("server")) {
+    return { label: "服务暂时不可用", detail: "这次回复中断" };
+  }
+  return { label: "回复中断", detail: "这次没有完整返回" };
+}
+
 export default function MessageItem({ message, hiddenMessageId, itemAnimationMode = "standard", onContextMenu, aiMembers = [] }) {
   const isHiddenForFlight = message.id === hiddenMessageId;
   const participantType = message.isAI ? "ai" : message.isSelf ? "self" : "human";
-  const avatarSrc = message.avatarUrl || (message.isAI ? "/avatars/deepseek-logo.svg" : "");
+  const avatarSrc = message.avatarUrl || getAiAvatarSrc(message);
   const authorName = getMessageAuthorName(message, aiMembers);
   const resolvedAnimationMode = message.source === "local-welcome" ? "welcome" : itemAnimationMode;
   const animationPreset = isHiddenForFlight
@@ -356,6 +381,7 @@ export default function MessageItem({ message, hiddenMessageId, itemAnimationMod
   const messageStatusClass = visibleStatus ? ` is-status-${visibleStatus}` : "";
   const hasMessageText = String(message.text || "").trim().length > 0;
   const shouldShowAuthor = message.showAuthor || (aiInterrupted && !hasMessageText);
+  const interruptionCopy = aiInterrupted ? getAiInterruptionCopy(message.aiErrorType) : null;
 
   function handleContextMenu(e) {
     if (onContextMenu) onContextMenu(e, message);
@@ -432,8 +458,12 @@ export default function MessageItem({ message, hiddenMessageId, itemAnimationMod
           </div>
         ) : null}
         {aiInterrupted ? (
-          <div className="message-ai-interruption" role="status" aria-label="AI 回复中断" title="AI 回复中断">
-            <span className="message-ai-interruption-dot" aria-hidden="true" />
+          <div className="message-ai-interruption" role="status" aria-label={interruptionCopy.label} title={interruptionCopy.label}>
+            <span className="message-ai-interruption-mark" aria-hidden="true" />
+            <span className="message-ai-interruption-copy">
+              <span className="message-ai-interruption-label">{interruptionCopy.label}</span>
+              <span className="message-ai-interruption-detail">{interruptionCopy.detail}</span>
+            </span>
           </div>
         ) : null}
       </motion.article>

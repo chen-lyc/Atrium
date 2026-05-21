@@ -34,12 +34,22 @@ const ASSISTANT_IDLE_STATE = Object.freeze({
   message: "",
   detail: ""
 });
-const AI_DISPLAY_NAME = "deepseek";
-const AI_AVATAR_URL = "/avatars/deepseek-logo.svg";
+const AI_DISPLAY_NAME = "AI";
+const AI_AVATAR_BY_PROVIDER = Object.freeze({
+  deepseek: "/avatars/deepseek-logo.svg",
+  qwen: "/avatars/qwen-logo.svg"
+});
 const AI_STREAM_INTERRUPTED_STATUS = "interrupted";
 
 function cleanText(value) {
   return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+}
+
+function inferAiProviderFromModel(model) {
+  const normalizedModel = cleanText(model).toLowerCase();
+  if (normalizedModel.startsWith("deepseek")) return "deepseek";
+  if (normalizedModel.startsWith("qwen")) return "qwen";
+  return "";
 }
 
 function normalizeServerMessageId(payload = {}) {
@@ -53,11 +63,20 @@ function normalizeServerMessageId(payload = {}) {
 }
 
 function getAiProvider(payload = {}, fallback = "") {
-  return cleanText(payload.provider) || fallback || "";
+  return cleanText(payload.provider) || cleanText(fallback) || inferAiProviderFromModel(payload.model);
 }
 
 function getAiModel(payload = {}, fallback = "") {
   return cleanText(payload.model) || fallback || "";
+}
+
+function getAiAvatarUrl(payload = {}, fallback = "") {
+  const explicit = cleanText(payload.avatar_url ?? payload.avatarUrl);
+  if (explicit) return explicit;
+  const resolvedFallback = cleanText(fallback);
+  if (resolvedFallback) return resolvedFallback;
+  const provider = getAiProvider(payload).toLowerCase();
+  return AI_AVATAR_BY_PROVIDER[provider] || "";
 }
 
 function getAiAuthorName(payload = {}, fallback = AI_DISPLAY_NAME) {
@@ -68,10 +87,9 @@ function getAiAuthorName(payload = {}, fallback = AI_DISPLAY_NAME) {
     payload.displayName,
     payload.nickname,
     payload.username,
-    payload.provider
+    getAiProvider(payload)
   ];
   const explicit = candidates.map(cleanText).find((value) => value && value !== model && value !== modelLabel);
-  if (explicit && explicit.toLowerCase() === AI_DISPLAY_NAME) return AI_DISPLAY_NAME;
   return explicit || fallback || AI_DISPLAY_NAME;
 }
 
@@ -252,9 +270,18 @@ function getOldestServerCursor(messages) {
   };
 }
 
-function getStreamKey(streamId) {
+function getStreamKey(streamId, payload = {}, fallbackRoomId = 0, fallbackConversationId = 0) {
   const value = String(streamId ?? "").trim();
-  return value ? `stream:${value}` : "";
+  if (value) return `stream:${value}`;
+  const model = getAiModel(payload);
+  if (model) {
+    const roomId = normalizeIncomingRoomId(payload) || fallbackRoomId || "room";
+    const conversationId = normalizeIncomingConversationId(payload) || fallbackConversationId || DEFAULT_CONVERSATION_ID;
+    const provider = getAiProvider(payload) || "ai";
+    return `model:${roomId}:${conversationId}:${provider}:${model}`;
+  }
+  const serverId = normalizeServerMessageId(payload);
+  return serverId ? `server:${serverId}` : "";
 }
 
 function getTimelineValue(message) {
@@ -273,17 +300,26 @@ function getTimelineValue(message) {
 }
 
 function getMessageSortId(message) {
-  const value = Number(message?.serverId || message?.id || 0);
+  const value = Number(message?.timelineSortId || message?.serverId || message?.id || 0);
   return Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
+function getTimelineOrderValue(message) {
+  const value = Number(message?.timelineOrder || 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 function compareMessagesByTimeline(a, b) {
+  const aSortId = getMessageSortId(a);
+  const bSortId = getMessageSortId(b);
+  if (aSortId && bSortId && aSortId !== bSortId) return aSortId - bSortId;
+  const aLiveOrder = getTimelineOrderValue(a);
+  const bLiveOrder = getTimelineOrderValue(b);
+  if (aLiveOrder && bLiveOrder && aLiveOrder !== bLiveOrder) return aLiveOrder - bLiveOrder;
   const timeGap = getTimelineValue(a) - getTimelineValue(b);
   if (timeGap) return timeGap;
-  const aOrder = Number(a?.timelineOrder || 0);
-  const bOrder = Number(b?.timelineOrder || 0);
-  if (aOrder || bOrder) return aOrder - bOrder;
-  return getMessageSortId(a) - getMessageSortId(b);
+  if (aLiveOrder || bLiveOrder) return aLiveOrder - bLiveOrder;
+  return aSortId - bSortId;
 }
 
 function settleMessageList(messages) {
@@ -330,7 +366,7 @@ function normalizeHistoryMessages(data, conversationId, nickname, userId) {
         normalized.nickname = getAiAuthorName(message);
         normalized.model = getAiModel(message);
         normalized.provider = getAiProvider(message);
-        normalized.avatarUrl = normalized.avatarUrl || AI_AVATAR_URL;
+        normalized.avatarUrl = normalized.avatarUrl || getAiAvatarUrl(message);
         normalized.senderType = "ai";
       }
       if (isAssistantHistoryMessage && isNoReplyText(normalized.text)) {
@@ -456,28 +492,31 @@ export default function useWebSocket({
       ...normalizeIncomingMessage(payload, nicknameRef.current, normalizedUserId),
       timelineOrder: nextTimelineOrder()
     };
-    if (nextMessage.roomId && activeRoomIdRef.current && nextMessage.roomId !== activeRoomIdRef.current) {
+    const targetRoomId = nextMessage.roomId || activeRoomIdRef.current;
+    const targetConversationId = nextMessage.conversationId || activeConversationIdRef.current;
+    if (!targetRoomId || !targetConversationId) {
       return;
     }
-    if (nextMessage.conversationId && nextMessage.conversationId !== activeConversationIdRef.current) {
-      return;
-    }
+    const scopedMessage = {
+      ...nextMessage,
+      roomId: targetRoomId,
+      conversationId: targetConversationId
+    };
     const incomingId = normalizeServerMessageId(payload);
-    commitMessages((prev) => {
+    updateMessagesForContext(targetRoomId, targetConversationId, (prev) => {
       if (incomingId && prev.some((m) => normalizeServerMessageId({ message_id: m.serverId || m.id }) === incomingId)) {
-        if (nextMessage.isSelf) {
-          const matchIndex = findPendingLocalMatch(prev, nextMessage);
-          if (matchIndex != null) clearPendingResolveTimer(prev[matchIndex].id);
+        const matchIndex = findPendingLocalMatch(prev, scopedMessage);
+        if (matchIndex != null) {
+          clearPendingResolveTimer(prev[matchIndex].id);
+          return prev.filter((_, index) => index !== matchIndex);
         }
         return prev;
       }
-      if (nextMessage.isSelf) {
-        const matchIndex = findPendingLocalMatch(prev, nextMessage);
-        if (matchIndex != null) {
-          clearPendingResolveTimer(prev[matchIndex].id);
-        }
+      const matchIndex = findPendingLocalMatch(prev, scopedMessage);
+      if (matchIndex != null) {
+        clearPendingResolveTimer(prev[matchIndex].id);
       }
-      return dedupeMessageList(mergeIncomingMessage(prev, nextMessage));
+      return dedupeMessageList(mergeIncomingMessage(prev, scopedMessage));
     });
   }
 
@@ -488,8 +527,25 @@ export default function useWebSocket({
     return createId(`ai-${streamToken || "stream"}`);
   }
 
+  function getActiveStreamEntry(streamId, payload = {}) {
+    const streamKey = getStreamKey(streamId, payload, activeRoomIdRef.current, activeConversationIdRef.current);
+    if (streamKey && activeStreamsRef.current.has(streamKey)) {
+      return { key: streamKey, stream: activeStreamsRef.current.get(streamKey) };
+    }
+    const model = getAiModel(payload);
+    if (model) {
+      const provider = getAiProvider(payload);
+      for (const [key, stream] of activeStreamsRef.current.entries()) {
+        if (stream.model !== model) continue;
+        if (provider && stream.provider && stream.provider !== provider) continue;
+        return { key, stream };
+      }
+    }
+    return { key: streamKey, stream: null };
+  }
+
   function createStreamState(streamId, payload = {}) {
-    const streamKey = getStreamKey(streamId);
+    const streamKey = getStreamKey(streamId, payload, activeRoomIdRef.current, activeConversationIdRef.current);
     if (!streamKey) return null;
     const streamRoomId = normalizeIncomingRoomId(payload) || activeRoomIdRef.current;
     const streamConversationId = normalizeIncomingConversationId(payload) || activeConversationIdRef.current;
@@ -498,30 +554,54 @@ export default function useWebSocket({
     const provider = getAiProvider(payload);
     const nickname = getAiAuthorName(payload);
     const serverId = normalizeServerMessageId(payload);
+    const timelineOrder = nextTimelineOrder();
     return {
       messageId: createStreamMessageId(streamId, payload),
       serverId,
+      timelineSortId: serverId ? Number(serverId) : 0,
       roomId: streamRoomId,
       conversationId: streamConversationId,
       model,
       provider,
       nickname,
-      avatarUrl: typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || AI_AVATAR_URL,
+      avatarUrl: getAiAvatarUrl(payload),
       timestamp: normalizeIncomingTimestamp(payload),
-      timelineOrder: nextTimelineOrder(),
+      timelineOrder,
       visible: false
     };
   }
 
   function ensureStreamState(streamId, payload = {}) {
-    const streamKey = getStreamKey(streamId);
-    if (!streamKey) return null;
-    const existing = activeStreamsRef.current.get(streamKey);
-    if (existing) return existing;
+    const { key: existingKey, stream: existing } = getActiveStreamEntry(streamId, payload);
+    if (existing) {
+      const serverId = normalizeServerMessageId(payload);
+      const model = getAiModel(payload, existing.model);
+      const provider = getAiProvider(payload, existing.provider);
+      existing.serverId = serverId || existing.serverId || "";
+      existing.timelineSortId = existing.timelineSortId || (serverId ? Number(serverId) : 0);
+      existing.model = model;
+      existing.provider = provider;
+      existing.nickname = getAiAuthorName(payload, existing.nickname || AI_DISPLAY_NAME);
+      existing.avatarUrl = getAiAvatarUrl(payload, existing.avatarUrl);
+      return existing;
+    }
+    if (!existingKey) return null;
     const nextStream = createStreamState(streamId, payload);
     if (!nextStream) return null;
-    activeStreamsRef.current.set(streamKey, nextStream);
+    activeStreamsRef.current.set(existingKey, nextStream);
     return nextStream;
+  }
+
+  function clearActiveStream(streamId, payload = {}, stream = null) {
+    const { key, stream: existing } = getActiveStreamEntry(streamId, payload);
+    if (key) activeStreamsRef.current.delete(key);
+    if (stream) {
+      for (const [entryKey, entryStream] of activeStreamsRef.current.entries()) {
+        if (entryStream === stream) activeStreamsRef.current.delete(entryKey);
+      }
+    }
+    const target = stream || existing;
+    if (target && activeAiStreamRef.current === target) activeAiStreamRef.current = null;
   }
 
   function buildStreamMessage(streamId, stream, text, status = "streaming") {
@@ -529,6 +609,7 @@ export default function useWebSocket({
       id: stream.messageId,
       streamId: String(streamId),
       serverId: stream.serverId || "",
+      timelineSortId: stream.timelineSortId || 0,
       roomId: stream.roomId,
       conversationId: stream.conversationId,
       messageType: MESSAGE_TYPE.TEXT,
@@ -556,12 +637,13 @@ export default function useWebSocket({
     return {
       messageId: createStreamMessageId(streamId, payload),
       serverId: normalizeServerMessageId(payload),
+      timelineSortId: Number(normalizeServerMessageId(payload)) || 0,
       roomId: streamRoomId,
       conversationId: streamConversationId,
       model: getAiModel(payload),
       provider: getAiProvider(payload),
       nickname: getAiAuthorName(payload),
-      avatarUrl: typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || AI_AVATAR_URL,
+      avatarUrl: getAiAvatarUrl(payload),
       timestamp: normalizeIncomingTimestamp(payload),
       timelineOrder: nextTimelineOrder(),
       visible: false
@@ -569,7 +651,7 @@ export default function useWebSocket({
   }
 
   function finishAiStreamInterruption(streamId, payload = {}, errorType = "Unknown") {
-    const stream = activeAiStreamRef.current || createTerminalStreamState(streamId, payload);
+    const stream = getActiveStreamEntry(streamId, payload).stream || createTerminalStreamState(streamId, payload);
     if (!stream) {
       resetAssistantState();
       return;
@@ -578,10 +660,11 @@ export default function useWebSocket({
     const model = getAiModel(payload, stream.model);
     const provider = getAiProvider(payload, stream.provider);
     const nickname = getAiAuthorName(payload, stream.nickname || AI_DISPLAY_NAME);
-    const avatarUrl = typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || stream.avatarUrl || AI_AVATAR_URL;
+    const avatarUrl = getAiAvatarUrl(payload, stream.avatarUrl);
     const normalizedErrorType = cleanText(errorType) || "Unknown";
 
     stream.serverId = serverId;
+    stream.timelineSortId = stream.timelineSortId || (serverId ? Number(serverId) : 0);
     stream.model = model;
     stream.provider = provider;
     stream.nickname = nickname;
@@ -594,6 +677,7 @@ export default function useWebSocket({
               ? {
                   ...message,
                   serverId: serverId || message.serverId || "",
+                  timelineSortId: message.timelineSortId || stream.timelineSortId || (serverId ? Number(serverId) : 0),
                   nickname,
                   avatarUrl,
                   model,
@@ -609,6 +693,7 @@ export default function useWebSocket({
             {
               ...buildStreamMessage(serverId || stream.messageId, stream, "", AI_STREAM_INTERRUPTED_STATUS),
               serverId,
+              timelineSortId: stream.timelineSortId || (serverId ? Number(serverId) : 0),
               nickname,
               avatarUrl,
               model,
@@ -618,53 +703,47 @@ export default function useWebSocket({
             }
           ]
     );
-    activeAiStreamRef.current = null;
+    clearActiveStream(streamId, payload, stream);
     resetAssistantState();
   }
 
   function handleAiStreamStart(streamId, payload = {}) {
     if (isNoReplyPayload(payload)) {
-      activeAiStreamRef.current = null;
+      clearActiveStream(streamId, payload);
       return;
     }
     const serverId = normalizeServerMessageId(payload);
-    if (!serverId) return;
-    const streamRoomId = normalizeIncomingRoomId(payload) || activeRoomIdRef.current;
-    const streamConversationId = normalizeIncomingConversationId(payload) || activeConversationIdRef.current;
-    if (!streamRoomId || !streamConversationId) return;
-    activeAiStreamRef.current = {
-      messageId: `ai-server-${serverId}`,
-      serverId,
-      roomId: streamRoomId,
-      conversationId: streamConversationId,
-      model: getAiModel(payload),
-      provider: getAiProvider(payload),
-      nickname: getAiAuthorName(payload),
-      avatarUrl: typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || AI_AVATAR_URL,
-      timestamp: normalizeIncomingTimestamp(payload),
-      timelineOrder: nextTimelineOrder(),
-      visible: false
-    };
+    const stream = ensureStreamState(streamId, payload);
+    if (!stream) return;
+    if (serverId) {
+      stream.messageId = `ai-server-${serverId}`;
+      stream.serverId = serverId;
+      stream.timelineSortId = stream.timelineSortId || Number(serverId);
+    }
+    activeAiStreamRef.current = stream;
     resetAssistantState();
   }
 
   function handleAiStreamDelta(streamId, payload = {}) {
     if (isNoReplyPayload(payload)) {
-      activeAiStreamRef.current = null;
+      clearActiveStream(streamId, payload);
       return;
     }
-    const stream = activeAiStreamRef.current;
+    const stream = ensureStreamState(streamId, payload);
     if (!stream) return;
     const content = getIncomingText(payload);
     if (!content) return;
     const model = getAiModel(payload, stream.model);
     const provider = getAiProvider(payload, stream.provider);
     const nickname = getAiAuthorName(payload, stream.nickname || AI_DISPLAY_NAME);
+    const avatarUrl = getAiAvatarUrl(payload, stream.avatarUrl);
     const serverId = normalizeServerMessageId(payload) || stream.serverId || "";
     stream.model = model;
     stream.provider = provider;
     stream.nickname = nickname;
+    stream.avatarUrl = avatarUrl;
     stream.serverId = serverId;
+    stream.timelineSortId = stream.timelineSortId || (serverId ? Number(serverId) : 0);
     stream.visible = true;
     activeAiStreamRef.current = stream;
     resetAssistantState();
@@ -675,8 +754,10 @@ export default function useWebSocket({
               ? {
                   ...message,
                   serverId: serverId || message.serverId || "",
+                  timelineSortId: message.timelineSortId || stream.timelineSortId || (serverId ? Number(serverId) : 0),
                   text: `${message.text || ""}${content}`,
                   nickname,
+                  avatarUrl,
                   model,
                   provider,
                   status: message.status === "failed" || message.status === AI_STREAM_INTERRUPTED_STATUS ? message.status : "streaming"
@@ -688,7 +769,7 @@ export default function useWebSocket({
   }
 
   function handleAiStreamEnd(streamId, payload = {}) {
-    const stream = activeAiStreamRef.current;
+    const stream = ensureStreamState(streamId, payload);
     const errorType = getAiStreamErrorType(payload);
     if (errorType) {
       finishAiStreamInterruption(streamId, payload, errorType);
@@ -700,7 +781,7 @@ export default function useWebSocket({
           prev.filter((message) => message.id !== stream.messageId)
         );
       }
-      activeAiStreamRef.current = null;
+      clearActiveStream(streamId, payload, stream);
       return;
     }
     if (!stream) return;
@@ -709,12 +790,14 @@ export default function useWebSocket({
     const model = getAiModel(payload, stream.model);
     const provider = getAiProvider(payload, stream.provider);
     const nickname = getAiAuthorName(payload, stream.nickname || AI_DISPLAY_NAME);
-    const avatarUrl = typeof payload.avatar_url === "string" ? payload.avatar_url : payload.avatarUrl || stream.avatarUrl || AI_AVATAR_URL;
+    const avatarUrl = getAiAvatarUrl(payload, stream.avatarUrl);
     const finalText = getIncomingText(payload);
     stream.model = model;
     stream.provider = provider;
     stream.nickname = nickname;
+    stream.avatarUrl = avatarUrl;
     stream.serverId = serverMessageId;
+    stream.timelineSortId = stream.timelineSortId || (serverMessageId ? Number(serverMessageId) : 0);
     updateMessagesForContext(stream.roomId, stream.conversationId, (prev) =>
       prev.some((message) => message.id === stream.messageId)
         ? prev.map((message) =>
@@ -722,6 +805,7 @@ export default function useWebSocket({
               ? {
                   ...message,
                   serverId: serverMessageId || message.serverId || "",
+                  timelineSortId: message.timelineSortId || stream.timelineSortId || (serverMessageId ? Number(serverMessageId) : 0),
                   userId: userId || message.userId || "",
                   nickname,
                   avatarUrl,
@@ -740,6 +824,7 @@ export default function useWebSocket({
               {
                 ...buildStreamMessage(serverMessageId || stream.messageId, stream, finalText, "sent"),
                 serverId: serverMessageId || "",
+                timelineSortId: stream.timelineSortId || (serverMessageId ? Number(serverMessageId) : 0),
                 userId: userId || "",
                 nickname,
                 avatarUrl,
@@ -751,7 +836,7 @@ export default function useWebSocket({
             ]
           : prev
     );
-    activeAiStreamRef.current = null;
+    clearActiveStream(streamId, payload, stream);
     resetAssistantState();
   }
 
@@ -766,11 +851,13 @@ export default function useWebSocket({
     pendingResolveTimersRef.current.delete(messageId);
   }
 
-  function schedulePendingResolve(messageId) {
+  function schedulePendingResolve(messageId, roomId, conversationId) {
     clearPendingResolveTimer(messageId);
+    const targetRoomId = normalizeRoomId(roomId) || activeRoomIdRef.current;
+    const targetConversationId = normalizeConversationId(conversationId) || activeConversationIdRef.current;
     const timerId = window.setTimeout(() => {
       pendingResolveTimersRef.current.delete(messageId);
-      commitMessages((prev) =>
+      updateMessagesForContext(targetRoomId, targetConversationId, (prev) =>
         prev.map((message) =>
           message.id === messageId && message.status === "pending"
             ? { ...message, status: "sent" }
@@ -807,7 +894,7 @@ export default function useWebSocket({
       activeAiStreamRef.current = null;
       nicknameRef.current = nickname;
     }
-    clearAllPendingTimers();
+    if (nicknameChanged) clearAllPendingTimers();
     resetAssistantState();
     setMessages((prev) => {
       const previousRoomId = activeRoomIdRef.current;
@@ -1049,7 +1136,7 @@ export default function useWebSocket({
           client_message_id: localMessage.clientMessageId
         }
       }));
-      schedulePendingResolve(localMessage.id);
+      schedulePendingResolve(localMessage.id, localMessage.roomId, localMessage.conversationId);
       return localMessage;
     } catch (error) {
       const failedMessage = { ...localMessage, status: "failed" };

@@ -1988,7 +1988,7 @@
 }
 
 .message-block.is-ai.is-status-interrupted {
-    box-shadow: inset 1px 0 0 color-mix(in srgb, var(--text-subtle) 22%, transparent);
+    box-shadow: none;
 }
 
 .message-block.is-ai.is-status-failed {
@@ -2116,22 +2116,43 @@
 .message-ai-interruption {
     display: inline-flex;
     align-items: center;
-    min-height: 18px;
-    margin-top: 3px;
+    gap: 8px;
+    min-height: 22px;
+    margin-top: 6px;
     padding-left: 28px;
-    color: var(--text-subtle);
+    color: var(--text-muted);
 }
 
 .message-text-shell.is-empty + .message-ai-interruption {
     margin-top: 5px;
 }
 
-.message-ai-interruption-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--text-subtle) 58%, transparent);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--text-subtle) 9%, transparent);
+.message-ai-interruption-mark {
+    width: 16px;
+    height: 1px;
+    flex: 0 0 auto;
+    background: color-mix(in srgb, var(--text-subtle) 46%, transparent);
+}
+
+.message-ai-interruption-copy {
+    display: inline-flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+    font-size: 12px;
+    line-height: 1.45;
+    letter-spacing: 0;
+}
+
+.message-ai-interruption-label {
+    color: color-mix(in srgb, var(--text-muted) 84%, var(--text));
+    font-weight: 600;
+}
+
+.message-ai-interruption-detail {
+    color: var(--text-subtle);
+    font-weight: 400;
 }
 
 .message-block.is-ai .message-state::before {

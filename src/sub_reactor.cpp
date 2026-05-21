@@ -918,6 +918,11 @@ void Reactor::AiReplyTask::sendError(std::string_view error) {
     json err;
     err["room_id"] = m_room_id;
     err["conversation_id"] = m_conversation_id;
+    err["user_id"] = m_ai_id;
+    err["sender_type"] = "ai";
+    err["display_name"] = m_client->display_name();
+    err["avatar_url"] = m_client->avatar_url();
+    err["provider"] = m_client->provider();
     err["model"] = m_ai_model;
     err["error"] = error;
 
