@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { EASE, TAP_TRANSITION } from "../constants.js";
-import TechCardPopover from "./shell/TechCardPopover.jsx";
-import LoginPage from "./forms/LoginPage.jsx";
-import RegisterPage from "./forms/RegisterPage.jsx";
+import TechCardPopover from "./TechCardPopover.jsx";
+import LoginPage from "./LoginPage.jsx";
+import RegisterPage from "./RegisterPage.jsx";
 import MessageList from "../chat/MessageList.jsx";
-import useDemoMessages from "./demo/useDemoMessages.js";
-import useAutoTyping from "./demo/useAutoTyping.js";
-import { chitchatReplies } from "./demo/chitchatReplies.js";
+import useDemoMessages from "./useDemoMessages.js";
+import useAutoTyping from "./useAutoTyping.js";
+import { chitchatReplies } from "./chitchatReplies.js";
 import { ThemeManager } from "../theme.js";
 
 const CHANGELOG_ITEMS = [
@@ -18,7 +18,7 @@ const CHANGELOG_ITEMS = [
 ];
 const VALUE_CARDS = [
   { key: "card-1", className: "tech-card-1", title: "共同讨论", subtitle: "多人实时进入同一张讨论桌", type: "co-thinking", tagId: "tag-co-thinking" },
-  { key: "card-2", className: "tech-card-2", title: "AI 一起讨论", subtitle: "不同 AI 给出不同角度", type: "ai-member", tagId: "tag-ai-member" },
+  { key: "card-2", className: "tech-card-2", title: "AI 参与", subtitle: "需要时 @AI 一起梳理思路", type: "ai-member", tagId: "tag-ai-member" },
   { key: "card-3", className: "tech-card-3", title: "个人空间", subtitle: "回到安静房间慢慢想", type: "personal-space", tagId: "tag-personal-space" },
   { key: "card-4", className: "tech-card-4", title: "随手沉淀", subtitle: "重要对话可以整理成笔记", type: "notes", tagId: "tag-notes" }
 ];

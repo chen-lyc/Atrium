@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { TAP_TRANSITION } from "../constants.js";
-import { buildAuthBody, validateAuthNickname, validateAuthPassword, resolveAuthFailure, readAuthSuccess } from "../utils.js";
-import { InlineError, LoadingDots } from "./AuthShell.jsx";
+import { TAP_TRANSITION } from "../../constants.js";
+import { buildAuthBody, validateAuthNickname, validateAuthPassword, resolveAuthFailure, readAuthSuccess } from "../../utils.js";
+import { InlineError, LoadingDots } from "../shell/AuthPrimitives.jsx";
 
 export default function RegisterPage({ onSwitchLogin, onSuccess, disabled }) {
   const [nickname, setNickname] = useState("");
@@ -59,13 +59,13 @@ export default function RegisterPage({ onSwitchLogin, onSuccess, disabled }) {
       </div>
       <div className="auth-actions">
         <motion.button type="button" className="modal-button primary auth-submit focus-ring" onClick={handleSubmit} disabled={isLocked} whileTap={{ scale: 0.97 }} transition={TAP_TRANSITION}>
-          {isSubmitting ? <LoadingDots /> : "注册"}
+          {isSubmitting ? <LoadingDots /> : "创建身份"}
         </motion.button>
         <InlineError message={networkError} className="network" />
       </div>
       <div className="auth-switch">
         <span>已有账号？</span>
-        <button type="button" className="auth-switch-button focus-ring" onClick={onSwitchLogin} disabled={isLocked}>登录</button>
+        <button type="button" className="auth-switch-button focus-ring" onClick={onSwitchLogin} disabled={isLocked}>进入 Atrium</button>
       </div>
     </>
   );
