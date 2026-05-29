@@ -1419,6 +1419,13 @@
     color: var(--text-subtle);
 }
 
+.auth-footer-beian {
+    font-size: 10px;
+    color: var(--text-subtle);
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
 @media (max-width: 1400px) {
     .auth-topology-stage {
         --topology-scale: 0.9;

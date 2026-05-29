@@ -462,7 +462,7 @@ export default function AuthShell({
       </main>
 
       <motion.footer className="auth-footer" initial={footerMotion.initial} animate={footerMotion.animate} transition={footerMotion.transition}>
-        <span>made by </span><button type="button" className="auth-footer-link focus-ring">lyc</button><span> · </span><VersionPopover label="v3.0" className="auth-footer-version" placement="top" /><span> · 2026</span>
+        <span>made by </span><button type="button" className="auth-footer-link focus-ring">lyc</button><span> · </span><VersionPopover label="v3.0" className="auth-footer-version" placement="top" /><span> · 2026 · </span><a className="auth-footer-link auth-footer-beian focus-ring" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">鄂ICP备2026026797号-1</a>
       </motion.footer>
     </div>
   );

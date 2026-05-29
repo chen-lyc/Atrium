@@ -1182,7 +1182,18 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: 8px;
+}
+
+.sidebar-footer-beian {
+    flex: 0 0 100%;
+    margin-top: 2px;
+    font-size: 10px;
+    line-height: 1.2;
+    color: var(--text-subtle);
+    text-decoration: none;
+    overflow-wrap: anywhere;
 }
 
 .sidebar-footer-button {

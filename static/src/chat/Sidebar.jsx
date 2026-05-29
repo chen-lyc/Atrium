@@ -659,6 +659,7 @@ export default function Sidebar({
         >
           登出
         </button>
+        <a className="sidebar-footer-beian focus-ring" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">鄂ICP备2026026797号-1</a>
       </div>
     </motion.aside>
   );
