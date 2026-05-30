@@ -151,18 +151,27 @@ flowchart TD
 - Node.js / npm
 
 ```bash
-sudo apt install g++ make default-libmysqlclient-dev mysql-server redis-server libhiredis-dev protobuf-compiler libprotobuf-dev libssl-dev
+sudo apt install g++ make default-libmysqlclient-dev libmysqlcppconn-dev mysql-server redis-server libhiredis-dev protobuf-compiler libprotobuf-dev libssl-dev
 ```
 
 ### 初始化与启动
 
 ```bash
-# 初始化数据库
-mysql -u root -p < database/schema.sql
+# 创建 MySQL 用户并建库（代码中写死了 lyc / lYc@123456）
+sudo mysql -e "
+  CREATE USER IF NOT EXISTS 'lyc'@'127.0.0.1' IDENTIFIED BY 'lYc@123456';
+  GRANT ALL PRIVILEGES ON webserver.* TO 'lyc'@'127.0.0.1';
+  FLUSH PRIVILEGES;
+"
+mysql -u lyc -p -h 127.0.0.1 < database/schema.sql
 
 # 构建前端资源
 npm --prefix static install
 npm --prefix static run build
+
+# 重新生成 protobuf 文件（跨 protoc 版本兼容）
+protoc --cpp_out=include message.proto
+mv include/message.pb.cc src/
 
 # 编译并启动后端
 make
