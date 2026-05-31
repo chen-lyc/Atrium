@@ -331,13 +331,13 @@ void Reactor::process(Connection &conn) {
                 } else if (ret == SessionResult::ServerError) {
                     conn.outbuf += resp_server_error;
                 }
-            } else if (req.target == "/echo" && (req.method == Method::GET || req.method == Method::HEAD)) {
+            } else if (req.path == "/echo" && (req.method == Method::GET || req.method == Method::HEAD)) {
                 conn.outbuf += "HTTP/1.1 200 OK\r\nContent-Length: ";
                 conn.outbuf += to_string(req.body.size());
                 conn.outbuf += "\r\n\r\n";
                 if (req.method == Method::GET) conn.outbuf += req.body;
-            } else if (req.target.starts_with("/api")) {
-                string_view api_target(req.target);
+            } else if (req.path.starts_with("/api")) {
+                string_view api_target(req.path);
                 http::RequestLine line = http::parse_request_line(req.method, api_target);
                 http::PathParams params;
                 optional<http::Router::Route> route = m_router.find_route(line, params);
@@ -388,13 +388,13 @@ void Reactor::process(Connection &conn) {
                     membership_action = ret.membership_action;
                 }
             } else if (req.method == Method::GET || req.method == Method::HEAD) {
-                if (req.target.find("..") != string::npos) {
+                if (req.path.find("..") != string::npos) {
                     sendError(conn, resp_bad_request);
                     return;
                 }
 
-                string file_path = "static" + req.target;
-                if (req.target == "/" || req.target == "/login" || req.target == "/register" || req.target == "/chat") {
+                string file_path = "static" + req.path;
+                if (req.path == "/" || req.path == "/login" || req.path == "/register" || req.path == "/chat") {
                     file_path = "static/index.html";
                 }
                 LOG_DEBUG("file path is %s", file_path.c_str());

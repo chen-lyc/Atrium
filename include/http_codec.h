@@ -25,6 +25,7 @@ struct HttpRequest {
 
     Method method;
     std::string target;
+    std::string path;
     std::string version;
 
     std::string host;
