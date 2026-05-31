@@ -168,14 +168,18 @@ bool RedisConnGuard::reacquire() {
 
 bool RedisConnGuard::acquireLocked(unique_lock<mutex> &lock) {
     if (m_pool.m_ready_queue.empty()) {
-        ++m_pool.m_waiters;
-        m_pool.m_need_refill_cond.notify_one();
-        m_pool.m_conn_available_cond.wait(lock, [this] {
-            return !m_pool.m_ready_queue.empty() || m_pool.m_unreachable || m_pool.m_stop || m_pool.m_init_all_fail;
+        bool notify_back_thread = false;
+        if (!m_pool.m_unreachable) {
+            notify_back_thread = true;
+            ++m_pool.m_waiters;
+            m_pool.m_need_refill_cond.notify_one();
+        }
+        m_pool.m_conn_available_cond.wait_for(lock, chrono::seconds(3), [this] {
+            return !m_pool.m_ready_queue.empty() || m_pool.m_stop || m_pool.m_init_all_fail;
         });
 
-        if (m_pool.m_unreachable || m_pool.m_stop || m_pool.m_init_all_fail) {
-            --m_pool.m_waiters;
+        if (m_pool.m_ready_queue.empty() || m_pool.m_stop || m_pool.m_init_all_fail) {
+            if (notify_back_thread) --m_pool.m_waiters;
             return false;
         }
     }
@@ -201,7 +205,10 @@ void RedisPool::maintainConnections() {
             lock.unlock();
             redisContext *ctx = redisConnect("127.0.0.1", 6379);
             while (ctx == nullptr || ctx->err) {
-                if (ctx) redisFree(ctx);
+                if (ctx) {
+                    redisFree(ctx);
+                    ctx = nullptr;
+                }
                 if (++fail_count > m_max_fail_count) {
                     LOG_ERROR("redis connect failed too much in maintainConnections");
                     break;
@@ -222,6 +229,10 @@ void RedisPool::maintainConnections() {
         if (fail_count > m_max_fail_count) {
             {
                 lock_guard<mutex> lock(m_mutex);
+                LOG_WARN("RedisPool marked unreachable: fail_count=%d, connections=%d, waiters=%d",
+                    fail_count,
+                    m_connections,
+                    m_waiters);
                 m_unreachable = true;
             }
             m_conn_available_cond.notify_all();

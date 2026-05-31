@@ -298,15 +298,19 @@ MysqlConnGuard::MysqlConnGuard(MysqlPool &pool) : m_pool(pool) {
     {
         unique_lock<mutex> lock(pool.m_mutex);
         if (pool.m_ready_queue.empty()) {
-            ++m_pool.m_waiters;
-            pool.m_need_refill_cond.notify_one();
-            pool.m_conn_available_cond.wait(lock, [&pool] {
-                return !pool.m_ready_queue.empty() || pool.m_unreachable || pool.m_stop || pool.m_init_all_fail;
+            bool notify_back_thread = false;
+            if (!pool.m_unreachable) {
+                notify_back_thread = true;
+                ++m_pool.m_waiters;
+                pool.m_need_refill_cond.notify_one();
+            }
+            pool.m_conn_available_cond.wait_for(lock, chrono::seconds(3), [&pool] {
+                return !pool.m_ready_queue.empty() || pool.m_stop || pool.m_init_all_fail;
             });
 
-            if (pool.m_unreachable || pool.m_stop || pool.m_init_all_fail) {
+            if (pool.m_ready_queue.empty() || pool.m_stop || pool.m_init_all_fail) {
                 m_pooled_conn.conn = nullptr;
-                --pool.m_waiters;
+                if (notify_back_thread) --pool.m_waiters;
                 return;
             }
         }
@@ -388,6 +392,10 @@ void MysqlPool::maintainConnections() {
         if (fail_count > m_max_fail_count) {
             {
                 lock_guard<mutex> lock(m_mutex);
+                LOG_WARN("MysqlPool marked unreachable: fail_count=%d, connections=%d, waiters=%d",
+                    fail_count,
+                    m_connections,
+                    m_waiters);
                 m_unreachable = true;
             }
             m_conn_available_cond.notify_all();
