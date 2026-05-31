@@ -365,6 +365,18 @@
     z-index: 30;
 }
 
+.ai-seat-wrap.has-governance-proposal .ai-seat-pill {
+    border-color: color-mix(in srgb, var(--text-subtle) 44%, var(--line));
+    box-shadow:
+        0 calc(var(--ai-seat-shadow-y) + 1px) calc(var(--ai-seat-shadow-blur) + 4px) rgba(15, 15, 15, calc(var(--ai-seat-shadow-alpha) + 0.018)),
+        inset 0 1px 0 color-mix(in srgb, white 34%, transparent),
+        inset 0 -10px 18px color-mix(in srgb, var(--text) var(--ai-seat-inner-shade-share), transparent);
+}
+
+.ai-seat-strip.has-vital-signs .ai-seat-wrap.has-governance-proposal .ai-seat-pill::before {
+    opacity: calc(var(--ai-seat-outline-opacity) + 0.1);
+}
+
 .ai-seat-strip.is-seat-focus-active .ai-seat-wrap.is-muted {
     opacity: 0.76;
     filter: saturate(0.9);

@@ -803,6 +803,7 @@ function AiSeatStrip({
   vitalSigns = true,
   onChange = async () => [],
   onSeatAction = null,
+  governanceAiIds = [],
   showHoverSummary = false,
   showLabels = false,
   emptyText = "未设置 AI",
@@ -814,6 +815,10 @@ function AiSeatStrip({
   const [pending, setPending] = useState(false);
   const timerRef = useRef(null);
   const isMobileSeatSurface = useMediaQuery("(max-width: 760px)");
+  const governanceAiIdSet = useMemo(
+    () => new Set((governanceAiIds || []).map((value) => String(value))),
+    [governanceAiIds]
+  );
 
   useEffect(() => () => window.clearTimeout(timerRef.current), []);
 
@@ -921,6 +926,7 @@ function AiSeatStrip({
           const wrapClassName = [
             "ai-seat-wrap",
             isOpen ? "is-focused" : "",
+            governanceAiIdSet.has(String(member.aiId)) ? "has-governance-proposal" : "",
             canReveal && openAiId != null && !isOpen ? "is-muted" : ""
           ].filter(Boolean).join(" ");
           return (

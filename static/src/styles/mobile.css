@@ -399,6 +399,16 @@
         padding: 6px 14px 2px;
     }
 
+    .agent-decision-layer {
+        width: calc(100% - 28px);
+        bottom: 8px;
+        justify-content: center;
+    }
+
+    .agent-decision-dock {
+        padding: 8px;
+    }
+
     .header.is-main-timeline .room-anchor {
         max-width: 100%;
     }
@@ -407,6 +417,11 @@
         --message-tail-space: clamp(82px, 11dvh, 132px);
         --message-tail-space-active: clamp(104px, 14dvh, 160px);
         padding: 8px 14px 24px;
+    }
+
+    .messages-stage.has-agent-proposals > .messages {
+        --message-tail-space: clamp(118px, 16dvh, 172px);
+        --message-tail-space-active: clamp(132px, 18dvh, 196px);
     }
 
     .composer {
@@ -610,6 +625,42 @@
         padding: 5px 10px 1px;
     }
 
+    .agent-decision-layer {
+        width: calc(100% - 20px);
+        bottom: 7px;
+    }
+
+    .agent-decision-main {
+        grid-template-columns: 30px minmax(0, 1fr);
+        gap: 8px;
+    }
+
+    .agent-decision-identity {
+        width: 30px;
+        height: 30px;
+    }
+
+    .agent-decision-count {
+        display: none;
+    }
+
+    .agent-decision-actions {
+        justify-content: stretch;
+    }
+
+    .agent-decision-action {
+        flex: 1 1 0;
+        padding: 0 8px;
+    }
+
+    .agent-decision-else {
+        flex: 1 1 0;
+    }
+
+    .agent-decision-else > .agent-decision-action {
+        width: 100%;
+    }
+
     .main-seatline-scroll {
         min-height: 40px;
         gap: 7px;
@@ -654,6 +705,11 @@
         --message-tail-space: clamp(70px, 10dvh, 112px);
         --message-tail-space-active: clamp(88px, 13dvh, 138px);
         padding: 6px 10px 20px;
+    }
+
+    .messages-stage.has-agent-proposals > .messages {
+        --message-tail-space: clamp(112px, 16dvh, 160px);
+        --message-tail-space-active: clamp(126px, 18dvh, 182px);
     }
 
     .messages-stage > .messages::before {

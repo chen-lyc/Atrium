@@ -15,6 +15,7 @@ import Sidebar from "./Sidebar.jsx";
 import MessageList from "./MessageList.jsx";
 import MessageInput from "./MessageInput.jsx";
 import MessageFlight from "./MessageFlight.jsx";
+import AgentDecisionDock from "./AgentDecisionDock.jsx";
 import AccountCenterPanel from "./AccountCenterPanel.jsx";
 import WorkspacePanel from "./WorkspacePanel.jsx";
 import {
@@ -43,6 +44,7 @@ const MAIN_SEATLINE_MEMBER_LIMIT = 5;
 const MAIN_SEATLINE_AI_LIMIT = 5;
 const SIDEBAR_SURFACE_HOME = "home";
 const SIDEBAR_SURFACE_DEFAULT = "default";
+const AGENT_PROPOSAL_EVENTS = ["atrium-agent-proposal", "atrium-agent-proposals"];
 
 function readStoredChatSurface() {
   try {
@@ -80,6 +82,68 @@ function getRoleLabel(role) {
   return ROLE_LABELS[Number(role)] || "成员";
 }
 
+function normalizeAgentDecisionProposal(raw, fallback) {
+  if (!raw || typeof raw !== "object") return null;
+  const roomId = raw.roomId ?? raw.room_id ?? fallback.roomId;
+  const conversationId = raw.conversationId ?? raw.conversation_id ?? fallback.conversationId;
+  const aiId = raw.aiId ?? raw.ai_id ?? "";
+  const createdAt = raw.createdAt ?? raw.created_at ?? Date.now();
+  const id = raw.id || raw.proposalId || raw.proposal_id || `agent-proposal-${conversationId || "conversation"}-${aiId || "ai"}-${createdAt}`;
+  return {
+    id: String(id),
+    roomId,
+    conversationId: Number(conversationId || 0),
+    aiId: aiId === "" ? "" : String(aiId),
+    provider: raw.provider || "",
+    model: raw.model || "",
+    displayName: raw.displayName || raw.display_name || raw.aiName || raw.ai_name || "",
+    avatarUrl: raw.avatarUrl || raw.avatar_url || "",
+    type: raw.type || raw.kind || "context",
+    title: raw.title || raw.summary || raw.actionLabel || raw.action_label || "",
+    reason: raw.reason || raw.shortReason || raw.short_reason || "",
+    actionLabel: raw.actionLabel || raw.action_label || raw.suggestedAction || raw.suggested_action || "",
+    sourceLabel: raw.sourceLabel || raw.source_label || "",
+    createdAt,
+    previewKey: raw.previewKey || "",
+    isPreview: Boolean(raw.isPreview)
+  };
+}
+
+function isAgentProposalInContext(proposal, context) {
+  if (!proposal) return false;
+  const proposalConversationId = Number(proposal.conversationId || 0);
+  if (proposalConversationId && context.conversationId && proposalConversationId !== Number(context.conversationId)) return false;
+  if (proposal.roomId != null && proposal.roomId !== "") {
+    const roomValue = String(proposal.roomId);
+    const activeRoomValue = String(context.roomId || "");
+    const backendRoomValue = context.backendRoomId ? String(context.backendRoomId) : "";
+    if (roomValue !== activeRoomValue && (!backendRoomValue || roomValue !== backendRoomValue)) return false;
+  }
+  return true;
+}
+
+function buildPreviewAgentProposal(member, context) {
+  const aiId = member?.aiId ?? member?.ai_id ?? "";
+  const previewKey = `${context.roomId || "room"}:${context.conversationId || "conversation"}:${aiId || "ai"}`;
+  return normalizeAgentDecisionProposal({
+    id: `preview:${previewKey}`,
+    roomId: context.roomId,
+    conversationId: context.conversationId,
+    aiId,
+    provider: member?.provider || "",
+    model: member?.model || "",
+    displayName: member ? getAiMemberName(member) : "AI",
+    avatarUrl: member ? getAiAvatarUrl(member) : "",
+    type: "question",
+    title: "是否记为开放问题",
+    reason: "这个分歧会影响后续讨论边界，建议由人类裁决后再进入共享上下文。",
+    actionLabel: "写入开放问题",
+    sourceLabel: "当前讨论",
+    previewKey,
+    isPreview: true
+  }, context);
+}
+
 function getMemberInitial(member) {
   const source = member?.nickname || member?.username || "用";
   return String(source).trim().slice(0, 1) || "用";
@@ -113,6 +177,7 @@ function MainConversationSeatline({
   fallbackMember,
   aiMembers = [],
   thinkingAdapters = [],
+  governanceAiIds = [],
   compact = false,
   onOpenMembers = () => {},
   onOpenAi = () => {}
@@ -167,6 +232,7 @@ function MainConversationSeatline({
               readOnly={true}
               onChange={async () => visibleAiMembers}
               onSeatAction={onOpenAi}
+              governanceAiIds={governanceAiIds}
               showHoverSummary={true}
               showLabels={true}
               emptyText=""
@@ -391,6 +457,8 @@ export default function ChatRoom({
   const [mainRoomMembers, setMainRoomMembers] = useState([]);
   const [mainRoomMembersState, setMainRoomMembersState] = useState("idle");
   const [homeVisitStats, setHomeVisitStats] = useState(() => readStoredHomeVisitStats(currentUserId));
+  const [agentDecisionProposals, setAgentDecisionProposals] = useState([]);
+  const dismissedPreviewProposalsRef = useRef(new Set());
   const fallbackSeatMember = {
     userId: currentUserId || "self",
     username,
@@ -400,6 +468,11 @@ export default function ChatRoom({
   };
   const isPureHomeDashboard = isHomeDashboard && !workspacePanelOpen && !accountCenterOpen && !createRoomOpen;
   const sidebarSurface = isPureHomeDashboard ? SIDEBAR_SURFACE_HOME : SIDEBAR_SURFACE_DEFAULT;
+  const agentProposalContext = {
+    roomId: activeRoomId,
+    backendRoomId: activeBackendRoomId,
+    conversationId: Number(activeConversationId || 0)
+  };
 
   useEffect(() => {
     if (!contextMenu) return undefined;
@@ -472,6 +545,82 @@ export default function ChatRoom({
       });
     return () => controller.abort();
   }, [isOrdinaryMainConversation, activeBackendRoomId]);
+
+  useEffect(() => {
+    setAgentDecisionProposals((current) =>
+      current.filter((proposal) => isAgentProposalInContext(proposal, agentProposalContext))
+    );
+  }, [activeRoomId, activeBackendRoomId, activeConversationId]);
+
+  useEffect(() => {
+    function readProposalDetails(detail) {
+      if (Array.isArray(detail)) return detail;
+      if (Array.isArray(detail?.proposals)) return detail.proposals;
+      return detail ? [detail] : [];
+    }
+
+    function handleAgentProposal(event) {
+      const incoming = readProposalDetails(event.detail)
+        .map((detail) => normalizeAgentDecisionProposal(detail, agentProposalContext))
+        .filter((proposal) => isAgentProposalInContext(proposal, agentProposalContext));
+      if (!incoming.length) return;
+      setAgentDecisionProposals((current) => {
+        const base = incoming.some((proposal) => !proposal.isPreview)
+          ? current.filter((proposal) => !proposal.isPreview)
+          : current;
+        const byId = new Map(base.map((proposal) => [proposal.id, proposal]));
+        incoming.forEach((proposal) => byId.set(proposal.id, proposal));
+        return Array.from(byId.values()).sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+      });
+    }
+
+    function handleAgentProposalClear(event) {
+      const id = event.detail?.id || event.detail?.proposalId || event.detail?.proposal_id || "";
+      if (id) {
+        setAgentDecisionProposals((current) => current.filter((proposal) => proposal.id !== String(id)));
+        return;
+      }
+      setAgentDecisionProposals([]);
+    }
+
+    AGENT_PROPOSAL_EVENTS.forEach((eventName) => window.addEventListener(eventName, handleAgentProposal));
+    window.addEventListener("atrium-agent-proposal-clear", handleAgentProposalClear);
+    return () => {
+      AGENT_PROPOSAL_EVENTS.forEach((eventName) => window.removeEventListener(eventName, handleAgentProposal));
+      window.removeEventListener("atrium-agent-proposal-clear", handleAgentProposalClear);
+    };
+  }, [activeRoomId, activeBackendRoomId, activeConversationId]);
+
+  useEffect(() => {
+    if (
+      !import.meta.env.DEV ||
+      readOnly ||
+      isHomeDashboard ||
+      draftConversation ||
+      !visibleMessages.length ||
+      !effectiveAiMembers.length ||
+      !agentProposalContext.conversationId
+    ) {
+      return;
+    }
+    const preview = buildPreviewAgentProposal(effectiveAiMembers[0], agentProposalContext);
+    if (!preview || dismissedPreviewProposalsRef.current.has(preview.previewKey)) return;
+    setAgentDecisionProposals((current) => {
+      if (current.some((proposal) => !proposal.isPreview || proposal.id === preview.id || proposal.previewKey === preview.previewKey)) {
+        return current;
+      }
+      return [...current, preview];
+    });
+  }, [
+    readOnly,
+    isHomeDashboard,
+    draftConversation,
+    visibleMessages.length,
+    effectiveAiMembers,
+    activeRoomId,
+    activeBackendRoomId,
+    activeConversationId
+  ]);
 
   function handleMessageContextMenu(e, message) {
     if (!message) return;
@@ -557,6 +706,22 @@ export default function ChatRoom({
         roomId: activeRoomId,
         conversationId: activeConversationId,
         roomName
+      }
+    }));
+  }
+
+  function resolveAgentDecisionProposal(proposal, resolution, convertTo = "") {
+    if (!proposal) return;
+    if (proposal.previewKey) dismissedPreviewProposalsRef.current.add(proposal.previewKey);
+    setAgentDecisionProposals((current) => current.filter((item) => item.id !== proposal.id));
+    window.dispatchEvent(new CustomEvent("atrium-agent-proposal-decision", {
+      detail: {
+        proposalId: proposal.id,
+        resolution,
+        convertTo,
+        roomId: activeRoomId,
+        conversationId: activeConversationId,
+        type: proposal.type || "context"
       }
     }));
   }
@@ -736,6 +901,12 @@ export default function ChatRoom({
   const stageInitial = resolvedTransitionMode === "idle" ? false : messagesMotion.initial;
   const stageAnimate = resolvedTransitionMode === "idle" ? { opacity: 1 } : messagesMotion.animate;
   const stageTransition = resolvedTransitionMode === "idle" ? { duration: 0 } : messagesMotion.transition;
+  const visibleAgentDecisionProposals = hideMessageContent
+    ? []
+    : agentDecisionProposals.filter((proposal) => isAgentProposalInContext(proposal, agentProposalContext));
+  const agentProposalAiIds = visibleAgentDecisionProposals
+    .map((proposal) => proposal.aiId)
+    .filter(Boolean);
 
   return (
     <div className={`shell is-moment-${currentMoment} ${draftConversation ? "is-ai-draft" : ""} ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}>
@@ -878,7 +1049,7 @@ export default function ChatRoom({
 
         <motion.div
           key={draftConversation ? "draft" : `${activeRoomId}-${activeConversationId || "main"}`}
-          className={`messages-stage is-${roomTone} ${isOrdinaryMainConversation ? "is-main-timeline" : ""} ${isHomeDashboard ? "is-home-dashboard" : ""} ${roomTransition ? "is-switching" : ""}`}
+          className={`messages-stage is-${roomTone} ${isOrdinaryMainConversation ? "is-main-timeline" : ""} ${isHomeDashboard ? "is-home-dashboard" : ""} ${roomTransition ? "is-switching" : ""} ${visibleAgentDecisionProposals.length ? "has-agent-proposals" : ""}`}
           initial={stageInitial}
           animate={stageAnimate}
           transition={stageTransition}
@@ -892,6 +1063,7 @@ export default function ChatRoom({
               fallbackMember={fallbackSeatMember}
               aiMembers={roomAiMembers}
               thinkingAdapters={thinkingAdapters}
+              governanceAiIds={agentProposalAiIds}
               compact={Boolean(visibleMessages.length)}
               onOpenMembers={() => openWorkspace(activeRoomId, "members")}
               onOpenAi={() => openWorkspace(activeRoomId, "ai")}
@@ -969,6 +1141,17 @@ export default function ChatRoom({
             onLoadMoreHistory={onLoadMoreHistory}
             />
           )}
+          {visibleAgentDecisionProposals.length && !isHomeDashboard && !draftConversation ? (
+            <div className="agent-decision-layer">
+              <AgentDecisionDock
+                proposals={visibleAgentDecisionProposals}
+                aiMembers={effectiveAiMembers}
+                onAccept={(proposal) => resolveAgentDecisionProposal(proposal, "accepted")}
+                onReject={(proposal) => resolveAgentDecisionProposal(proposal, "rejected")}
+                onConvert={(proposal, convertTo) => resolveAgentDecisionProposal(proposal, "converted", convertTo)}
+              />
+            </div>
+          ) : null}
         </motion.div>
 
         {isHomeDashboard ? null : (
