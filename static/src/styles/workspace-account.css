@@ -325,6 +325,60 @@
     max-width: 560px;
 }
 
+.account-devtools-section {
+    max-width: 560px;
+}
+
+.account-devtools-entry {
+    width: 100%;
+    min-height: 44px;
+    padding: 9px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    border-top: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
+    color: var(--text-muted);
+    text-align: left;
+}
+
+.account-devtools-entry:hover,
+.account-devtools-entry:focus-visible {
+    color: var(--text);
+}
+
+.account-devtools-entry:disabled {
+    cursor: wait;
+    opacity: 0.62;
+}
+
+.account-devtools-copy {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+}
+
+.account-devtools-copy span {
+    color: inherit;
+    font-size: 13px;
+    line-height: 1.25;
+    font-weight: 620;
+}
+
+.account-devtools-copy small {
+    color: var(--text-subtle);
+    font-size: 11px;
+    line-height: 1.35;
+}
+
+.account-devtools-state {
+    flex: 0 0 auto;
+    color: var(--text-subtle);
+    font-size: 11px;
+    line-height: 1;
+    font-weight: 680;
+}
+
 .account-profile-form {
     display: grid;
     gap: 12px;
@@ -1364,4 +1418,3 @@
 .workspace-empty {
     padding: 8px;
 }
-

@@ -592,6 +592,10 @@ function AiModelSelector({
   thinkingAdapters = [],
   readOnly = false,
   onChange = async () => [],
+  onModelIntent = null,
+  intentAiId = null,
+  focusAiId = null,
+  focusRequestKey = 0,
   className = ""
 }) {
   const [editingAiId, setEditingAiId] = useState(null);
@@ -689,6 +693,11 @@ function AiModelSelector({
     });
   }
 
+  useEffect(() => {
+    if (focusAiId == null) return;
+    focusModelRow({ aiId: focusAiId });
+  }, [focusAiId, focusRequestKey]);
+
   if (!groups.length) {
     return <div className={`ai-model-selector ${className}`.trim()}><div className="ai-empty-line">模型目录暂时不可用</div></div>;
   }
@@ -749,16 +758,21 @@ function AiModelSelector({
                   const modelAiId = Number(model.aiId);
                   const selectedMember = selectedById.get(modelAiId);
                   const isEditing = editingAiId === modelAiId;
+                  const isIntentModel = intentAiId != null && Number(intentAiId) === modelAiId;
                   return (
                     <div
                       key={model.aiId}
                       ref={(node) => setModelRowRef(modelAiId, node)}
-                      className={`ai-model-card-wrap ${isEditing ? "is-editing" : ""}`}
+                      className={`ai-model-card-wrap ${isEditing ? "is-editing" : ""} ${isIntentModel ? "is-guide-intent" : ""}`}
                     >
                       <button
                         type="button"
                         className={`ai-model-card ${selectedMember ? "is-selected" : ""}`}
                         onClick={() => handleModelPress(model, selectedMember, isEditing)}
+                        onMouseEnter={onModelIntent ? () => onModelIntent(model) : undefined}
+                        onMouseLeave={onModelIntent ? () => onModelIntent(null) : undefined}
+                        onFocus={onModelIntent ? () => onModelIntent(model) : undefined}
+                        onBlur={onModelIntent ? () => onModelIntent(null) : undefined}
                         disabled={!canEdit}
                       >
                         <AiIdentity member={model} members={members} />

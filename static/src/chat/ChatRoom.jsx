@@ -15,7 +15,7 @@ import Sidebar from "./Sidebar.jsx";
 import MessageList from "./MessageList.jsx";
 import MessageInput from "./MessageInput.jsx";
 import MessageFlight from "./MessageFlight.jsx";
-import AgentDecisionDock from "./AgentDecisionDock.jsx";
+import NoteCaptureToast from "./NoteCaptureToast.jsx";
 import AccountCenterPanel from "./AccountCenterPanel.jsx";
 import WorkspacePanel from "./WorkspacePanel.jsx";
 import {
@@ -102,7 +102,9 @@ function normalizeAgentDecisionProposal(raw, fallback) {
     title: raw.title || raw.summary || raw.actionLabel || raw.action_label || "",
     reason: raw.reason || raw.shortReason || raw.short_reason || "",
     actionLabel: raw.actionLabel || raw.action_label || raw.suggestedAction || raw.suggested_action || "",
+    rejectLabel: raw.rejectLabel || raw.reject_label || "",
     sourceLabel: raw.sourceLabel || raw.source_label || "",
+    triggerMessageId: raw.triggerMessageId || raw.trigger_message_id || raw.messageId || raw.message_id || "",
     createdAt,
     previewKey: raw.previewKey || "",
     isPreview: Boolean(raw.isPreview)
@@ -120,28 +122,6 @@ function isAgentProposalInContext(proposal, context) {
     if (roomValue !== activeRoomValue && (!backendRoomValue || roomValue !== backendRoomValue)) return false;
   }
   return true;
-}
-
-function buildPreviewAgentProposal(member, context) {
-  const aiId = member?.aiId ?? member?.ai_id ?? "";
-  const previewKey = `${context.roomId || "room"}:${context.conversationId || "conversation"}:${aiId || "ai"}`;
-  return normalizeAgentDecisionProposal({
-    id: `preview:${previewKey}`,
-    roomId: context.roomId,
-    conversationId: context.conversationId,
-    aiId,
-    provider: member?.provider || "",
-    model: member?.model || "",
-    displayName: member ? getAiMemberName(member) : "AI",
-    avatarUrl: member ? getAiAvatarUrl(member) : "",
-    type: "question",
-    title: "是否记为开放问题",
-    reason: "这个分歧会影响后续讨论边界，建议由人类裁决后再进入共享上下文。",
-    actionLabel: "写入开放问题",
-    sourceLabel: "当前讨论",
-    previewKey,
-    isPreview: true
-  }, context);
 }
 
 function getMemberInitial(member) {
@@ -403,7 +383,10 @@ export default function ChatRoom({
   hideMessageContent = false,
   onPasteImage, onRemoveAttachment,
   hasMoreHistory = false, historyInitialLoading = false, historyLoading = false, historyError = "",
-  onLoadMoreHistory
+  onLoadMoreHistory,
+  onOpenDesignLab = () => {},
+  designLabLoading = false,
+  designLabError = ""
 }) {
   const hasComposerContent = Boolean(messageDraft.trim() || messageAttachment);
   const composerDisabled = readOnly ? false : !hasComposerContent || connectionState !== "connected";
@@ -458,7 +441,6 @@ export default function ChatRoom({
   const [mainRoomMembersState, setMainRoomMembersState] = useState("idle");
   const [homeVisitStats, setHomeVisitStats] = useState(() => readStoredHomeVisitStats(currentUserId));
   const [agentDecisionProposals, setAgentDecisionProposals] = useState([]);
-  const dismissedPreviewProposalsRef = useRef(new Set());
   const fallbackSeatMember = {
     userId: currentUserId || "self",
     username,
@@ -591,37 +573,6 @@ export default function ChatRoom({
     };
   }, [activeRoomId, activeBackendRoomId, activeConversationId]);
 
-  useEffect(() => {
-    if (
-      !import.meta.env.DEV ||
-      readOnly ||
-      isHomeDashboard ||
-      draftConversation ||
-      !visibleMessages.length ||
-      !effectiveAiMembers.length ||
-      !agentProposalContext.conversationId
-    ) {
-      return;
-    }
-    const preview = buildPreviewAgentProposal(effectiveAiMembers[0], agentProposalContext);
-    if (!preview || dismissedPreviewProposalsRef.current.has(preview.previewKey)) return;
-    setAgentDecisionProposals((current) => {
-      if (current.some((proposal) => !proposal.isPreview || proposal.id === preview.id || proposal.previewKey === preview.previewKey)) {
-        return current;
-      }
-      return [...current, preview];
-    });
-  }, [
-    readOnly,
-    isHomeDashboard,
-    draftConversation,
-    visibleMessages.length,
-    effectiveAiMembers,
-    activeRoomId,
-    activeBackendRoomId,
-    activeConversationId
-  ]);
-
   function handleMessageContextMenu(e, message) {
     if (!message) return;
     e.preventDefault();
@@ -712,7 +663,6 @@ export default function ChatRoom({
 
   function resolveAgentDecisionProposal(proposal, resolution, convertTo = "") {
     if (!proposal) return;
-    if (proposal.previewKey) dismissedPreviewProposalsRef.current.add(proposal.previewKey);
     setAgentDecisionProposals((current) => current.filter((item) => item.id !== proposal.id));
     window.dispatchEvent(new CustomEvent("atrium-agent-proposal-decision", {
       detail: {
@@ -1075,11 +1025,15 @@ export default function ChatRoom({
               room={room}
               rooms={rooms}
               roomAiMembersByRoomId={roomAiMembersByRoomId}
+              availableAis={availableAis}
+              thinkingAdapters={thinkingAdapters}
+              aiConfigError={aiConfigError}
+              readOnly={readOnly}
               currentUserId={currentUserId}
               homeVisitStats={homeVisitStats}
               onOpenConversation={handleHomeObjectOpen}
               onCreateConversation={onCreateConversationDraft}
-              onOpenAi={() => openWorkspace(activeRoomId, "ai")}
+              onRoomAiMembersSave={onRoomAiMembersSave}
             />
           ) : draftConversation ? (
             <div className="empty-state empty-state--ai-start">
@@ -1135,23 +1089,16 @@ export default function ChatRoom({
               }
               onContextMenu={handleMessageContextMenu}
               hasMoreHistory={hasMoreHistory && !hideMessageContent}
-            historyInitialLoading={historyInitialLoading && !hideMessageContent}
-            historyLoading={historyLoading && !hideMessageContent}
-            historyError={hideMessageContent ? "" : historyError}
-            onLoadMoreHistory={onLoadMoreHistory}
+              historyInitialLoading={historyInitialLoading && !hideMessageContent}
+              historyLoading={historyLoading && !hideMessageContent}
+              historyError={hideMessageContent ? "" : historyError}
+              onLoadMoreHistory={onLoadMoreHistory}
+              agentDecisionProposals={visibleAgentDecisionProposals}
+              onAgentProposalAccept={(proposal) => resolveAgentDecisionProposal(proposal, "accepted")}
+              onAgentProposalReject={(proposal) => resolveAgentDecisionProposal(proposal, "rejected")}
+              onAgentProposalConvert={(proposal, convertTo) => resolveAgentDecisionProposal(proposal, "converted", convertTo)}
             />
           )}
-          {visibleAgentDecisionProposals.length && !isHomeDashboard && !draftConversation ? (
-            <div className="agent-decision-layer">
-              <AgentDecisionDock
-                proposals={visibleAgentDecisionProposals}
-                aiMembers={effectiveAiMembers}
-                onAccept={(proposal) => resolveAgentDecisionProposal(proposal, "accepted")}
-                onReject={(proposal) => resolveAgentDecisionProposal(proposal, "rejected")}
-                onConvert={(proposal, convertTo) => resolveAgentDecisionProposal(proposal, "converted", convertTo)}
-              />
-            </div>
-          ) : null}
         </motion.div>
 
         {isHomeDashboard ? null : (
@@ -1219,6 +1166,12 @@ export default function ChatRoom({
         readOnly={readOnly}
         onRoomsChanged={onRoomsChanged}
         onNotificationCountChange={setAccountNotificationCount}
+        onOpenDesignLab={() => {
+          setAccountCenterOpen(false);
+          onOpenDesignLab();
+        }}
+        designLabLoading={designLabLoading}
+        designLabError={designLabError}
       />
 
       <ModalLayer
@@ -1276,23 +1229,7 @@ export default function ChatRoom({
         </div>
       </ModalLayer>
 
-      <AnimatePresence>
-        {noteToast ? (
-          <motion.div
-            key={noteToast.id}
-            className="note-capture-toast"
-            initial={{ opacity: 0, y: 8, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 6, scale: 0.98 }}
-            transition={{ duration: 0.18, ease: EASE }}
-            role="status"
-            aria-live="polite"
-          >
-            <div className="note-capture-title">已摘录到笔记草稿</div>
-            <div className="note-capture-preview">{noteToast.text}</div>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
+      <NoteCaptureToast toast={noteToast} />
 
       <AnimatePresence>
         {contextMenu ? (

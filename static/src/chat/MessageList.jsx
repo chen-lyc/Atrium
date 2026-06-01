@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { EASE } from "../constants.js";
 import { decorateMessages } from "../utils.js";
+import AgentDecisionDock from "./AgentDecisionDock.jsx";
 import MessageItem from "./MessageItem.jsx";
 
 function EmptyState() {
@@ -44,6 +45,28 @@ function AssistantStatusRow({ state }) {
   );
 }
 
+function AgentProposalRow({ proposals, aiMembers, onAccept, onReject, onConvert }) {
+  if (!Array.isArray(proposals) || !proposals.length) return null;
+  return (
+    <motion.li
+      className="agent-decision-row"
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 6 }}
+      transition={{ duration: 0.2, ease: EASE }}
+      layout
+    >
+      <AgentDecisionDock
+        proposals={proposals}
+        aiMembers={aiMembers}
+        onAccept={onAccept}
+        onReject={onReject}
+        onConvert={onConvert}
+      />
+    </motion.li>
+  );
+}
+
 export default function MessageList({
   messages, onScrolled = () => {}, hiddenMessageId,
   shouldAnimateEntry, entryDelay, entryDuration = 0.26,
@@ -58,7 +81,11 @@ export default function MessageList({
   historyInitialLoading = false,
   historyLoading = false,
   historyError = "",
-  onLoadMoreHistory
+  onLoadMoreHistory,
+  agentDecisionProposals = [],
+  onAgentProposalAccept = () => {},
+  onAgentProposalReject = () => {},
+  onAgentProposalConvert = () => {}
 }) {
   const localViewportRef = useRef(null);
   const stickToBottomRef = useRef(true);
@@ -67,6 +94,13 @@ export default function MessageList({
   const decoratedMessages = decorateMessages(messages);
   const resolvedViewportRef = viewportRef || localViewportRef;
   const hasAssistantState = Boolean(assistantState && assistantState.status === "quota-exceeded");
+  const visibleAgentDecisionProposals = Array.isArray(agentDecisionProposals) ? agentDecisionProposals : [];
+  const proposalAnchorId = String(
+    visibleAgentDecisionProposals[0]?.triggerMessageId ||
+    visibleAgentDecisionProposals[0]?.trigger_message_id ||
+    ""
+  );
+  const hasAgentDecisionProposals = visibleAgentDecisionProposals.length > 0;
 
   useLayoutEffect(() => {
     const viewport = resolvedViewportRef.current;
@@ -157,8 +191,22 @@ export default function MessageList({
   const listClassName = [
     "message-list",
     hasMessages || hasAssistantState ? "has-tail-space" : "",
-    hasAssistantState ? "has-assistant-state" : ""
+    hasAssistantState ? "has-assistant-state" : "",
+    hasAgentDecisionProposals ? "has-agent-proposals" : ""
   ].filter(Boolean).join(" ");
+
+  function renderAgentProposalRow(key = "agent-proposal-row") {
+    return (
+      <AgentProposalRow
+        key={key}
+        proposals={visibleAgentDecisionProposals}
+        aiMembers={aiMembers}
+        onAccept={onAgentProposalAccept}
+        onReject={onAgentProposalReject}
+        onConvert={onAgentProposalConvert}
+      />
+    );
+  }
 
   return (
     <div className={viewportClassName} ref={resolvedViewportRef} onScroll={handleScroll}>
@@ -190,15 +238,20 @@ export default function MessageList({
           ) : null}
           <AnimatePresence initial={false}>
             {decoratedMessages.map((message) => (
-              <MessageItem
-                key={message.id}
-                message={message}
-                hiddenMessageId={hiddenMessageId}
-                itemAnimationMode={itemAnimationMode}
-                onContextMenu={onContextMenu}
-                aiMembers={aiMembers}
-              />
+              <Fragment key={message.id}>
+                <MessageItem
+                  message={message}
+                  hiddenMessageId={hiddenMessageId}
+                  itemAnimationMode={itemAnimationMode}
+                  onContextMenu={onContextMenu}
+                  aiMembers={aiMembers}
+                />
+                {hasAgentDecisionProposals && proposalAnchorId && String(message.id) === proposalAnchorId
+                  ? renderAgentProposalRow(`agent-proposal-${message.id}`)
+                  : null}
+              </Fragment>
             ))}
+            {hasMessages && hasAgentDecisionProposals && !proposalAnchorId ? renderAgentProposalRow("agent-proposal-tail") : null}
             {hasAssistantState ? <AssistantStatusRow key={`assistant-${assistantState.status}`} state={assistantState} /> : null}
           </AnimatePresence>
         </ol>

@@ -399,10 +399,9 @@
         padding: 6px 14px 2px;
     }
 
-    .agent-decision-layer {
-        width: calc(100% - 28px);
-        bottom: 8px;
-        justify-content: center;
+    .agent-decision-row {
+        width: 100%;
+        margin: 8px 0 10px;
     }
 
     .agent-decision-dock {
@@ -417,11 +416,6 @@
         --message-tail-space: clamp(82px, 11dvh, 132px);
         --message-tail-space-active: clamp(104px, 14dvh, 160px);
         padding: 8px 14px 24px;
-    }
-
-    .messages-stage.has-agent-proposals > .messages {
-        --message-tail-space: clamp(118px, 16dvh, 172px);
-        --message-tail-space-active: clamp(132px, 18dvh, 196px);
     }
 
     .composer {
@@ -625,9 +619,9 @@
         padding: 5px 10px 1px;
     }
 
-    .agent-decision-layer {
-        width: calc(100% - 20px);
-        bottom: 7px;
+    .agent-decision-row {
+        width: 100%;
+        margin: 7px 0 9px;
     }
 
     .agent-decision-main {
@@ -705,11 +699,6 @@
         --message-tail-space: clamp(70px, 10dvh, 112px);
         --message-tail-space-active: clamp(88px, 13dvh, 138px);
         padding: 6px 10px 20px;
-    }
-
-    .messages-stage.has-agent-proposals > .messages {
-        --message-tail-space: clamp(112px, 16dvh, 160px);
-        --message-tail-space-active: clamp(126px, 18dvh, 182px);
     }
 
     .messages-stage > .messages::before {

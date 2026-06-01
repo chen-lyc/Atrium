@@ -4,26 +4,26 @@ import { EASE } from "../constants.js";
 import { getAiAvatarUrl, getAiMemberName } from "./AiTeamEditor.jsx";
 
 const TYPE_LABELS = {
-  context: "白板",
-  whiteboard: "白板",
-  question: "问题",
-  phase: "阶段",
-  process: "流程",
+  context: "讨论白板",
+  whiteboard: "讨论白板",
+  question: "开放问题",
+  phase: "讨论阶段",
+  process: "讨论流程",
   note: "笔记",
   tool: "工具",
   resource: "资源"
 };
 
 const CONVERT_ACTIONS = [
-  { key: "ordinary_reply", label: "只作为发言" },
-  { key: "open_question", label: "记为问题" },
-  { key: "note", label: "放到笔记" },
-  { key: "later", label: "稍后裁决" }
+  { key: "ordinary_reply", label: "作为普通发言" },
+  { key: "open_question", label: "列为开放问题" },
+  { key: "note", label: "转为笔记" },
+  { key: "later", label: "稍后处理" }
 ];
 
 function getProposalTypeLabel(proposal) {
   const type = String(proposal?.type || "").trim().toLowerCase();
-  return TYPE_LABELS[type] || "裁决";
+  return TYPE_LABELS[type] || "上下文提议";
 }
 
 function findProposalMember(proposal, aiMembers) {
@@ -67,7 +67,8 @@ export default function AgentDecisionDock({
   const aiName = getProposalAiName(activeProposal, member);
   const avatarUrl = getProposalAvatar(activeProposal, member);
   const typeLabel = getProposalTypeLabel(activeProposal);
-  const primaryActionLabel = activeProposal?.actionLabel || "采纳";
+  const primaryActionLabel = activeProposal?.actionLabel || "写入白板";
+  const rejectActionLabel = activeProposal?.rejectLabel || "暂不写入";
   const remainingCount = Math.max(0, proposals.length - 1);
 
   useEffect(() => {
@@ -81,7 +82,7 @@ export default function AgentDecisionDock({
           key={activeProposal.id}
           className="agent-decision-dock"
           role="region"
-          aria-label="AI 裁决提议"
+          aria-label="AI 上下文提议"
           aria-live="polite"
           initial={{ opacity: 0, y: 12, scale: 0.985 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -98,7 +99,7 @@ export default function AgentDecisionDock({
                 <span>{typeLabel}</span>
                 {activeProposal.sourceLabel ? <span>{activeProposal.sourceLabel}</span> : null}
               </div>
-              <div className="agent-decision-title">{activeProposal.title || activeProposal.actionLabel || "需要人类裁决"}</div>
+              <div className="agent-decision-title">{activeProposal.title || activeProposal.actionLabel || "是否更新讨论白板"}</div>
               {activeProposal.reason ? <p>{activeProposal.reason}</p> : null}
             </div>
             {remainingCount ? <div className="agent-decision-count">+{remainingCount}</div> : null}
@@ -109,7 +110,7 @@ export default function AgentDecisionDock({
               {primaryActionLabel}
             </button>
             <button type="button" className="agent-decision-action focus-ring" onClick={() => onReject(activeProposal)}>
-              不需要
+              {rejectActionLabel}
             </button>
             <div className="agent-decision-else">
               <button
@@ -118,7 +119,7 @@ export default function AgentDecisionDock({
                 onClick={() => setElseOpen((value) => !value)}
                 aria-expanded={elseOpen}
               >
-                换处理
+                改为
               </button>
               <AnimatePresence>
                 {elseOpen ? (

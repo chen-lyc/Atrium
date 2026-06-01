@@ -83,6 +83,8 @@ const SEND_FLIGHT_COOLDOWN_MS = 260;
 const MESSAGE_FLIGHT_TARGET_RETRY_FRAMES = 3;
 const CHAT_VIEW_STORAGE_KEY = "atrium.chat.view";
 const DRAFT_CONVERSATION_HISTORY_FLAG = "atriumDraftConversation";
+const DEVTOOLS_QUERY_KEY = "devtools";
+const DESIGN_LAB_QUERY_VALUE = "design-lab";
 
 function readStoredChatView() {
   try {
@@ -443,6 +445,10 @@ function getAuthRoute(pathname = window.location.pathname) {
   return { mode: "login", isPanelOpen: false, path: "/" };
 }
 
+function isDesignLabRoute() {
+  return new URLSearchParams(window.location.search).get(DEVTOOLS_QUERY_KEY) === DESIGN_LAB_QUERY_VALUE;
+}
+
 function readSessionUsername(session) {
   return typeof session?.username === "string" ? session.username.trim() : "";
 }
@@ -461,6 +467,8 @@ export default function App() {
   const ritualTimerRef = useRef(null);
   const chatRuntimePromiseRef = useRef(null);
   const ChatRoomComponentRef = useRef(null);
+  const designLabPromiseRef = useRef(null);
+  const DesignLabComponentRef = useRef(null);
   const lastSendFlightAtRef = useRef(0);
   const composerFieldRef = useRef(null);
   const chatMessagesViewportRef = useRef(null);
@@ -500,6 +508,10 @@ export default function App() {
   const [draftConversation, setDraftConversation] = useState(null);
   const [isChatRuntimeReady, setChatRuntimeReady] = useState(false);
   const [ChatRoomComponent, setChatRoomComponent] = useState(null);
+  const [isDesignLabOpen, setDesignLabOpen] = useState(() => isDesignLabRoute());
+  const [designLabLoading, setDesignLabLoading] = useState(false);
+  const [designLabError, setDesignLabError] = useState("");
+  const [DesignLabComponent, setDesignLabComponent] = useState(null);
 
   async function ensureChatRuntimeLoaded() {
     if (ChatRoomComponentRef.current) return ChatRoomComponentRef.current;
@@ -515,6 +527,30 @@ export default function App() {
       chatRuntimePromiseRef.current = null;
     });
     chatRuntimePromiseRef.current = promise;
+    return promise;
+  }
+
+  async function ensureDesignLabLoaded() {
+    if (DesignLabComponentRef.current) return DesignLabComponentRef.current;
+    if (designLabPromiseRef.current) return designLabPromiseRef.current;
+    setDesignLabLoading(true);
+    setDesignLabError("");
+    const promise = import("./devtools/DesignLab.jsx")
+      .then((mod) => {
+        DesignLabComponentRef.current = mod.default;
+        setDesignLabComponent(() => mod.default);
+        return mod.default;
+      })
+      .catch((error) => {
+        console.warn("Failed to load Design Lab:", error);
+        setDesignLabError("开发者界面加载失败");
+        throw error;
+      })
+      .finally(() => {
+        designLabPromiseRef.current = null;
+        setDesignLabLoading(false);
+      });
+    designLabPromiseRef.current = promise;
     return promise;
   }
 
@@ -599,6 +635,37 @@ export default function App() {
     } catch {
       // Browser history is an enhancement; the in-page back control still works.
     }
+  }
+
+  function setDesignLabRoute(isOpen, { replace = false } = {}) {
+    const url = new URL(window.location.href);
+    if (isOpen) {
+      url.searchParams.set(DEVTOOLS_QUERY_KEY, DESIGN_LAB_QUERY_VALUE);
+    } else {
+      url.searchParams.delete(DEVTOOLS_QUERY_KEY);
+    }
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextUrl !== currentUrl) {
+      const method = replace ? "replaceState" : "pushState";
+      window.history[method]({
+        ...(window.history.state || {}),
+        path: url.pathname,
+        devtools: isOpen ? DESIGN_LAB_QUERY_VALUE : null
+      }, "", nextUrl);
+    }
+    setDesignLabOpen(isOpen);
+    if (isOpen) {
+      ensureDesignLabLoaded().catch(() => {});
+    }
+  }
+
+  function openDesignLab() {
+    setDesignLabRoute(true);
+  }
+
+  function closeDesignLab() {
+    setDesignLabRoute(false, { replace: true });
   }
 
   function closeDraftConversation() {
@@ -752,7 +819,14 @@ export default function App() {
           setAuthHandoffPending(false); setLocalSystemMessages([]);
           commitAuthIdentity(session);
           setWsEnabled(true); setAuthPanelOpen(false); setAppStage("chat");
-          if (window.location.pathname !== "/chat") window.history.replaceState({ path: "/chat" }, "", "/chat");
+          if (window.location.pathname !== "/chat") {
+            const search = isDesignLabRoute() ? `?${DEVTOOLS_QUERY_KEY}=${DESIGN_LAB_QUERY_VALUE}` : "";
+            window.history.replaceState({ path: "/chat" }, "", `/chat${search}`);
+          }
+          if (isDesignLabRoute()) {
+            setDesignLabOpen(true);
+            ensureDesignLabLoaded().catch(() => {});
+          }
           ensureChatRuntimeLoaded().catch((err) => {
             console.error("Failed to load chat runtime:", err);
           });
@@ -786,6 +860,9 @@ export default function App() {
 
   useEffect(() => {
     function handlePopState() {
+      const nextDesignLabOpen = isDesignLabRoute();
+      setDesignLabOpen(nextDesignLabOpen);
+      if (nextDesignLabOpen) ensureDesignLabLoaded().catch(() => {});
       if (authedNickname && (appStage === "chat" || sceneTransition?.kind === "login")) {
         if (draftConversation) {
           closeDraftConversation();
@@ -807,6 +884,11 @@ export default function App() {
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, [appStage, authedNickname, draftConversation, sceneTransition]);
+
+  useEffect(() => {
+    if (!isDesignLabOpen) return;
+    ensureDesignLabLoaded().catch(() => {});
+  }, [isDesignLabOpen]);
 
   useEffect(() => { if (shouldKeepSocketEnabled) setWsEnabled(true); else setWsEnabled(false); }, [shouldKeepSocketEnabled]);
   useEffect(() => { return () => { clearRitualTimers(); window.clearTimeout(roomSwitchTimerRef.current); window.clearTimeout(launchTimerRef.current); if (launchFrameRef.current != null) window.cancelAnimationFrame(launchFrameRef.current); if (focusFrameRef.current != null) window.cancelAnimationFrame(focusFrameRef.current); }; }, []);
@@ -1354,8 +1436,27 @@ export default function App() {
               historyLoading={historyState === "loading-more"}
               historyError={historyError}
               onLoadMoreHistory={loadOlderMessages}
+              onOpenDesignLab={openDesignLab}
+              designLabLoading={designLabLoading}
+              designLabError={designLabError}
             />
           </motion.div>
+        ) : null}
+      </AnimatePresence>
+      <AnimatePresence>
+        {isDesignLabOpen && DesignLabComponent ? (
+          <motion.div
+            key="design-lab-route"
+            className="design-lab-route"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.16, ease: EASE }}
+          >
+            <DesignLabComponent onClose={closeDesignLab} />
+          </motion.div>
+        ) : isDesignLabOpen && designLabLoading ? (
+          <LoadingStage key="design-lab-loading" />
         ) : null}
       </AnimatePresence>
     </>

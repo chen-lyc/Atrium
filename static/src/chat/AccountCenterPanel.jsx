@@ -88,13 +88,41 @@ function AccountThemeControl({ readOnly = false }) {
   );
 }
 
+function AccountDesignLabEntry({
+  loading = false,
+  error = "",
+  readOnly = false,
+  onOpen = () => {}
+}) {
+  return (
+    <section className="workspace-section account-devtools-section">
+      <div className="workspace-section-title">验收</div>
+      <button
+        type="button"
+        className="account-devtools-entry focus-ring"
+        onClick={onOpen}
+        disabled={loading || readOnly}
+      >
+        <span className="account-devtools-copy">
+          <span>前端开发者窗口</span>
+          <small>{error || "打开后再加载渲染场景、动效和边缘状态"}</small>
+        </span>
+        <span className="account-devtools-state">{loading ? "加载中" : "打开"}</span>
+      </button>
+    </section>
+  );
+}
+
 function AccountSettings({
   isOpen,
   nickname = "",
   username = "",
   avatarUrl = "",
   onProfileUpdate = async () => {},
-  readOnly = false
+  readOnly = false,
+  onOpenDesignLab = () => {},
+  designLabLoading = false,
+  designLabError = ""
 }) {
   const initialRef = useRef({ nickname: "", username: "", avatarUrl: "" });
   const [draft, setDraft] = useState({ nickname: "", username: "", avatarUrl: "" });
@@ -239,6 +267,13 @@ function AccountSettings({
         <div className="workspace-section-title">界面</div>
         <AccountThemeControl readOnly={readOnly} />
       </section>
+
+      <AccountDesignLabEntry
+        loading={designLabLoading}
+        error={designLabError}
+        readOnly={readOnly}
+        onOpen={onOpenDesignLab}
+      />
     </div>
   );
 }
@@ -253,7 +288,10 @@ export default function AccountCenterPanel({
   onProfileUpdate = async () => {},
   readOnly = false,
   onRoomsChanged = async () => {},
-  onNotificationCountChange = () => {}
+  onNotificationCountChange = () => {},
+  onOpenDesignLab = () => {},
+  designLabLoading = false,
+  designLabError = ""
 }) {
   const [tab, setTab] = useState("friends");
   const [friends, setFriends] = useState([]);
@@ -273,7 +311,8 @@ export default function AccountCenterPanel({
   useEffect(() => {
     if (!isOpen) return undefined;
     function handleKeyDown(event) {
-      if (event.key === "Escape") onClose();
+      if (event.key !== "Escape") return;
+      onClose();
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
@@ -577,6 +616,9 @@ export default function AccountCenterPanel({
                   avatarUrl={avatarUrl}
                   onProfileUpdate={onProfileUpdate}
                   readOnly={readOnly}
+                  onOpenDesignLab={onOpenDesignLab}
+                  designLabLoading={designLabLoading}
+                  designLabError={designLabError}
                 />
                   ) : null}
                 </div>

@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { EASE, MESSAGE_TYPE } from "../constants.js";
-import { getAiAvatarUrl, getAiMemberName } from "./AiTeamEditor.jsx";
+import {
+  AiModelSelector,
+  AiSeatStrip,
+  getAiAvatarUrl,
+  getAiMemberName,
+  mergeAiMemberOptions
+} from "./AiTeamEditor.jsx";
 
 const HOME_VISIT_STATS_STORAGE_KEY = "atrium.home.visitStats.v1";
 const HOME_MEMORY_ANCHOR_PAGE_LIMIT = 36;
@@ -12,6 +18,7 @@ const HOME_PATH_RECENT_MS = 3 * 24 * 60 * 60 * 1000;
 const HOME_SPACE_RECENT_MS = 30 * 24 * 60 * 60 * 1000;
 const HOME_RECALL_TRACE_LIMIT = 112;
 const HOME_TOUCH_MOVE_TOLERANCE = 8;
+const HOME_INITIAL_AI_GUIDE_DISMISS_STORAGE_KEY = "atrium.home.initialAiGuideDismissed.v1";
 const AI_NO_REPLY_TOKEN = "<NO_REPLY>";
 const HOME_RECALL_HIGHLIGHT_PATTERN = /(DeepSeek|Qwen|Claude|GPT-?4o?|prompt|WebSocket|Redis|MySQL|Home|AI|bug|TODO|\/api\/[^\s，。；;]+|[A-Za-z0-9_-]+\.(?:jsx|js|cpp|h|css|md)|错误|问题|方案|实现|架构|模型|摘要)/i;
 const HOME_RECALL_SPLIT_PATTERN = /(DeepSeek|Qwen|Claude|GPT-?4o?|prompt|WebSocket|Redis|MySQL|Home|AI|bug|TODO|\/api\/[^\s，。；;]+|[A-Za-z0-9_-]+\.(?:jsx|js|cpp|h|css|md)|错误|问题|方案|实现|架构|模型|摘要)/gi;
@@ -59,6 +66,29 @@ export function writeStoredHomeVisitStats(currentUserId = "", nextStats = {}) {
     window.localStorage.setItem(getHomeVisitStorageKey(currentUserId), JSON.stringify(nextStats));
   } catch {
     // Visit tracking is a replaceable frontend-only stand-in for future backend fields.
+  }
+}
+
+function getHomeInitialAiGuideDismissStorageKey(currentUserId = "") {
+  const userKey = String(currentUserId || "anonymous").trim() || "anonymous";
+  return `${HOME_INITIAL_AI_GUIDE_DISMISS_STORAGE_KEY}:${userKey}`;
+}
+
+function readHomeInitialAiGuideDismissed(currentUserId = "") {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(getHomeInitialAiGuideDismissStorageKey(currentUserId)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeHomeInitialAiGuideDismissed(currentUserId = "", dismissed = true) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(getHomeInitialAiGuideDismissStorageKey(currentUserId), dismissed ? "1" : "0");
+  } catch {
+    // The guide is optional; failing to remember dismissal should not block Home.
   }
 }
 
@@ -841,16 +871,259 @@ function HomeObjectPeek({ thinkingObject = null, members = [], isWarmest = false
   );
 }
 
+function getHomeRoomAiMembers(roomAiMembersByRoomId = {}, room = null) {
+  const keys = [room?.roomId, room?.id].filter((key) => key != null && key !== "");
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(roomAiMembersByRoomId, key)) {
+      return roomAiMembersByRoomId[key] || [];
+    }
+  }
+  return [];
+}
+
+function getHomePublicRoom(rooms = []) {
+  return rooms.find((item) => item?.id === "public" || Number(item?.type) === 0) || null;
+}
+
+function HomeStarterPanel({
+  hasStoredObjects = false,
+  storageCount = 0,
+  defaultMembers = [],
+  publicRoom = null,
+  onCreateConversation = () => {},
+  onOpenConversation = () => {}
+}) {
+  const createTouchIntent = useHomeTouchIntent();
+  const publicTouchIntent = useHomeTouchIntent();
+  const publicConversationId = publicRoom?.mainConversationId || publicRoom?.conversationId || 0;
+  const canOpenPublicRoom = Boolean(publicRoom?.id && publicConversationId);
+  const aiLine = defaultMembers.length ? `${defaultMembers.length} 位 AI 可带入` : "也可以空席开始";
+
+  return (
+    <section className="home-start-panel" aria-label="Home 起始状态">
+      <div className="home-start-map" aria-hidden="true">
+        <span className="is-current" />
+        <span />
+        <span />
+      </div>
+      <div className="home-start-copy">
+        <span className="home-start-kicker">{hasStoredObjects ? "还没有形成路径" : "第一次来到这里"}</span>
+        <h2>{hasStoredObjects ? "先把真正要继续想的事放上来" : "把第一件要想的事放进来"}</h2>
+        <p>
+          {hasStoredObjects
+            ? "现有记录还太轻，暂时收在更早处。先从一个问题、材料或判断开始，Home 才会长出可回访的路径。"
+            : "个人讨论室可以从一个问题、材料或判断开始；AI 阵容会跟着这条新对话一起准备。"}
+        </p>
+      </div>
+      <div className="home-start-actions">
+        <button type="button" className="home-action is-primary focus-ring" {...createTouchIntent} onClick={onCreateConversation}>
+          开始一条思考线
+        </button>
+        {canOpenPublicRoom ? (
+          <button
+            type="button"
+            className="home-action focus-ring"
+            {...publicTouchIntent}
+            onClick={() => onOpenConversation(publicRoom.id, publicConversationId)}
+          >
+            看看大厅
+          </button>
+        ) : null}
+      </div>
+      <div className="home-start-lanes" aria-label="可以放入 Home 的起点">
+        <span>
+          <small>问题</small>
+          <strong>一个还没拆开的判断</strong>
+        </span>
+        <span>
+          <small>材料</small>
+          <strong>一段想继续看的信息</strong>
+        </span>
+        <span>
+          <small>AI</small>
+          <strong>{aiLine}</strong>
+        </span>
+      </div>
+      {storageCount ? <div className="home-start-storage-note">{storageCount} 条旧痕迹已收起</div> : null}
+    </section>
+  );
+}
+
+function HomeStarterAside({ homeName = "Home", defaultMembers = [], hasStoredObjects = false }) {
+  return (
+    <aside className="home-start-aside" aria-label="Home 当前状态">
+      <div className="home-start-status">
+        <span>{hasStoredObjects ? "等待更清晰的痕迹" : "还没有路径"}</span>
+        <h2>{homeName}</h2>
+        <p>以后主动回访过的讨论会出现在这里，按与你的关系而不是按创建时间排开。</p>
+        <div className="home-start-ai">
+          <small>默认 AI 阵容</small>
+          <HomeAiStack members={defaultMembers} />
+        </div>
+      </div>
+      <div className="home-start-note">
+        <span>最近摘录</span>
+        <p>摘录还没有接入时，Home 先保留给可回来的讨论痕迹。</p>
+      </div>
+    </aside>
+  );
+}
+
+function HomeAiSeatStage({
+  members = [],
+  thinkingAdapters = [],
+  readOnly = false,
+  isGuide = false,
+  intentModel = null,
+  canFocusModel = false,
+  onFocusModel = () => {},
+  onChange = async () => []
+}) {
+  const emptySeats = Array.from({ length: 3 }, (_, index) => index);
+  const hasMembers = members.length > 0;
+
+  return (
+    <div className={`home-ai-seat-stage ${isGuide ? "is-guide" : ""} ${hasMembers ? "has-members" : "is-empty"}`}>
+      <AnimatePresence mode="wait" initial={false}>
+        {hasMembers ? (
+          <motion.div
+            key="home-ai-stage-members"
+            className="home-ai-seat-stage-members"
+            initial={{ opacity: 0, y: 7, scale: 0.985 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.99 }}
+            transition={{ duration: 0.2, ease: EASE }}
+          >
+            <AiSeatStrip
+              members={members}
+              thinkingAdapters={thinkingAdapters}
+              readOnly={readOnly}
+              onChange={onChange}
+              emptyText="无 AI"
+              className="is-home-seat-stage"
+            />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="home-ai-stage-empty"
+            className="home-ai-empty-seats"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -7, scale: 0.985 }}
+            transition={{ duration: 0.18, ease: EASE }}
+          >
+            {emptySeats.map((seatIndex) => (
+              <button
+                type="button"
+                key={`home-empty-seat-${seatIndex}`}
+                className={`home-ai-empty-seat focus-ring ${seatIndex === 0 ? "is-primary" : ""} ${intentModel && seatIndex === 0 ? "is-receiving-intent" : ""}`}
+                onClick={onFocusModel}
+                aria-label={seatIndex === 0 ? "选择 AI 放入第一个席位" : `选择 AI 放入第 ${seatIndex + 1} 个席位`}
+                disabled={readOnly || !canFocusModel}
+              >
+                <span aria-hidden="true" />
+              </button>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function HomeDefaultAiPanel({
+  isOpen = false,
+  variant = "default",
+  members = [],
+  availableAis = [],
+  thinkingAdapters = [],
+  readOnly = false,
+  loadError = "",
+  onChange = async () => [],
+  onClose = () => {}
+}) {
+  const aiMemberOptions = mergeAiMemberOptions(availableAis, members);
+  const isStarterGuide = variant === "starter";
+  const showSeatGuide = isStarterGuide && !members.length;
+  const [guideIntentModel, setGuideIntentModel] = useState(null);
+  const [guideFocusRequestKey, setGuideFocusRequestKey] = useState(0);
+  const selectedAiIds = new Set(members.map((member) => Number(member.aiId)));
+  const firstAvailableModel = aiMemberOptions.find((model) => !selectedAiIds.has(Number(model.aiId))) || aiMemberOptions[0] || null;
+
+  function focusFirstAvailableModel() {
+    if (!firstAvailableModel) return;
+    setGuideIntentModel(firstAvailableModel);
+    setGuideFocusRequestKey((value) => value + 1);
+  }
+
+  return (
+    <AnimatePresence initial={false}>
+      {isOpen ? (
+        <motion.section
+          className={`home-ai-panel ${isStarterGuide ? "is-starter-guide" : ""}`}
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -6 }}
+          transition={{ duration: 0.18, ease: EASE }}
+          aria-label="个人房间默认 AI 阵容"
+        >
+          <header className="home-ai-panel-head">
+            <div>
+              <span>{isStarterGuide ? "新房间的第一组席位" : "个人房间默认 AI"}</span>
+              <h2>{isStarterGuide ? "先放入 AI 席位" : "Home 默认阵容"}</h2>
+              <p>
+                {isStarterGuide
+                  ? "这不是账户设置，而是个人房间的初始阵容。新建对话会先带着这里的 AI，但你仍然可以空席开始。"
+                  : "这是个人房间主对话的默认阵容。新建对话会先继承它，进入对话前仍然可以临时调整。"}
+              </p>
+            </div>
+            <button type="button" className="home-ai-panel-close focus-ring" onClick={onClose} aria-label="收起 AI 阵容">
+              {isStarterGuide ? "稍后" : "收起"}
+            </button>
+          </header>
+          <HomeAiSeatStage
+            members={members}
+            thinkingAdapters={thinkingAdapters}
+            readOnly={readOnly}
+            isGuide={showSeatGuide}
+            intentModel={guideIntentModel}
+            canFocusModel={Boolean(firstAvailableModel)}
+            onFocusModel={focusFirstAvailableModel}
+            onChange={onChange}
+          />
+          <AiModelSelector
+            models={aiMemberOptions}
+            members={members}
+            thinkingAdapters={thinkingAdapters}
+            readOnly={readOnly}
+            onChange={onChange}
+            onModelIntent={showSeatGuide ? setGuideIntentModel : null}
+            intentAiId={showSeatGuide ? guideIntentModel?.aiId : null}
+            focusAiId={guideFocusRequestKey ? firstAvailableModel?.aiId : null}
+            focusRequestKey={guideFocusRequestKey}
+            className={`is-home-default ${showSeatGuide ? "is-home-starter-guide" : ""}`}
+          />
+          {loadError ? <div className="home-ai-panel-error">{loadError}</div> : null}
+        </motion.section>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
 export default function HomeDashboard({
   nickname = "",
   room = null,
   rooms = [],
   roomAiMembersByRoomId = {},
+  availableAis = [],
+  thinkingAdapters = [],
+  aiConfigError = {},
+  readOnly = false,
   currentUserId = "",
   homeVisitStats = {},
   onOpenConversation = () => {},
   onCreateConversation = () => {},
-  onOpenAi = () => {}
+  onRoomAiMembersSave = async () => []
 }) {
   const thinkingObjects = getHomeThinkingObjectEntries(rooms, room);
   const hasThinkingObjects = thinkingObjects.length > 0;
@@ -858,6 +1131,8 @@ export default function HomeDashboard({
   const [thinkingObjectAnchors, setThinkingObjectAnchors] = useState({});
   const [previewObjectKey, setPreviewObjectKey] = useState("");
   const [storageOpen, setStorageOpen] = useState(false);
+  const [homeSideMode, setHomeSideMode] = useState("");
+  const [initialAiGuideDismissed, setInitialAiGuideDismissed] = useState(() => readHomeInitialAiGuideDismissed(currentUserId));
   const createActionTouchIntent = useHomeTouchIntent();
   const aiActionTouchIntent = useHomeTouchIntent();
   const storageToggleTouchIntent = useHomeTouchIntent();
@@ -927,6 +1202,7 @@ export default function HomeDashboard({
   const pathCount = homeSections.path.length;
   const sameSpaceCount = homeSections.sameSpace.length;
   const storageCount = homeSections.storage.length;
+  const showStarterPanel = !pathCount && !sameSpaceCount;
   const previewCandidates = [...homeSections.path, ...homeSections.sameSpace, ...homeSections.storage];
   const fallbackPreviewObject = previewCandidates[0] || null;
   const previewObject = previewCandidates.find((thinkingObject) => thinkingObject.objectKey === previewObjectKey) || fallbackPreviewObject;
@@ -937,6 +1213,39 @@ export default function HomeDashboard({
     .filter((thinkingObject) => thinkingObject.visit?.lastVisitedAtMs)
     .sort((a, b) => b.visit.lastVisitedAtMs - a.visit.lastVisitedAtMs)[0] || null;
   const warmestObjectKey = warmestObject?.objectKey || "";
+  const homeDefaultMembers = getHomeRoomAiMembers(roomAiMembersByRoomId, room);
+  const publicRoom = getHomePublicRoom(rooms);
+  const shouldShowInitialAiGuide = showStarterPanel && !homeDefaultMembers.length && !initialAiGuideDismissed && homeSideMode !== "ai";
+  const showHomeAiPanel = homeSideMode === "ai" || shouldShowInitialAiGuide;
+
+  async function handleHomeAiMembersChange(nextMembers) {
+    if (Array.isArray(nextMembers) && nextMembers.length) {
+      setHomeSideMode("ai");
+      setInitialAiGuideDismissed(true);
+      writeHomeInitialAiGuideDismissed(currentUserId, true);
+    }
+    return onRoomAiMembersSave(nextMembers);
+  }
+
+  function closeHomeAiPanel() {
+    setHomeSideMode("");
+    if (!homeDefaultMembers.length) {
+      setInitialAiGuideDismissed(true);
+      writeHomeInitialAiGuideDismissed(currentUserId, true);
+    }
+  }
+
+  function toggleHomeAiPanel() {
+    if (showHomeAiPanel && homeSideMode === "ai") {
+      closeHomeAiPanel();
+      return;
+    }
+    setHomeSideMode("ai");
+  }
+
+  useEffect(() => {
+    setInitialAiGuideDismissed(readHomeInitialAiGuideDismissed(currentUserId));
+  }, [currentUserId]);
 
   useEffect(() => {
     if (!previewObjectKey || previewCandidates.some((thinkingObject) => thinkingObject.objectKey === previewObjectKey)) return;
@@ -944,7 +1253,7 @@ export default function HomeDashboard({
   }, [previewKeySignature, previewObjectKey]);
 
   return (
-    <section className={`home-dashboard ${hasThinkingObjects ? "has-thinking-objects" : "is-empty"}`} aria-label="Home">
+    <section className={`home-dashboard ${hasThinkingObjects && !showStarterPanel ? "has-thinking-objects" : "is-empty"} ${showStarterPanel ? "is-starter" : ""}`} aria-label="Home">
       <div className="home-dashboard-inner">
         <header className="home-hero">
           <div className="home-hero-copy">
@@ -956,32 +1265,73 @@ export default function HomeDashboard({
             <button type="button" className="home-action is-primary focus-ring" {...createActionTouchIntent} onClick={onCreateConversation}>
               新建对话
             </button>
-            <button type="button" className="home-action focus-ring" {...aiActionTouchIntent} onClick={onOpenAi}>
-              选择 AI
+            <button
+              type="button"
+              className={`home-action focus-ring ${showHomeAiPanel ? "is-active" : ""}`}
+              {...aiActionTouchIntent}
+              onClick={toggleHomeAiPanel}
+              aria-expanded={showHomeAiPanel}
+            >
+              AI 阵容
             </button>
           </div>
         </header>
 
-        {!hasThinkingObjects ? (
-          <section className="home-empty-panel" aria-label="开始使用 Atrium">
-            <div className="home-empty-grid" aria-hidden="true">
-              <span />
-              <span />
-              <span />
+        {showStarterPanel ? (
+          <>
+            <div className="home-starter-stack">
+              <HomeStarterPanel
+                hasStoredObjects={hasThinkingObjects}
+                storageCount={storageCount}
+                defaultMembers={homeDefaultMembers}
+                publicRoom={publicRoom}
+                onCreateConversation={onCreateConversation}
+                onOpenConversation={onOpenConversation}
+              />
+              {storageCount ? (
+                <section className="home-storage-section" aria-label="更早和测试性对话">
+                  <button
+                    type="button"
+                    className="home-storage-toggle focus-ring"
+                    {...storageToggleTouchIntent}
+                    onClick={() => setStorageOpen((value) => !value)}
+                    aria-expanded={storageOpen}
+                  >
+                    <span>更早 / 测试性</span>
+                    <small>{storageCount} 个可展开</small>
+                  </button>
+                  {storageOpen ? (
+                    <div className="home-storage-list">
+                      {homeSections.storage.map((thinkingObject) => (
+                        <HomeStorageRow
+                          key={thinkingObject.objectKey}
+                          thinkingObject={thinkingObject}
+                          isActive={previewObject?.objectKey === thinkingObject.objectKey}
+                          onPreview={setPreviewObjectKey}
+                          onOpen={onOpenConversation}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
             </div>
-            <div className="home-empty-copy">
-              <h2>还没有对话</h2>
-              <p>先建立一条思考线，再决定要不要让 AI 坐进来。个人讨论室会保留你的对话列表、房间设置和默认 AI 阵容。</p>
-            </div>
-            <div className="home-empty-actions">
-              <button type="button" className="home-action is-primary focus-ring" {...createActionTouchIntent} onClick={onCreateConversation}>
-                新建第一个对话
-              </button>
-              <button type="button" className="home-action focus-ring" {...aiActionTouchIntent} onClick={onOpenAi}>
-                先配置 AI 阵容
-              </button>
-            </div>
-          </section>
+            {showHomeAiPanel ? (
+              <HomeDefaultAiPanel
+                isOpen={true}
+                variant={shouldShowInitialAiGuide ? "starter" : "default"}
+                members={homeDefaultMembers}
+                availableAis={availableAis}
+                thinkingAdapters={thinkingAdapters}
+                readOnly={readOnly}
+                loadError={aiConfigError?.room || aiConfigError?.models || aiConfigError?.thinking || ""}
+                onChange={handleHomeAiMembersChange}
+                onClose={closeHomeAiPanel}
+              />
+            ) : (
+              <HomeStarterAside homeName={homeName} defaultMembers={homeDefaultMembers} hasStoredObjects={hasThinkingObjects} />
+            )}
+          </>
         ) : (
           <div className="home-thinking-sections" aria-label="思考对象">
             {pathCount ? (
@@ -1061,13 +1411,26 @@ export default function HomeDashboard({
           </div>
         )}
 
-        {hasThinkingObjects ? (
-          <HomeObjectPeek
-            thinkingObject={previewObject}
-            members={previewMembers}
-            isWarmest={warmestObjectKey === previewObject?.objectKey}
-            onOpen={onOpenConversation}
-          />
+        {hasThinkingObjects && !showStarterPanel ? (
+          showHomeAiPanel ? (
+            <HomeDefaultAiPanel
+              isOpen={true}
+              members={homeDefaultMembers}
+              availableAis={availableAis}
+              thinkingAdapters={thinkingAdapters}
+              readOnly={readOnly}
+              loadError={aiConfigError?.room || aiConfigError?.models || aiConfigError?.thinking || ""}
+              onChange={handleHomeAiMembersChange}
+              onClose={closeHomeAiPanel}
+            />
+          ) : (
+            <HomeObjectPeek
+              thinkingObject={previewObject}
+              members={previewMembers}
+              isWarmest={warmestObjectKey === previewObject?.objectKey}
+              onOpen={onOpenConversation}
+            />
+          )
         ) : null}
       </div>
     </section>
