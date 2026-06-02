@@ -10,6 +10,24 @@ Atrium 是一个多人、多 AI 共同参与的实时协作讨论平台。用户
 
 这个仓库的核心是 Atrium 的 C++ 后端：它负责把浏览器中的产品体验真正跑起来，包括静态资源托管、登录会话、业务 API、WebSocket 实时通信、AI 流式回复、MySQL/Redis 存储和基础性能优化。前端是 AI 辅助实现的 React/Vite 浏览器层，作为产品功能入口由后端直接托管。
 
+## 文档导航
+
+**叙事文档**
+
+| 文档 | 阅读目的 |
+|---|---|
+| [设计笔记](docs/DESIGN_NOTES.md) | 产品决策与取舍 reasoning |
+| [后端架构](docs/BACKEND_ARCHITECTURE.md) | 运行时实现：Reactor、HTTP/WebSocket、AI 调度、存储 |
+| [性能侦察](docs/PERFORMANCE_SCOUTING.md) | 压测方法论、历史数据与火焰图分析 |
+| [疑难排查](docs/BUG_POSTMORTEM.md) | 开发期疑难问题根因分析与排查记录 |
+
+**参考文档**
+
+| 文档 | 阅读目的 |
+|---|---|
+| [API 参考](docs/API_REFERENCE.md) | 42 个业务 API 完整契约 |
+| [实时协议](docs/REALTIME_PROTOCOL.md) | WebSocket 消息格式、流事件与广播语义 |
+
 ## 设计初衷
 
 Atrium 从产品体验出发，而不是先做一个孤立的服务器压测程序。多人讨论、AI 参与、房间与对话这些产品需求会反过来逼出真实的后端问题：身份如何统一、消息如何入库和广播、实时连接如何跨线程路由、AI 流式输出如何和普通聊天共存、前端资源如何由后端稳定交付。
@@ -120,24 +138,6 @@ flowchart TD
 - **AI ThreadPool 隔离** — Scheduler 只决定任务节奏，实际 provider SSE 调用在 AI worker 中执行，Start/Delta/End/Error 事件再回到 SubReactor 广播。
 
 → [后端架构](docs/BACKEND_ARCHITECTURE.md) — 运行时实现：Reactor 细节、HTTP/WebSocket 路径、AI 调度、存储模型
-
-## 文档导航
-
-**叙事文档**
-
-| 文档 | 阅读目的 |
-|---|---|
-| [设计笔记](docs/DESIGN_NOTES.md) | 产品决策与取舍 reasoning |
-| [后端架构](docs/BACKEND_ARCHITECTURE.md) | 运行时实现：Reactor、HTTP/WebSocket、AI 调度、存储 |
-| [性能侦察](docs/PERFORMANCE_SCOUTING.md) | 压测方法论、历史数据与火焰图分析 |
-| [疑难排查](docs/BUG_POSTMORTEM.md) | 开发期疑难问题根因分析与排查记录 |
-
-**参考文档**
-
-| 文档 | 阅读目的 |
-|---|---|
-| [API 参考](docs/API_REFERENCE.md) | 42 个业务 API 完整契约 |
-| [实时协议](docs/REALTIME_PROTOCOL.md) | WebSocket 消息格式、流事件与广播语义 |
 
 ## 本地运行
 
