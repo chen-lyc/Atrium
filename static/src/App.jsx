@@ -16,7 +16,7 @@ import {
   normalizeAuthPayload, getModelDisplayName, updateCurrentUserProfile
 } from "./utils.js";
 import useWebSocket from "./useWebSocket.js";
-import { LoadingStage } from "./auth/AuthShell.jsx";
+import { LoadingStage } from "./auth/shell/AuthPrimitives.jsx";
 import AuthShell from "./auth/AuthShell.jsx";
 
 const NORMAL_LOGIN_RITUAL = {

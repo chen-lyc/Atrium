@@ -1022,6 +1022,7 @@ export default function ChatRoom({
           {isHomeDashboard ? (
             <HomeDashboard
               nickname={nickname}
+              username={username}
               room={room}
               rooms={rooms}
               roomAiMembersByRoomId={roomAiMembersByRoomId}

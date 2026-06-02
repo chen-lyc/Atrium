@@ -74,6 +74,18 @@ function getHomeInitialAiGuideDismissStorageKey(currentUserId = "") {
   return `${HOME_INITIAL_AI_GUIDE_DISMISS_STORAGE_KEY}:${userKey}`;
 }
 
+function getHomeGuideIdentityKey({ currentUserId = "", username = "", nickname = "", room = null } = {}) {
+  const userIdKey = String(currentUserId || "").trim();
+  if (userIdKey) return `user:${userIdKey}`;
+  const usernameKey = String(username || "").trim();
+  if (usernameKey) return `username:${usernameKey}`;
+  const nicknameKey = String(nickname || "").trim();
+  if (nicknameKey) return `nickname:${nicknameKey}`;
+  const roomKey = String(room?.roomId ?? room?.id ?? "").trim();
+  if (roomKey) return `room:${roomKey}`;
+  return "anonymous";
+}
+
 function readHomeInitialAiGuideDismissed(currentUserId = "") {
   if (typeof window === "undefined") return false;
   try {
@@ -1112,6 +1124,7 @@ function HomeDefaultAiPanel({
 
 export default function HomeDashboard({
   nickname = "",
+  username = "",
   room = null,
   rooms = [],
   roomAiMembersByRoomId = {},
@@ -1128,11 +1141,12 @@ export default function HomeDashboard({
   const thinkingObjects = getHomeThinkingObjectEntries(rooms, room);
   const hasThinkingObjects = thinkingObjects.length > 0;
   const homeName = nickname ? `${nickname} 的 Home` : "Home";
+  const homeGuideIdentityKey = getHomeGuideIdentityKey({ currentUserId, username, nickname, room });
   const [thinkingObjectAnchors, setThinkingObjectAnchors] = useState({});
   const [previewObjectKey, setPreviewObjectKey] = useState("");
   const [storageOpen, setStorageOpen] = useState(false);
   const [homeSideMode, setHomeSideMode] = useState("");
-  const [initialAiGuideDismissed, setInitialAiGuideDismissed] = useState(() => readHomeInitialAiGuideDismissed(currentUserId));
+  const [initialAiGuideDismissed, setInitialAiGuideDismissed] = useState(() => readHomeInitialAiGuideDismissed(homeGuideIdentityKey));
   const createActionTouchIntent = useHomeTouchIntent();
   const aiActionTouchIntent = useHomeTouchIntent();
   const storageToggleTouchIntent = useHomeTouchIntent();
@@ -1222,7 +1236,7 @@ export default function HomeDashboard({
     if (Array.isArray(nextMembers) && nextMembers.length) {
       setHomeSideMode("ai");
       setInitialAiGuideDismissed(true);
-      writeHomeInitialAiGuideDismissed(currentUserId, true);
+      writeHomeInitialAiGuideDismissed(homeGuideIdentityKey, true);
     }
     return onRoomAiMembersSave(nextMembers);
   }
@@ -1231,7 +1245,7 @@ export default function HomeDashboard({
     setHomeSideMode("");
     if (!homeDefaultMembers.length) {
       setInitialAiGuideDismissed(true);
-      writeHomeInitialAiGuideDismissed(currentUserId, true);
+      writeHomeInitialAiGuideDismissed(homeGuideIdentityKey, true);
     }
   }
 
@@ -1244,8 +1258,8 @@ export default function HomeDashboard({
   }
 
   useEffect(() => {
-    setInitialAiGuideDismissed(readHomeInitialAiGuideDismissed(currentUserId));
-  }, [currentUserId]);
+    setInitialAiGuideDismissed(readHomeInitialAiGuideDismissed(homeGuideIdentityKey));
+  }, [homeGuideIdentityKey]);
 
   useEffect(() => {
     if (!previewObjectKey || previewCandidates.some((thinkingObject) => thinkingObject.objectKey === previewObjectKey)) return;

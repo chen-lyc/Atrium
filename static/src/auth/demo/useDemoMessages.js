@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { createId } from "../utils.js";
+import { createId } from "../../utils.js";
 import { DEMO_SCRIPTS } from "./demoScripts.js";
 
 const MIN_MESSAGE_GAP = 1500;
@@ -14,17 +14,37 @@ function pickRandomScriptIndex(excludeIndex = null) {
   return pool[Math.floor(Math.random() * pool.length)] || 0;
 }
 function buildMessage(message) {
-  if (message.type === "system") {
-    return { id: createId("demo"), nickname: "__system__", text: message.text, timestamp: Date.now(), isSelf: false, status: "sent", source: message.source || "demo" };
+  const { delay, type, ...messageMeta } = message;
+  if (type === "system") {
+    return { ...messageMeta, id: createId("demo"), nickname: "__system__", text: message.text, timestamp: Date.now(), isSelf: false, status: "sent", source: message.source || "demo" };
   }
-  return { id: createId(message.isSelf ? "visitor" : "demo"), nickname: message.nickname, text: message.text, timestamp: Date.now(), isSelf: Boolean(message.isSelf), status: message.status || "sent", source: message.source || (message.isSelf ? "visitor" : "demo") };
+  return {
+    ...messageMeta,
+    id: createId(message.isAI ? "ai" : message.isSelf ? "visitor" : "demo"),
+    nickname: message.nickname,
+    text: message.text,
+    timestamp: Date.now(),
+    isSelf: Boolean(message.isSelf),
+    isAI: Boolean(message.isAI),
+    status: message.status || "sent",
+    source: message.source || (message.isSelf ? "visitor" : "demo")
+  };
 }
 function dispatchMessageSignal(message, meta = {}) {
+  const detail = {
+    messageId: message.id,
+    source: message.source,
+    isSelf: message.isSelf,
+    isAI: Boolean(message.isAI),
+    provider: message.provider,
+    model: message.model,
+    ...meta
+  };
   if (message.nickname === "__system__" || message.nickname === "system") {
-    window.dispatchEvent(new CustomEvent("signal-message-system", { detail: { messageId: message.id, text: message.text, source: message.source, isSelf: message.isSelf, ...meta } }));
+    window.dispatchEvent(new CustomEvent("signal-message-system", { detail: { ...detail, text: message.text } }));
     return;
   }
-  window.dispatchEvent(new CustomEvent("signal-message-broadcast", { detail: { messageId: message.id, nickname: message.nickname, source: message.source, isSelf: message.isSelf, ...meta } }));
+  window.dispatchEvent(new CustomEvent("signal-message-broadcast", { detail: { ...detail, nickname: message.nickname } }));
 }
 function dispatchScriptStart(scriptIndex) {
   window.setTimeout(() => { window.dispatchEvent(new CustomEvent("signal-script-start", { detail: { scriptIndex } })); }, 0);
