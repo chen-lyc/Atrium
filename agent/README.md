@@ -23,7 +23,6 @@
 | `src/providers/` | 模型网关接口，后续包装 DeepSeek/Qwen/OpenAI 等 provider |
 | `src/bridge/` | C++ 后端与 TS agent 的过渡契约和 Atrium 业务桥接接口 |
 | `tests/` | agent 纯逻辑 smoke tests |
-| `native-cpp/` | 迁移前 C++ 骨架参考，不作为新实现入口 |
 
 ## 当前边界
 

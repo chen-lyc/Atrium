@@ -62,7 +62,7 @@
 - Include 统一为 `agent/<layer>/<file>.h`。
 - 这不解除“禁止修改现有后端代码”的铁律。
 
-后续状态：这条已被 TypeScript 迁移取代。旧 `include/agent` 已收进 `agent/native-cpp/include/agent`，只作为迁移参考。
+后续状态：这条已被 TypeScript 迁移取代。旧 C++ 骨架参考已移除，当前 agent 只保留 TypeScript 实现入口。
 
 ## 2026-05-29 - Agent 记忆模块第一版
 
@@ -147,7 +147,7 @@
 - 根目录 `agent/` 成为唯一 agent 工作区。
 - `agent/src/` 是 TypeScript 主线。
 - `agent/src/bridge/` 承担 C++ 后端与 TS agent 的过渡契约。
-- 旧 C++ 骨架迁入 `agent/native-cpp/`，只作为迁移参考，不再作为新功能落点。
+- 旧 C++ 骨架不再保留为迁移参考。
 - 后端 `src/` / `include/` 不再新增 agent 专属代码。
 - TypeScript 内部 ID 使用字符串，避免 C++ `uint64_t` / MySQL `BIGINT UNSIGNED` 进入 JS number 后产生精度风险。
 

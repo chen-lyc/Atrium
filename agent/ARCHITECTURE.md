@@ -78,7 +78,7 @@ Atrium message event in C++ backend
 - runtime 不拼 provider 专属 JSON。
 - provider 不决定 Atrium 产品语义，例如 `<NO_REPLY>` 是否落库。
 - bridge 不塞 prompt 规则和工具策略。
-- `native-cpp/` 不作为新功能落点，只作为迁移参考。
+- 旧 C++ 骨架不再作为设计依据；当前源码以 TypeScript 分层为准。
 
 ## 现有代码迁移目标
 

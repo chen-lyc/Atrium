@@ -1,6 +1,6 @@
 # Current Agent State
 
-最后更新：2026-05-29
+最后更新：2026-05-31
 
 ## 当前阶段
 
@@ -19,7 +19,6 @@ Agent 子系统处于 Phase 0：从 C++ 后端目录迁出，并切换到根目�
 - `agent/src/runtime/`
 - `agent/src/bridge/`
 - `agent/tests/`
-- `agent/native-cpp/`：迁移前 C++ 骨架参考
 
 当前代码定义 TypeScript 骨架类型、接口、conversation context、未来泛化 memory 抽象、runtime、bridge 过渡契约和 smoke tests，不接入主服务。
 

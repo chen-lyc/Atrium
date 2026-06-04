@@ -54,7 +54,7 @@
 
 原因：在 C++ 骨架阶段，仓库已有 `include/` 作为公共头文件根目录，`include/agent` 能区分公共接口和内部实现。
 
-后续判断：agent 主实现切到 TypeScript 后，公共边界不再用 C++ header 承载。迁移前头文件已收进 `agent/native-cpp/include/agent`，只作为参考。
+后续判断：agent 主实现切到 TypeScript 后，公共边界不再用 C++ header 承载。旧 C++ 骨架参考已在 TypeScript 分层稳定后移除。
 
 ## ADR-0008: agent 成为根目录 TypeScript 子项目
 
@@ -66,7 +66,7 @@
 
 - 根目录 `agent/` 是唯一 agent 工作区。
 - TypeScript 主源码放 `agent/src/`。
-- 旧 C++ 骨架收进 `agent/native-cpp/` 作为迁移参考。
+- 旧 C++ 骨架不再保留为参考入口。
 - 后端转接契约放 `agent/src/bridge/`。
 - 后端 `src/` / `include/` 不再新增 agent 专属代码。
 

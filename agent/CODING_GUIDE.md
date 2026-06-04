@@ -14,7 +14,7 @@ Agent 任务先读 `agent/READ_ME_FIRST.md`。涉及后端逻辑时，先读根�
 - 工具声明和调用协议放 `src/tools/`。
 - 模型厂商和 SSE/HTTP 细节放 `src/providers/`。
 - 和现有 Atrium 房间、对话、MySQL、WebSocket 交互的边界放 `src/bridge/`。
-- `native-cpp/` 只保存迁移参考，不新增业务能力。
+- 旧 C++ 骨架已移除；不要从旧结构恢复新功能入口。
 
 ## 依赖方向
 

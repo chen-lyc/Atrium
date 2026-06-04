@@ -22,7 +22,7 @@ Agent 开发默认阅读顺序：
 
 - Agent 实现、文档和测试入口放在根目录 `agent/`。
 - TypeScript 主源码放在 `agent/src/`。
-- 迁移前 C++ 骨架只保留在 `agent/native-cpp/` 作为参考，不继续扩展。
+- 旧 C++ 骨架已移除；TypeScript 是 agent 的唯一实现入口。
 - Agent 开发必须结构清晰、框架分明。新能力先判断归属层，再写代码。
 - 初期不改后端 `Makefile`，不接主服务，不改变现有聊天行为。
 - 铁律：开发 agent 时禁止修改现有后端代码。
