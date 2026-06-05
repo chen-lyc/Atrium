@@ -130,7 +130,7 @@ CREATE TABLE messages (
 
   PRIMARY KEY (id),
   KEY idx_conv_time_id (conversation_id, send_time_ms, id),
-  KEY idx_send_id (send_id)
+  UNIQUE KEY uk_send_client_msg (send_id, client_message_id)
 
   -- APP FK: messages.conversation_id -> conversations.id
   -- APP FK: messages.send_id -> participants.id

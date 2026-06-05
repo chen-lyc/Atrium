@@ -2,10 +2,10 @@
 miss_demo.out
 demos/
 
-# 编译产物
+# 构建产物 / 本地依赖 / 缓存
 build/
 static/dist/
-static/node_modules/
+node_modules/
 .cache/
 
 # 运行时日志

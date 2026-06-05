@@ -1344,7 +1344,9 @@ MysqlPool::QueryResult insert_message(chatdb::Message &msg, uint64_t &message_id
     static const string sql =
         "INSERT INTO messages (conversation_id, send_id, type, content, send_time_ms, "
         "client_message_id) VALUES (?, ?, ?, ?, ?, ?)";
-    MysqlPool::MysqlParams params{msg.conversation_id, msg.send_id, msg.type, msg.content, msg.send_time_ms, (msg.client_message_id.has_value() ? msg.client_message_id.value() : "")};
+    MysqlPool::MysqlParams params{msg.conversation_id, msg.send_id, msg.type, msg.content, msg.send_time_ms, nullptr};
+    if (msg.client_message_id.has_value())
+        params[5] = msg.client_message_id.value();
     return MysqlPool::getInstance().executeQuery(sql, params, &message_id);
 }
 
@@ -1352,7 +1354,9 @@ MysqlPool::QueryResult insert_hidden_message(chatdb::Message &msg, uint64_t dele
     static const string sql =
         "INSERT INTO messages (conversation_id, send_id, type, content, send_time_ms, "
         "client_message_id, deleted_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)";
-    MysqlPool::MysqlParams params{msg.conversation_id, msg.send_id, msg.type, msg.content, msg.send_time_ms, (msg.client_message_id.has_value() ? msg.client_message_id.value() : ""), deleted_at_ms};
+    MysqlPool::MysqlParams params{msg.conversation_id, msg.send_id, msg.type, msg.content, msg.send_time_ms, nullptr, deleted_at_ms};
+    if (msg.client_message_id.has_value())
+        params[5] = msg.client_message_id.value();
     return MysqlPool::getInstance().executeQuery(sql, params, &message_id);
 }
 

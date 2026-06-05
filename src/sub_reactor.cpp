@@ -539,6 +539,10 @@ void Reactor::process(Connection &conn) {
                             sendError(conn, WS_PROTOCOLERROR);
                             return false;
                         }
+                        if (ai_members.empty()) {
+                            LOG_INFO("no AI members configured for conversation_id=%llu, skipping AI reply", conversation_id);
+                        }
+
                         reactor_to_fds = ConnRoute::getInstance().queryByRoom(room_id);
                         if (reactor_to_fds.empty()) {
                             LOG_WARN("ws empty reactor fds, room_id=%llu", room_id);
@@ -553,6 +557,10 @@ void Reactor::process(Connection &conn) {
                             in["data"]["content"],
                             now_ms(),
                             in["data"]["client_message_id"]};
+                        if (!msg.client_message_id.has_value() || msg.client_message_id->empty()) {
+                            sendError(conn, WS_PROTOCOLERROR);
+                            return false;
+                        }
                         if (msg.type >= static_cast<int>(chatdb::MessageType::SYSTEM) || msg.type < static_cast<int>(chatdb::MessageType::TEXT)) {
                             LOG_WARN("invalid message type=%d, expected TEXT(1)/IMAGE(2)/FILE(3), conv=%llu",
                                 msg.type,
@@ -592,7 +600,13 @@ void Reactor::process(Connection &conn) {
                             const char *api_key_ptr = nullptr;
                             if (m.provider == "deepseek") api_key_ptr = std::getenv("DEEPSEEK_API_KEY");
                             else if (m.provider == "qwen") api_key_ptr = std::getenv("QWEN_API_KEY");
-                            if (!api_key_ptr || !api_key_ptr[0]) continue;
+                            if (!api_key_ptr || !api_key_ptr[0]) {
+                                LOG_WARN("AI skipped: %s_API_KEY not set, conversation_id=%llu ai_id=%llu",
+                                    m.provider.c_str(),
+                                    conversation_id,
+                                    m.ai_id);
+                                continue;
+                            }
 
                             auto launcher = [reactor_ptr = this, conversation_id = conversation_id, user_id = conn.user_id, room_id = room_id, ai_id = m.ai_id, provider = m.provider, ai_model = m.model](uint64_t trigger_message_id, uint64_t context_until_message_id) mutable {
                                 chatdb::Message ai_msg{
