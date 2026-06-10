@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -g -O0 -std=c++20 -Wall -Wno-sign-compare -I include -I third_party
+CXXFLAGS = -g -O0 -std=c++20 -Wall -Wno-sign-compare -I include -I third_party -I gen
 DEPFLAGS = -MMD -MP
 
 # ASan: make ASAN=1 开启，默认关闭（真实性能）
@@ -10,7 +10,7 @@ endif
 
 TARGET = build/server.out
 
-SRCS = src/server.cpp src/message.pb.cc src/server_utils.cpp src/timerheap.cpp \
+SRCS = src/server.cpp gen/message.pb.cc src/server_utils.cpp src/timerheap.cpp \
 	   src/http_codec.cpp src/logger.cpp src/mysql_pool.cpp src/redis_pool.cpp \
 	   src/protobuf_codec.cpp src/utils.cpp src/connection_route.cpp src/http_route.cpp src/sub_reactor.cpp src/memory_pool.cpp src/ai_client.cpp src/deepseek_client.cpp \
 	   src/qwen_client.cpp \
@@ -18,6 +18,7 @@ SRCS = src/server.cpp src/message.pb.cc src/server_utils.cpp src/timerheap.cpp \
 
 OBJS = $(SRCS:src/%.cpp=build/%.o)
 OBJS := $(OBJS:src/%.cc=build/%.o)
+OBJS := $(OBJS:gen/%.cc=build/%.o)
 DEPS = $(OBJS:.o=.d)
 
 LIBS = -lprotobuf -lmysqlclient -lhiredis -lpthread -lcrypto -lmysqlcppconn -lssl $(ASAN_LIB)
@@ -29,6 +30,9 @@ build/%.o: src/%.cpp Makefile | build
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
 
 build/%.o: src/%.cc Makefile | build
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
+
+build/%.o: gen/%.cc Makefile | build
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
 
 build:

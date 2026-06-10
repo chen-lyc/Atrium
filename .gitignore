@@ -4,6 +4,8 @@ demos/
 
 # 构建产物 / 本地依赖 / 缓存
 build/
+gen/
+compile_commands.json
 static/dist/
 node_modules/
 .cache/

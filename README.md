@@ -170,11 +170,10 @@ npm --prefix static install
 npm --prefix static run build
 
 # 重新生成 protobuf 文件（跨 protoc 版本兼容）
-protoc --cpp_out=include message.proto
-mv include/message.pb.cc src/
+protoc --cpp_out=gen message.proto
 
-# 编译并启动后端
-make
+# 编译（首次 clone 建议用 bear -- make，生成 IDE 语法索引供跳转/补全使用）
+bear -- make
 ./build/server.out 127.0.0.1 8080 9090
 ```
 
