@@ -1,6 +1,11 @@
 import type { AgentId, ConversationId, MessageId } from "../core/agentTypes.ts";
 import { ZERO_ID, isZeroId } from "../core/agentTypes.ts";
-import { contextWriteFailure, contextWriteSuccess, type ConversationContextWriteResult } from "./conversationContext.ts";
+import {
+  contextWriteFailure,
+  contextWriteSuccess,
+  type ConversationContextWriteResult,
+  type ConversationPhase,
+} from "./conversationContext.ts";
 
 export interface AgentStanceHistoryRecord {
   id: string;
@@ -8,8 +13,13 @@ export interface AgentStanceHistoryRecord {
   agentId: AgentId;
   triggerMessageId: MessageId;
   responseMessageId: MessageId;
+  phaseAtGeneration?: ConversationPhase;
+  contextUntilMessageId: MessageId;
+  inputStanceRecordIds: string[];
   content: string;
   createdAtMs: number;
+  excludedAtMs?: number;
+  exclusionReason?: string;
 }
 
 export interface AgentStanceHistory {
@@ -24,13 +34,30 @@ export interface AppendAgentStanceHistoryRecord {
   agentId: AgentId;
   triggerMessageId: MessageId;
   responseMessageId?: MessageId;
+  phaseAtGeneration?: ConversationPhase;
+  contextUntilMessageId?: MessageId;
+  inputStanceRecordIds?: string[];
   content: string;
   createdAtMs: number;
+}
+
+export interface PurgeAgentStanceHistoryBySourceMessageRequest {
+  conversationId: ConversationId;
+  rootMessageId: MessageId;
+  reason: string;
+  excludedAtMs: number;
+}
+
+export interface AgentStanceHistoryPurgeResult extends ConversationContextWriteResult {
+  affectedRecordIds: string[];
 }
 
 export interface AgentStanceHistoryStore {
   load(conversationId: ConversationId, agentId: AgentId): AgentStanceHistory | undefined | Promise<AgentStanceHistory | undefined>;
   append(record: AppendAgentStanceHistoryRecord): ConversationContextWriteResult | Promise<ConversationContextWriteResult>;
+  purgeBySourceMessage(
+    request: PurgeAgentStanceHistoryBySourceMessageRequest,
+  ): AgentStanceHistoryPurgeResult | Promise<AgentStanceHistoryPurgeResult>;
 }
 
 export class NullAgentStanceHistoryStore implements AgentStanceHistoryStore {
@@ -40,6 +67,10 @@ export class NullAgentStanceHistoryStore implements AgentStanceHistoryStore {
 
   append(_record: AppendAgentStanceHistoryRecord): ConversationContextWriteResult {
     return contextWriteFailure("null stance history store is read-only");
+  }
+
+  purgeBySourceMessage(_request: PurgeAgentStanceHistoryBySourceMessageRequest): AgentStanceHistoryPurgeResult {
+    return { ...contextWriteFailure("null stance history store is read-only"), affectedRecordIds: [] };
   }
 }
 
@@ -79,12 +110,64 @@ export class InMemoryAgentStanceHistoryStore implements AgentStanceHistoryStore 
       agentId: record.agentId,
       triggerMessageId: record.triggerMessageId,
       responseMessageId: record.responseMessageId ?? ZERO_ID,
+      ...(record.phaseAtGeneration ? { phaseAtGeneration: record.phaseAtGeneration } : {}),
+      contextUntilMessageId: record.contextUntilMessageId ?? ZERO_ID,
+      inputStanceRecordIds: [...(record.inputStanceRecordIds ?? [])],
       content: record.content,
       createdAtMs: record.createdAtMs,
     });
     next.updatedAtMs = record.createdAtMs;
     this.#histories.set(key, next);
     return contextWriteSuccess();
+  }
+
+  purgeBySourceMessage(request: PurgeAgentStanceHistoryBySourceMessageRequest): AgentStanceHistoryPurgeResult {
+    if (isZeroId(request.conversationId)) {
+      return { ...contextWriteFailure("stance history purge missing conversation_id"), affectedRecordIds: [] };
+    }
+    if (isZeroId(request.rootMessageId)) {
+      return { ...contextWriteFailure("stance history purge missing root message id"), affectedRecordIds: [] };
+    }
+    if (request.reason.length === 0) {
+      return { ...contextWriteFailure("stance history purge missing reason"), affectedRecordIds: [] };
+    }
+
+    const affectedRecordIds = new Set<string>();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [key, history] of this.#histories.entries()) {
+        if (history.conversationId !== request.conversationId) {
+          continue;
+        }
+
+        const next = structuredClone(history);
+        for (const record of next.records) {
+          if (record.excludedAtMs !== undefined) {
+            continue;
+          }
+
+          const directlyAffected =
+            record.triggerMessageId === request.rootMessageId || record.responseMessageId === request.rootMessageId;
+          const derivedFromAffected = record.inputStanceRecordIds.some((recordId) => affectedRecordIds.has(recordId));
+          if (!directlyAffected && !derivedFromAffected) {
+            continue;
+          }
+
+          record.excludedAtMs = request.excludedAtMs;
+          record.exclusionReason = request.reason;
+          affectedRecordIds.add(record.id);
+          next.updatedAtMs = request.excludedAtMs;
+          changed = true;
+        }
+
+        if (changed) {
+          this.#histories.set(key, next);
+        }
+      }
+    }
+
+    return { ...contextWriteSuccess(), affectedRecordIds: [...affectedRecordIds] };
   }
 
   clear(): void {
@@ -94,6 +177,10 @@ export class InMemoryAgentStanceHistoryStore implements AgentStanceHistoryStore 
   size(): number {
     return this.#histories.size;
   }
+}
+
+export function activeAgentStanceHistoryRecords(history: AgentStanceHistory | undefined): AgentStanceHistoryRecord[] {
+  return (history?.records ?? []).filter((record) => record.excludedAtMs === undefined);
 }
 
 function historyKey(conversationId: ConversationId, agentId: AgentId): string {

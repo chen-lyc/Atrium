@@ -18,6 +18,9 @@ export interface BackendAgentTurnRefPayload {
   trigger_message_id: unknown;
   context_until_message_id: unknown;
   user_id: unknown;
+  owner_user_id: unknown;
+  phase_at_dispatch?: unknown;
+  context_updated_at_ms_at_dispatch?: unknown;
 }
 
 export interface BackendAgentProfilePayload {
@@ -85,6 +88,11 @@ export function normalizeBackendTurnRef(payload: BackendAgentTurnRefPayload): At
     triggerMessageId: normalizeId(payload.trigger_message_id),
     contextUntilMessageId: normalizeId(payload.context_until_message_id),
     userId: normalizeId(payload.user_id),
+    ownerUserId: normalizeId(payload.owner_user_id),
+    ...(payload.phase_at_dispatch ? { phaseAtDispatch: String(payload.phase_at_dispatch) } : {}),
+    ...(payload.context_updated_at_ms_at_dispatch !== undefined
+      ? { contextUpdatedAtMsAtDispatch: normalizeOptionalSafeNumber(payload.context_updated_at_ms_at_dispatch) }
+      : {}),
   };
 }
 
@@ -105,8 +113,13 @@ export function normalizeBackendTurnContext(payload: BackendTurnContextPayload):
     roomId: normalizeId(payload.room_id),
     conversationId: normalizeId(payload.conversation_id),
     userId: normalizeId(payload.user_id),
+    ownerUserId: normalizeId(payload.owner_user_id),
     triggerMessageId: normalizeId(payload.trigger_message_id),
     contextUntilMessageId: normalizeId(payload.context_until_message_id),
+    ...(payload.phase_at_dispatch ? { phaseAtDispatch: String(payload.phase_at_dispatch) } : {}),
+    ...(payload.context_updated_at_ms_at_dispatch !== undefined
+      ? { contextUpdatedAtMsAtDispatch: normalizeOptionalSafeNumber(payload.context_updated_at_ms_at_dispatch) }
+      : {}),
     source: normalizeTurnSource(payload.source),
     messages: payload.messages.map(normalizeBackendMessage),
   };
@@ -136,6 +149,22 @@ function normalizeTurnSource(value: unknown): TurnSourceType {
     return value;
   }
   throw new Error(`unsupported turn source: ${String(value)}`);
+}
+
+function normalizeOptionalSafeNumber(value: unknown): number {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    return value;
+  }
+  if (typeof value === "bigint" && value >= 0n && value <= BigInt(Number.MAX_SAFE_INTEGER)) {
+    return Number(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+  throw new Error(`unsupported safe number: ${String(value)}`);
 }
 
 function normalizeThinkingAdapter(value: unknown): ThinkingAdapter | undefined {

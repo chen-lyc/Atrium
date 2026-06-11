@@ -13,6 +13,9 @@ test("backend transition normalizes snake_case payloads and numeric ids", () => 
       trigger_message_id: 3n,
       context_until_message_id: "4",
       user_id: 5,
+      owner_user_id: "6",
+      phase_at_dispatch: "divergence",
+      context_updated_at_ms_at_dispatch: "1000",
     },
     agent: {
       id: "8",
@@ -27,6 +30,9 @@ test("backend transition normalizes snake_case payloads and numeric ids", () => 
       trigger_message_id: 3n,
       context_until_message_id: "4",
       user_id: 5,
+      owner_user_id: "6",
+      phase_at_dispatch: "divergence",
+      context_updated_at_ms_at_dispatch: 1000,
       source: "user_message",
       messages: [
         {
@@ -43,7 +49,13 @@ test("backend transition normalizes snake_case payloads and numeric ids", () => 
   });
 
   assert.equal(normalized.ref.triggerMessageId, "3");
+  assert.equal(normalized.ref.ownerUserId, "6");
+  assert.equal(normalized.ref.phaseAtDispatch, "divergence");
+  assert.equal(normalized.ref.contextUpdatedAtMsAtDispatch, 1000);
   assert.equal(normalized.agent.displayName, "Architect");
   assert.equal(normalized.agent.thinkingAdapter, ThinkingAdapter.Counterexample);
+  assert.equal(normalized.turn.ownerUserId, "6");
+  assert.equal(normalized.turn.phaseAtDispatch, "divergence");
+  assert.equal(normalized.turn.contextUpdatedAtMsAtDispatch, 1000);
   assert.equal(normalized.turn.messages[0]?.sender.displayName, "User");
 });

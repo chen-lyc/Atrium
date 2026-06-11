@@ -112,13 +112,14 @@ AgentRuntime
 
 后端不是给 agent “业务大脑”，而是给 agent 运行一轮所需的事实和能力：
 
-1. 当前 turn 的基本信息：`room_id`、`conversation_id`、`trigger_message_id`、`context_until_message_id`、`user_id`。
+1. 当前 turn 的基本信息：`room_id`、`conversation_id`、`trigger_message_id`、`context_until_message_id`、`user_id`、`owner_user_id`。
 2. 当前 AI 的身份：`ai_id`、`provider`、`model`、`display_name`、`thinking_adapter`。
 3. 最近消息窗口：触发消息之前到 `context_until_message_id` 的可见消息。
 4. 对话轴共享白板：按 `conversation_id` 读取 `ConversationContextState`。
 5. 主体轴私有履历：按 `(conversation_id, ai_id)` 读取当前 AI 自己的 `AgentStanceHistory`。
 6. provider 调用能力：后续用 `ModelGateway` 包装 DeepSeek / Qwen 等模型。
 7. commit 能力：把 agent 的 `reply` / `no_reply` / `failed` 映射回现有 hidden message、落库、广播、错误帧语义。
+8. provenance / lifecycle 能力：owner 标记某条 source message 有问题时，后端必须能级联排除它直接或间接派生的私有履历与白板锚点。
 
 ### Agent 返回给后端的东西
 
@@ -229,7 +230,10 @@ export interface BackendAgentRunRequestPayload {
     "conversation_id": "42",
     "trigger_message_id": "1001",
     "context_until_message_id": "1001",
-    "user_id": "7"
+    "user_id": "7",
+    "owner_user_id": "7",
+    "phase_at_dispatch": "divergence",
+    "context_updated_at_ms_at_dispatch": 1710000000000
   },
   "agent": {
     "id": "12",
@@ -245,6 +249,9 @@ export interface BackendAgentRunRequestPayload {
     "trigger_message_id": "1001",
     "context_until_message_id": "1001",
     "user_id": "7",
+    "owner_user_id": "7",
+    "phase_at_dispatch": "divergence",
+    "context_updated_at_ms_at_dispatch": 1710000000000,
     "source": "user_message",
     "messages": [
       {
@@ -255,6 +262,15 @@ export interface BackendAgentRunRequestPayload {
           "display_name": "lyc"
         },
         "content": "我们继续讨论 agent 上下文工程。"
+      },
+      {
+        "id": "999",
+        "sender": {
+          "id": "12",
+          "kind": "agent",
+          "display_name": "DeepSeek"
+        },
+        "content": "上一轮我认为 bridge 应该先定协议。"
       }
     ]
   }
@@ -270,12 +286,20 @@ export interface BackendAgentRunRequestPayload {
 | `ref.trigger_message_id` | 触发本轮 AI 的消息 | prompt 中最后的当前消息 |
 | `ref.context_until_message_id` | 本轮允许看到的最后消息 | 防止同轮 AI 互相锚定 |
 | `ref.user_id` | 触发用户 | 权限、审计、owner 操作扩展 |
+| `ref.owner_user_id` | 当前 conversation 的 owner | prompt 历史消息署名保真，区分 owner 与其他人类成员 |
+| `ref.phase_at_dispatch` | 任务派发时的阶段 | phase watermark；写回时识别旧阶段任务 |
+| `ref.context_updated_at_ms_at_dispatch` | 派发时 context 更新时间 | draft/proposal 与履历写回的过期检查 |
+| `turn.owner_user_id` | 同 `ref.owner_user_id` | runtime 渲染最近消息窗口时使用 |
 | `agent.id` | AI 成员 ID | 读取当前 AI 自己的主体轴 |
 | `agent.provider` / `agent.model` | AI 配置 | provider adapter |
 | `agent.thinking_adapter` | AI 思维取向 | prompt 静态层 |
 | `turn.messages` | 后端最近消息窗口 | prompt 原文窗口 |
 
 `context_until_message_id` 很重要。多 AI 同一轮独立思考时，AI B 不应该看到 AI A 在同一触发消息之后刚刚生成的内容。
+
+`owner_user_id` 也很重要。TS runtime 会把历史消息渲染为 `Owner human #id`、`Human member #id`、`AI member #id` 三类署名；其他参与者消息必须保持在 user 侧他者发言位置，不能进入当前 AI 的 assistant 续写位。
+
+`phase_at_dispatch` / `context_updated_at_ms_at_dispatch` 是 lifecycle guard。阶段切换后仍在途的 AI 任务不能静默把旧阶段产物写成当前阶段履历；draft/proposal 也必须带 `base_phase` / `base_context_updated_at_ms`，owner 确认时若基线过期，需要提示或重新确认。
 
 ## 6. Agent -> Backend 返回契约
 
@@ -323,6 +347,7 @@ C++ 处理伪代码：
 if (result.response.decision == AgentDecision::NoReply) {
     // 等价于当前 AiClientStatus::NoReply：
     // 不广播可见消息，不把 hidden message complete 成空消息。
+    // 不追加主体轴履历，不触发后续 AI 接力。
     return;
 }
 
@@ -343,7 +368,8 @@ if (result.response.decision == AgentDecision::Failed) {
 
 - 如果 TS runtime 配了 `AgentStanceHistoryStore` 后端 adapter，则 agent 在 `runTurn()` 内部已经调用 append，C++ commit 阶段不要再追加。
 - 如果第一版没有 TS store adapter，后端可以在 reply commit 后追加一次作为过渡方案。
-- 如果要记录准确的 `response_message_id`，接入前需要让 agent 请求里携带 hidden AI message id，或者让后端在 commit 后补齐。当前 TS runtime 的 append 只保证有 `triggerMessageId` 和内容。
+- 如果要记录准确的 `response_message_id`，接入前需要让 agent 请求里携带 hidden AI message id，或者让后端在 commit 后补齐。
+- 新协议下主体轴 append 还必须携带 `phase_at_generation`、`context_until_message_id`、`input_stance_record_ids`。只按 `trigger_message_id` 能清第一跳，不能清掉由第(4)段回灌污染出的二代履历。
 
 ## 7. 后端需要实现的本地 C++ 函数
 
@@ -374,6 +400,7 @@ enum class AgentContextEntryKind : uint8_t {
     Risk = 5,
     KeyFact = 6,
     ProgressNote = 7,
+    CurrentDirection = 8,
 };
 
 enum class AgentContextEntryStatus : uint8_t {
@@ -383,9 +410,16 @@ enum class AgentContextEntryStatus : uint8_t {
     Rejected = 3,
 };
 
+enum class AgentContextSourceStatus : uint8_t {
+    Active = 0,
+    Stale = 1,
+    Purged = 2,
+};
+
 struct AgentContextSource {
     uint64_t message_id = 0;
     std::string note;
+    AgentContextSourceStatus status = AgentContextSourceStatus::Active;
 };
 
 struct AgentRejectedOption {
@@ -422,8 +456,13 @@ struct AgentStanceRecord {
     uint64_t ai_id = 0;
     uint64_t trigger_message_id = 0;
     uint64_t response_message_id = 0;
+    AgentConversationPhase phase_at_generation = AgentConversationPhase::Divergence;
+    uint64_t context_until_message_id = 0;
+    std::vector<uint64_t> input_stance_record_ids;
     std::string content;
     uint64_t created_at_ms = 0;
+    std::optional<uint64_t> excluded_at_ms;
+    std::string exclusion_reason;
 };
 ```
 
@@ -470,8 +509,20 @@ MysqlPool::QueryResult append_agent_stance_history(
     uint64_t ai_id,
     uint64_t trigger_message_id,
     uint64_t response_message_id,
+    AgentConversationPhase phase_at_generation,
+    uint64_t context_until_message_id,
+    const std::vector<uint64_t>& input_stance_record_ids,
     const std::string& content,
     uint64_t created_at_ms
+);
+
+MysqlPool::QueryResult purge_agent_stance_history_by_source_message(
+    uint64_t conversation_id,
+    uint64_t root_message_id,
+    const std::string& reason,
+    uint64_t owner_user_id,
+    uint64_t excluded_at_ms,
+    std::vector<uint64_t>& affected_record_ids
 );
 ```
 
@@ -481,6 +532,8 @@ MysqlPool::QueryResult append_agent_stance_history(
 - `insert_agent_rejected_option()` 只能 owner 触发，并且 `option` / `reason` / `premise` 必须同时写。
 - `load_agent_stance_history()` 必须同时带 `conversation_id + ai_id`，禁止只按 `conversation_id` 查。
 - AI A 的主体轴不能传给 AI B。
+- `purge_agent_stance_history_by_source_message()` 只能 owner 触发；实现语义是设置排除墓碑并从后续 prompt 注入排除，不是默认物理删除。
+- `append_agent_stance_history()` 只在 reply 落库成功后调用；`no_reply`、failed、空内容都不能追加。
 
 ## 8. Agent 如何调用后端实现的函数
 
@@ -497,6 +550,7 @@ export interface ConversationContextStore {
 export interface AgentStanceHistoryStore {
   load(conversationId: ConversationId, agentId: AgentId): AgentStanceHistory | undefined | Promise<AgentStanceHistory | undefined>;
   append(record: AppendAgentStanceHistoryRecord): ConversationContextWriteResult | Promise<ConversationContextWriteResult>;
+  purgeBySourceMessage(request: PurgeAgentStanceHistoryBySourceMessageRequest): AgentStanceHistoryPurgeResult | Promise<AgentStanceHistoryPurgeResult>;
 }
 ```
 
@@ -525,6 +579,10 @@ class BackendStanceHistoryStore implements AgentStanceHistoryStore {
   async append(record: AppendAgentStanceHistoryRecord) {
     return postJson("/internal/agent/stance/append", toBackendStancePayload(record));
   }
+
+  async purgeBySourceMessage(request: PurgeAgentStanceHistoryBySourceMessageRequest) {
+    return postJson("/internal/agent/stance/purge-by-source-message", toBackendStancePurgePayload(request));
+  }
 }
 ```
 
@@ -545,6 +603,14 @@ POST /internal/agent/stance/append
   -> parse JSON
   -> append_agent_stance_history(...)
   -> return JSON
+
+POST /internal/agent/stance/purge-by-source-message
+  -> verify owner
+  -> parse JSON
+  -> purge_agent_stance_history_by_source_message(...)
+  -> mark related conversation_context_entry_sources stale/purged
+  -> write audit log
+  -> return affected stance record ids / affected whiteboard entry ids
 ```
 
 这样 TS 看到的是普通 TypeScript interface，C++ 看到的是普通 C++ repository 函数，中间只靠 JSON 协议连接。
@@ -602,12 +668,13 @@ class AgentClient {
 
 当前主线只做 Atrium 双轴 context，不做泛化长期 memory。
 
-需要四张表：
+需要五张表：
 
 - `conversation_context_states`：每个 conversation 一行，保存 summary、phase、摘要进度。
-- `conversation_context_entries`：目标、约束、决策、否定方案、开放问题、风险、关键事实、进展。
+- `conversation_context_entries`：目标、约束、决策、当前方向、否定方案、开放问题、风险、关键事实、进展。
 - `conversation_context_entry_sources`：条目来源消息锚点。
 - `agent_stance_history_records`：每个 AI 在每场 conversation 内自己的私有履历。
+- `agent_stance_history_lineage`：履历之间的派生链，用于 owner 溯源清除。
 
 建议 schema：
 
@@ -627,7 +694,7 @@ COMMENT = '单个 conversation 的长期上下文摘要状态';
 CREATE TABLE conversation_context_entries (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   conversation_id BIGINT UNSIGNED NOT NULL COMMENT '应用层外键 -> conversations.id',
-  kind TINYINT UNSIGNED NOT NULL COMMENT '0=GOAL, 1=CONSTRAINT, 2=DECISION, 3=REJECTED_OPTION, 4=OPEN_QUESTION, 5=RISK, 6=KEY_FACT, 7=PROGRESS_NOTE',
+  kind TINYINT UNSIGNED NOT NULL COMMENT '0=GOAL, 1=CONSTRAINT, 2=DECISION, 3=REJECTED_OPTION, 4=OPEN_QUESTION, 5=RISK, 6=KEY_FACT, 7=PROGRESS_NOTE, 8=CURRENT_DIRECTION',
   status TINYINT UNSIGNED NOT NULL COMMENT '0=ACTIVE, 1=SUPERSEDED, 2=RESOLVED, 3=REJECTED',
   content TEXT NOT NULL,
   rejected_option TEXT DEFAULT NULL COMMENT 'kind=REJECTED_OPTION 时必填',
@@ -648,9 +715,12 @@ CREATE TABLE conversation_context_entry_sources (
   entry_id BIGINT UNSIGNED NOT NULL COMMENT '应用层外键 -> conversation_context_entries.id',
   message_id BIGINT UNSIGNED NOT NULL COMMENT '应用层外键 -> messages.id',
   note VARCHAR(255) DEFAULT NULL,
+  status TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '0=ACTIVE, 1=STALE, 2=PURGED',
+  updated_at_ms BIGINT UNSIGNED NOT NULL DEFAULT 0,
 
   PRIMARY KEY (entry_id, message_id),
-  KEY idx_context_source_message (message_id)
+  KEY idx_context_source_message (message_id),
+  KEY idx_context_source_status (status, message_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4
 COMMENT = 'conversation context 条目的来源消息锚点';
 
@@ -660,15 +730,29 @@ CREATE TABLE agent_stance_history_records (
   ai_id BIGINT UNSIGNED NOT NULL COMMENT '应用层外键 -> ai.id / conversation_ai_members.ai_id',
   trigger_message_id BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '触发本轮 AI 发言的消息',
   response_message_id BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'AI 回复落库后的消息 id',
+  phase_at_generation TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '0=发散期, 1=收敛执行期, 2=撞墙期',
+  context_until_message_id BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '本轮 prompt 可见消息水位',
   content MEDIUMTEXT NOT NULL COMMENT '第一版存该 AI 本轮发言原文或简单摘要',
   created_at_ms BIGINT UNSIGNED NOT NULL,
+  excluded_at_ms BIGINT UNSIGNED DEFAULT NULL COMMENT 'owner 溯源清除后的 prompt 注入排除墓碑',
+  exclusion_reason VARCHAR(255) DEFAULT NULL,
 
   PRIMARY KEY (id),
-  KEY idx_stance_history_agent_conversation (conversation_id, ai_id, id),
+  KEY idx_stance_history_agent_conversation (conversation_id, ai_id, excluded_at_ms, id),
   KEY idx_stance_history_trigger (trigger_message_id),
-  KEY idx_stance_history_response (response_message_id)
+  KEY idx_stance_history_response (response_message_id),
+  KEY idx_stance_history_context_until (context_until_message_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4
 COMMENT = '每个 AI 在单场 conversation 内的私有立场履历';
+
+CREATE TABLE agent_stance_history_lineage (
+  record_id BIGINT UNSIGNED NOT NULL COMMENT '应用层外键 -> agent_stance_history_records.id',
+  input_record_id BIGINT UNSIGNED NOT NULL COMMENT '本轮第(4)段实际注入过的上游履历 id',
+
+  PRIMARY KEY (record_id, input_record_id),
+  KEY idx_stance_lineage_input (input_record_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4
+COMMENT = '私有履历派生链,用于 owner 溯源清除二代及后代污染';
 ```
 
 第一版 `save_agent_conversation_context()` 可以整体替换 entries：
@@ -676,7 +760,7 @@ COMMENT = '每个 AI 在单场 conversation 内的私有立场履历';
 1. upsert `conversation_context_states`。
 2. soft delete 该 conversation 原有 entries。
 3. insert 新 entries。
-4. insert 每个 entry 的 sources。
+4. insert 每个 entry 的 sources,并保留/更新 source status。
 
 后续如果担心并发覆盖，再做 patch 级别更新。
 
@@ -692,6 +776,7 @@ conversation_id = 42
 trigger_message_id = 1001
 context_until_message_id = 1001
 user_id = 7
+owner_user_id = 7
 ai_id = 12
 hidden_ai_message_id = 1002
 ```
@@ -721,7 +806,7 @@ normalizeBackendRunRequest(payload)
   -> appendStaticAgentIdentityToPrompt(...)
   -> ConversationContextStore.load(conversation_id)
   -> appendConversationContextToPrompt(...)
-  -> append recent messages
+  -> append recent messages with signed owner/human/AI member labels
   -> AgentStanceHistoryStore.load(conversation_id, ai_id)
   -> appendPrivateStanceToPrompt(...)
   -> append current trigger message
@@ -778,7 +863,8 @@ return;
 - 不要让 `SubReactor` 直接拼 prompt。
 - 不要让 runtime 直接认识 MySQL、Redis、WebSocket、Reactor。
 - 不要把 AI A 的主体轴历史传给 AI B。
-- 不要让 AI 自动写 owner-only 的决策区、被否方案或阶段切换。
+- 不要匿名化或合并消息署名；后端必须给出 `owner_user_id`，TS prompt 才能区分 owner、其他人类和具体 AI 成员。
+- 不要让 AI 自动写 owner-only 的决策区、当前方向、被否方案或阶段切换。
 - 不要把泛化长期 `MemoryStore` 当成当前 Atrium 双轴 context 主线。
 - 不要让 `<NO_REPLY>` 产生可见空消息。
 

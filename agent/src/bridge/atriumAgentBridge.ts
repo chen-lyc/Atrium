@@ -6,10 +6,12 @@ export interface AtriumTurnRef {
   triggerMessageId: MessageId;
   contextUntilMessageId: MessageId;
   userId: UserId;
+  ownerUserId: UserId;
+  phaseAtDispatch?: string;
+  contextUpdatedAtMsAtDispatch?: number;
 }
 
 export interface AtriumAgentBridge {
   loadTurnContext(ref: AtriumTurnRef): TurnContext | Promise<TurnContext>;
   commitResponse(ref: AtriumTurnRef, agent: AgentProfile, response: AgentResponse): void | Promise<void>;
 }
-

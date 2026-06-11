@@ -1,6 +1,6 @@
 import type { AgentProfile, ThinkingAdapter } from "../core/agentTypes.ts";
 import { ThinkingAdapter as ThinkingAdapterValue } from "../core/agentTypes.ts";
-import type { AgentStanceHistory } from "../context/stanceHistory.ts";
+import { activeAgentStanceHistoryRecords, type AgentStanceHistory } from "../context/stanceHistory.ts";
 import { entriesByKind, type ConversationContextState } from "../context/conversationContext.ts";
 import { ConversationContextEntryKind, ConversationPhase } from "../context/conversationContext.ts";
 import { PromptPlan } from "./promptPlan.ts";
@@ -36,7 +36,7 @@ export function buildPrivateStanceBlock(
   lines.push("Use this only as evidence of prior judgments, concerns, and reasons. Do not turn it into a persona, role, or obligation to repeat an old angle.");
   lines.push("First decide whether this turn deserves a contribution. If not, <NO_REPLY> remains valid; the thinking adapter only shapes a reply after that decision.");
 
-  const records = history?.records ?? [];
+  const records = activeAgentStanceHistoryRecords(history);
   if (records.length > 0) {
     lines.push("", "Your prior stance in this conversation:");
     for (const record of records.slice(-options.maxRecords)) {
@@ -58,6 +58,10 @@ export function buildReinstantiationInstruction(agent: AgentProfile, state: Conv
   const adapter = agent.thinkingAdapter ?? ThinkingAdapterValue.Default;
   const custom = adapter === ThinkingAdapterValue.Custom ? agent.customThinkingInstruction : undefined;
 
+  if (phase === ConversationPhase.Divergence) {
+    return buildDivergenceInstruction(adapter, focus, custom);
+  }
+
   if (custom && custom.length > 0) {
     return `${phaseLead(phase)} If a reply is warranted, apply your custom thinking instruction to "${focus}". Custom instruction: ${custom}`;
   }
@@ -75,7 +79,7 @@ function selectPhaseFocus(state: ConversationContextState | undefined): string {
   }
 
   if (state.phase === ConversationPhase.ConvergenceExecution) {
-    return firstEntryContent(state, ConversationContextEntryKind.Decision) ?? firstEntryContent(state, ConversationContextEntryKind.ProgressNote) ?? fallbackFocus(state);
+    return convergenceFocus(state) ?? firstEntryContent(state, ConversationContextEntryKind.ProgressNote) ?? fallbackFocus(state);
   }
 
   return (
@@ -97,6 +101,15 @@ function firstEntryContent(state: ConversationContextState, kind: ConversationCo
   return entry.content;
 }
 
+function convergenceFocus(state: ConversationContextState): string | undefined {
+  const decision = firstEntryContent(state, ConversationContextEntryKind.Decision);
+  const direction = firstEntryContent(state, ConversationContextEntryKind.CurrentDirection);
+  if (decision && direction) {
+    return `latest decision: ${decision}; current direction: ${direction}`;
+  }
+  return decision ?? direction;
+}
+
 function fallbackFocus(state: ConversationContextState): string {
   return state.summary.length > 0 ? state.summary : "the current discussion";
 }
@@ -112,32 +125,44 @@ function phaseLead(phase: ConversationPhase): string {
 }
 
 function adapterAction(adapter: ThinkingAdapter, phase: ConversationPhase, focus: string): string {
-  if (phase === ConversationPhase.Divergence) {
-    return divergenceAction(adapter, focus);
-  }
   if (phase === ConversationPhase.ConvergenceExecution) {
     return convergenceAction(adapter, focus);
   }
   return blockedAction(adapter, focus);
 }
 
+function buildDivergenceInstruction(adapter: ThinkingAdapter, focus: string, custom: string | undefined): string {
+  const lines = [
+    `${phaseLead(ConversationPhase.Divergence)} Treat any owner preference expressed during exploration as an input, not a decision; evaluate independently from this AI member's own stance.`,
+    `If a reply is warranted, evaluate the idea or proposal itself around "${focus}" as an object of analysis, not as a stance to agree with.`,
+  ];
+
+  if (custom && custom.length > 0) {
+    lines.push(`Custom thinking instruction for this independent evaluation: ${custom}`);
+  } else {
+    lines.push(divergenceAction(adapter, focus));
+  }
+
+  return lines.join(" ");
+}
+
 function divergenceAction(adapter: ThinkingAdapter, focus: string): string {
   switch (adapter) {
     case ThinkingAdapterValue.Aggressive:
-      return `let your attention favor the boldest viable possibility for "${focus}" and the evidence that would make it worth the risk.`;
+      return `Assessment focus: the boldest viable possibility for "${focus}" and the evidence that would make it worth the risk.`;
     case ThinkingAdapterValue.Conservative:
-      return `let your attention favor the hard constraints around "${focus}" and the safest useful path.`;
+      return `Assessment focus: the hard constraints around "${focus}" and the safest useful path.`;
     case ThinkingAdapterValue.Comprehensive:
-      return `let your attention favor missing dimensions around "${focus}" before the room narrows too early.`;
+      return `Assessment focus: missing dimensions around "${focus}" before the room narrows too early.`;
     case ThinkingAdapterValue.Counterexample:
-      return `let your attention favor the most easily overlooked failure scenario for "${focus}".`;
+      return `Assessment focus: the most easily overlooked failure scenario for "${focus}".`;
     case ThinkingAdapterValue.Divergent:
-      return `let your attention favor lateral alternatives for "${focus}" that are not obvious from the current thread.`;
+      return `Assessment focus: lateral alternatives for "${focus}" that are not obvious from the current thread.`;
     case ThinkingAdapterValue.Convergent:
-      return `let your attention favor a useful decision boundary for the scattered possibilities around "${focus}".`;
+      return `Assessment focus: a useful decision boundary for the scattered possibilities around "${focus}".`;
     case ThinkingAdapterValue.Custom:
     case ThinkingAdapterValue.Default:
-      return `let your attention favor the most useful independent contribution for "${focus}" without copying the room consensus.`;
+      return `Assessment focus: the most useful independent contribution for "${focus}" without copying the room consensus.`;
   }
 }
 

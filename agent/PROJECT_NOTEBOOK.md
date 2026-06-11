@@ -130,7 +130,7 @@
 
 含义：
 
-- 4 是主骨架：conversation state 常驻 prompt，保存目标、约束、决策、否定方案、开放问题、风险、关键事实和进展。
+- 4 是主骨架：conversation state 常驻 prompt，保存目标、约束、决策、当前方向、否定方案、开放问题、风险、关键事实和进展。
 - 5 是证据召回：不是替代记忆，而是在冲突、用户提醒、更新摘要、做新决策前检索原始历史。
 - 6 是上下文治理：后续由 context manager 决定何时更新摘要、标记旧决策过期、检测冲突、提醒用户重新裁决。
 
@@ -159,7 +159,7 @@
 
 - 对话轴仍由 `ConversationContextState` 承担，但新增 `phase`，取值为发散期、收敛执行期、撞墙期。
 - 被否方案从单点字符串升级为 `RejectedOptionRecord`，记录方案本身、否决理由和否决时依赖前提。
-- 决策区 owner-only：决策、被否方案、阶段标记只能通过 `ConversationContextPatchAuthor.Owner` 写；system patch 不能写这些。
+- Owner-only 字段：决策、当前方向、被否方案、阶段标记只能通过 `ConversationContextPatchAuthor.Owner` 写；system patch 不能写这些。当前方向不归入狭义决策区，但按“需要采纳判断”处理。
 - 主体轴新增 `AgentStanceHistoryStore`，主键语义为 `(conversation_id, ai_id)`，第一版只 append 当前 AI 的发言原文或简单摘要。
 - Runtime prompt 改为 Atrium 五段式：静态层 -> 对话轴共享白板 -> 最近原文消息 -> 当前 AI 私有履历 + 阶段化重新实例化指令 -> 当前触发消息。
 - Runtime 在 AI 回复后把该回复 append 到该 AI 自己的私有履历；A 的履历不会进入 B 的 prompt。

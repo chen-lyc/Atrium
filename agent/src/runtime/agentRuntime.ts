@@ -1,8 +1,8 @@
 import type { AgentProfile, AgentResponse, MessageRef, TurnContext } from "../core/agentTypes.ts";
-import { AgentDecision, failed } from "../core/agentTypes.ts";
+import { AgentDecision, ParticipantKind, failed } from "../core/agentTypes.ts";
 import { buildContextPack, type ContextPack } from "../context/contextPack.ts";
-import type { ConversationContextStore } from "../context/conversationContext.ts";
-import type { AgentStanceHistoryStore } from "../context/stanceHistory.ts";
+import type { ConversationContextState, ConversationContextStore, ConversationPhase } from "../context/conversationContext.ts";
+import { activeAgentStanceHistoryRecords, type AgentStanceHistoryStore } from "../context/stanceHistory.ts";
 import { appendConversationContextToPrompt } from "../prompt/conversationContextPrompt.ts";
 import { appendStaticAgentIdentityToPrompt } from "../prompt/agentIdentityPrompt.ts";
 import { appendPrivateStanceToPrompt } from "../prompt/stancePrompt.ts";
@@ -33,12 +33,12 @@ export class AgentRuntime {
     }
 
     const contextPack = buildContextPack(turn);
-    const prompt = await this.buildPrompt(agent, turn, contextPack);
-    const request: ModelRequest = { agent, prompt, stream: true };
+    const promptBuild = await this.buildPromptWithMetadata(agent, turn, contextPack);
+    const request: ModelRequest = { agent, prompt: promptBuild.plan, stream: true };
 
     try {
       const response = await this.#deps.modelGateway.complete(request);
-      await this.recordReplyStance(agent, turn, response);
+      await this.recordReplyStance(agent, turn, response, promptBuild.phaseAtGeneration, promptBuild.inputStanceRecordIds);
       return response;
     } catch (error) {
       return failed(error instanceof Error ? error.message : String(error));
@@ -46,6 +46,10 @@ export class AgentRuntime {
   }
 
   async buildPrompt(agent: AgentProfile, turn: TurnContext, contextPack: ContextPack): Promise<PromptPlan> {
+    return (await this.buildPromptWithMetadata(agent, turn, contextPack)).plan;
+  }
+
+  private async buildPromptWithMetadata(agent: AgentProfile, turn: TurnContext, contextPack: ContextPack): Promise<BuiltPrompt> {
     const plan = new PromptPlan();
     appendStaticAgentIdentityToPrompt(plan, agent);
 
@@ -61,30 +65,43 @@ export class AgentRuntime {
     const split = splitCurrentTriggerMessage(contextPack.messages(), turn.triggerMessageId);
 
     for (const message of split.recentMessages) {
-      if (message.sender.id === agent.id) {
-        plan.addAssistant(message.sender.displayName, message.content);
+      const speaker = speakerLabel(message, agent, turn);
+      if (isCurrentAgentMessage(message, agent)) {
+        plan.addAssistant(speaker, message.content);
       } else {
-        plan.addUser(message.sender.displayName, message.content);
+        plan.addUser(speaker, message.content);
       }
     }
 
     const stanceHistory = this.#deps.stanceHistoryStore
       ? await this.#deps.stanceHistoryStore.load(turn.conversationId, agent.id)
       : undefined;
+    const inputStanceRecordIds = activeAgentStanceHistoryRecords(stanceHistory).map((record) => record.id);
     appendPrivateStanceToPrompt(plan, agent, contextState, stanceHistory);
 
     if (split.currentMessage) {
-      if (split.currentMessage.sender.id === agent.id) {
-        plan.addAssistant(split.currentMessage.sender.displayName, split.currentMessage.content);
+      const speaker = speakerLabel(split.currentMessage, agent, turn);
+      if (isCurrentAgentMessage(split.currentMessage, agent)) {
+        plan.addAssistant(speaker, split.currentMessage.content);
       } else {
-        plan.addUser(split.currentMessage.sender.displayName, split.currentMessage.content);
+        plan.addUser(speaker, split.currentMessage.content);
       }
     }
 
-    return plan;
+    return {
+      plan,
+      ...(contextState?.phase ? { phaseAtGeneration: contextState.phase } : {}),
+      inputStanceRecordIds,
+    };
   }
 
-  private async recordReplyStance(agent: AgentProfile, turn: TurnContext, response: AgentResponse): Promise<void> {
+  private async recordReplyStance(
+    agent: AgentProfile,
+    turn: TurnContext,
+    response: AgentResponse,
+    phaseAtGeneration: ConversationPhase | undefined,
+    inputStanceRecordIds: string[],
+  ): Promise<void> {
     if (!this.#deps.stanceHistoryStore || response.decision !== AgentDecision.Reply || response.content.length === 0) {
       return;
     }
@@ -93,10 +110,40 @@ export class AgentRuntime {
       conversationId: turn.conversationId,
       agentId: agent.id,
       triggerMessageId: turn.triggerMessageId,
+      ...(phaseAtGeneration ? { phaseAtGeneration } : {}),
+      contextUntilMessageId: turn.contextUntilMessageId,
+      inputStanceRecordIds,
       content: response.content,
       createdAtMs: this.#deps.nowMs?.() ?? Date.now(),
     });
   }
+}
+
+interface BuiltPrompt {
+  plan: PromptPlan;
+  phaseAtGeneration?: ConversationContextState["phase"];
+  inputStanceRecordIds: string[];
+}
+
+function isCurrentAgentMessage(message: MessageRef, agent: AgentProfile): boolean {
+  return message.sender.kind === ParticipantKind.Agent && message.sender.id === agent.id;
+}
+
+function speakerLabel(message: MessageRef, agent: AgentProfile, turn: TurnContext): string {
+  const sender = message.sender;
+  if (isCurrentAgentMessage(message, agent)) {
+    return `Current AI member #${sender.id} (${sender.displayName})`;
+  }
+  if (sender.kind === ParticipantKind.Agent) {
+    return `AI member #${sender.id} (${sender.displayName})`;
+  }
+  if (sender.kind === ParticipantKind.User) {
+    if (sender.id === turn.ownerUserId) {
+      return `Owner human #${sender.id} (${sender.displayName})`;
+    }
+    return `Human member #${sender.id} (${sender.displayName})`;
+  }
+  return `System event #${sender.id} (${sender.displayName})`;
 }
 
 function splitCurrentTriggerMessage(

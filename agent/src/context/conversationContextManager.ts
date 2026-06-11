@@ -88,7 +88,7 @@ export class ConversationContextManager {
       switch (item.operation) {
         case ConversationContextPatchOperation.UpsertEntry: {
           if (item.entry && this.entryRequiresOwner(item.entry) && patch.author !== ConversationContextPatchAuthor.Owner) {
-            return applyFailure("decision-zone entries require owner patch author", next);
+            return applyFailure("owner-confirmed entries require owner patch author", next);
           }
           if (!item.entry || !this.upsertEntry(next, item.entry, patch.updatedAtMs)) {
             return applyFailure("failed to upsert conversation context entry", next);
@@ -99,7 +99,7 @@ export class ConversationContextManager {
           const target = item.targetEntryId ?? "";
           const status = item.status ?? ConversationContextEntryStatus.Active;
           if (this.targetEntryRequiresOwner(next, target) && patch.author !== ConversationContextPatchAuthor.Owner) {
-            return applyFailure("decision-zone entry status changes require owner patch author", next);
+            return applyFailure("owner-confirmed entry status changes require owner patch author", next);
           }
           if (!this.markEntryStatus(next, target, status, patch.updatedAtMs)) {
             return applyFailure(`conversation context entry not found: ${target}`, next);
@@ -109,7 +109,7 @@ export class ConversationContextManager {
         case ConversationContextPatchOperation.RemoveEntry: {
           const target = item.targetEntryId ?? "";
           if (this.targetEntryRequiresOwner(next, target) && patch.author !== ConversationContextPatchAuthor.Owner) {
-            return applyFailure("decision-zone entry removal requires owner patch author", next);
+            return applyFailure("owner-confirmed entry removal requires owner patch author", next);
           }
           if (!this.removeEntry(next, target)) {
             return applyFailure(`conversation context entry not found: ${target}`, next);
@@ -211,7 +211,11 @@ export class ConversationContextManager {
   }
 
   private entryRequiresOwner(entry: ConversationContextEntry): boolean {
-    return entry.kind === ConversationContextEntryKind.Decision || entry.kind === ConversationContextEntryKind.RejectedOption;
+    return (
+      entry.kind === ConversationContextEntryKind.Decision ||
+      entry.kind === ConversationContextEntryKind.CurrentDirection ||
+      entry.kind === ConversationContextEntryKind.RejectedOption
+    );
   }
 
   private targetEntryRequiresOwner(state: ConversationContextState, entryId: string): boolean {

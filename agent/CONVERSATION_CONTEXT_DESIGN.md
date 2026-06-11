@@ -8,7 +8,7 @@
 
 Atrium 的 agent 上下文系统不是普通聊天记忆，也不是全局用户偏好记忆。它服务的是一个持续讨论空间：
 
-> 一个 conversation 可以围绕前端布局、产品设计、技术方案等长期推进；讨论中会形成目标、约束、决策、否定方案、开放问题和前提变化。Agent 必须能基于这些历史状态继续判断，而不是只看最近几条消息。
+> 一个 conversation 可以围绕前端布局、产品设计、技术方案等长期推进；讨论中会形成目标、约束、决策、当前方向、否定方案、开放问题和前提变化。Agent 必须能基于这些历史状态继续判断，而不是只看最近几条消息。
 
 这类能力最初接近 GPT / Claude 的长对话体验；后续 Atrium 校正后，目标升级为：同一个 conversation 内既保持公共事实连续性，又保持每个 AI 各自的判断、担忧和依据连续性。这里的连续性不是人格连续性，也不是要求某个 AI 每轮表演固定标签。
 
@@ -62,6 +62,7 @@ ConversationContextState(共享) + AgentStanceHistory(conversation_id, ai_id 私
 - `Goal`：当前目标。
 - `Constraint`：硬约束或用户明确要求。
 - `Decision`：已经确认的决策。
+- `CurrentDirection`：owner 确认后的当前推进方向，供收敛执行期实例化使用；不要混进 `Decision` 或 `ProgressNote`。
 - `RejectedOption`：已否定方案，必须记录方案本身、否决理由、否决时依赖的前提，供撞墙期人工回滚参照。
 - `OpenQuestion`：待裁决问题。
 - `Risk`：风险、冲突、可能失效的前提。
@@ -79,8 +80,9 @@ ConversationContextState(共享) + AgentStanceHistory(conversation_id, ai_id 私
 
 - `message_id`
 - `note`
+- `status`: `active / stale / purged`
 
-来源锚点是关键：摘要和结构化状态不能成为无来源的“二手真相”。以后发现摘要错了，必须能回到原始 messages 重建。
+来源锚点是关键：摘要和结构化状态不能成为无来源的“二手真相”。以后发现摘要错了，必须能回到原始 messages 重建；如果原始消息被删除、撤回或 owner 标记为污染，锚点必须进入 stale/purged，而不是继续伪装成 active source。
 
 另有一张物理分开的主体轴：
 
@@ -88,16 +90,25 @@ ConversationContextState(共享) + AgentStanceHistory(conversation_id, ai_id 私
 - 内容：该 AI 在这场 conversation 内自己的发言原文或简单摘要，用作此前判断、担忧和依据的证据。
 - 访问边界：A 的履历绝不进入 B 的上下文。
 - 语义边界：履历不定义这个 AI 的人格或角色，不要求它为了维持旧角度而发言。
+- 生命周期边界：只有可见回复落库成功才追加；`<NO_REPLY>` 不追加。履历必须记录 trigger/response/context watermark/input stance lineage，owner 可按 source message 溯源排除污染履历。
 
 ## Prompt 组装
 
 每次 agent 回复时，当前 prompt 顺序为：
 
 1. 静态层：runtime common + 模型/provider 身份 + thinking adapter 静态定义。
-2. 对话轴共享白板：目标、约束、决策、带因果的被否方案、开放问题等。
+2. 对话轴共享白板：目标、约束、决策、当前方向、带因果的被否方案、开放问题等。
 3. 最近原文消息窗口。
 4. 当前 AI 的私有立场履历 + 阶段化重新实例化指令。
 5. 当前触发消息。
+
+最近原文消息窗口必须保留他者角色位：
+
+- 当前 AI 自己的历史发言可以放在 assistant 侧。
+- owner 的人类发言必须署名为 owner。
+- 其他人类成员必须与 owner 区分。
+- AI 成员必须标识到具体成员。
+- 其他参与者的消息不允许放入当前 AI 的 assistant 续写位。
 
 Conversation context state 应优先注入：
 
@@ -113,6 +124,8 @@ Conversation context state 应优先注入：
 默认不把 resolved / superseded / rejected 全部塞进 prompt；只有需要审计、冲突检测或用户追问时再检索。`MemoryStore` 本期不主动注入 runtime，避免把泛化长期记忆混入 Atrium 双轴主线。
 
 Thinking adapter 的优先级低于发言判断。AI 先判断这一轮是否值得作为房间成员发言；如果不值得，合法沉默成立；如果值得，adapter 才影响它注意什么、怎样评估、怎样表达。
+
+发散期的机制一模板必须采用第三人称评估框架：评估观点或方案本身，而不是回答“是否同意某人”。仅发散期允许加入 owner 倾向对冲句：owner 的探索期倾向是输入、不是裁决；收敛执行期不允许出现这类对冲。
 
 ## 检索钩子
 
@@ -134,7 +147,7 @@ Thinking adapter 的优先级低于发言判断。AI 先判断这一轮是否值
 
 - 何时更新 summary。
 - 从新消息中提取目标、约束、风险、开放问题等现状区信息。
-- 只在 owner patch 中写入决策、带因果的被否方案、阶段标记。
+- 只在 owner patch 中写入决策、当前方向、带因果的被否方案、阶段标记。
 - 标记旧条目为 superseded / resolved / rejected。
 - 检测当前输出是否和 active constraints / decisions 冲突。
 - 提醒用户需要重新裁决方向。

@@ -71,8 +71,11 @@ export interface TurnContext {
   roomId: RoomId;
   conversationId: ConversationId;
   userId: UserId;
+  ownerUserId: UserId;
   triggerMessageId: MessageId;
   contextUntilMessageId: MessageId;
+  phaseAtDispatch?: string;
+  contextUpdatedAtMsAtDispatch?: number;
   source: TurnSource;
   messages: MessageRef[];
 }

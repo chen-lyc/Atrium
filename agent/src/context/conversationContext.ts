@@ -13,6 +13,7 @@ export const ConversationContextEntryKind = {
   Goal: "goal",
   Constraint: "constraint",
   Decision: "decision",
+  CurrentDirection: "current_direction",
   RejectedOption: "rejected_option",
   OpenQuestion: "open_question",
   Risk: "risk",
@@ -31,9 +32,18 @@ export const ConversationContextEntryStatus = {
 
 export type ConversationContextEntryStatus = (typeof ConversationContextEntryStatus)[keyof typeof ConversationContextEntryStatus];
 
+export const SourceAnchorStatus = {
+  Active: "active",
+  Stale: "stale",
+  Purged: "purged",
+} as const;
+
+export type SourceAnchorStatus = (typeof SourceAnchorStatus)[keyof typeof SourceAnchorStatus];
+
 export interface SourceAnchor {
   messageId: MessageId;
   note: string;
+  status?: SourceAnchorStatus;
 }
 
 export interface RejectedOptionRecord {

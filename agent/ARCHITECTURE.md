@@ -16,7 +16,7 @@ Agent 已迁出后端 `src/` / `include/`，当前主实现语言是 TypeScript�
 
 `src/context/` 负责从原始消息历史里整理上下文包，也保存 Atrium 双轴上下文：
 
-- `ConversationContextState` 是对话轴共享白板，按 `conversation_id` 保存目标、约束、决策、被否方案、阶段标记等。
+- `ConversationContextState` 是对话轴共享白板，按 `conversation_id` 保存目标、约束、决策、当前方向、被否方案、阶段标记等。
 - `AgentStanceHistory` 是主体轴私有履历，按 `(conversation_id, ai_id)` 保存某个 AI 在本场说过/主张过什么。
 
 Context 层可以做长度限制、消息选择、阶段标记和 owner/system patch 边界，但不访问数据库。
@@ -26,6 +26,8 @@ Context 层可以做长度限制、消息选择、阶段标记和 owner/system p
 `src/prompt/` 把系统提示、群聊上下文、对话轴、主体轴、工具说明组合成一个请求计划。prompt 组织规则在这里，不散落到 provider 或 reactor 里。
 
 当前 Atrium 五段式顺序是：静态层 -> 对话轴共享白板 -> 最近原文消息 -> 当前 AI 私有履历 + 阶段化重新实例化指令 -> 当前触发消息。
+
+最近原文消息必须保留他者角色位：owner、其他人类和具体 AI 成员都要带结构化署名；除当前 AI 自己的历史发言外，其他参与者消息不能进入 assistant 续写位。
 
 ### 4. Memory
 
@@ -41,7 +43,7 @@ Context 层可以做长度限制、消息选择、阶段标记和 owner/system p
 
 ### 7. Runtime
 
-`src/runtime/` 是单轮执行编排层。它可以调用 context、prompt、tools、provider，并在 AI 回复后把该 AI 的内容 append 到主体轴履历；但不能直接访问 MySQL、Redis、WebSocket 或 Reactor。
+`src/runtime/` 是单轮执行编排层。它可以调用 context、prompt、tools、provider，并在 AI 可见回复后把该 AI 的内容连同 provenance append 到主体轴履历；`<NO_REPLY>`、失败、空回复不产生履历。runtime 不能直接访问 MySQL、Redis、WebSocket 或 Reactor。
 
 ### 8. Bridge
 
@@ -49,7 +51,8 @@ Context 层可以做长度限制、消息选择、阶段标记和 owner/system p
 
 Bridge 负责：
 
-- 把后端房间/对话/消息/AI 阵容转换为 `TurnContext`。
+- 把后端房间/对话/消息/AI 阵容转换为 `TurnContext`，包括 `owner_user_id` 以支持 prompt 署名保真。
+- 传递可选 phase/context watermark，供过期写回和草稿确认检查使用。
 - 把 `AgentResponse` 转成现有落库、广播或静默行为。
 - 归一化 snake_case/camelCase 字段。
 - 归一化 C++/JSON 传来的数字 ID。
@@ -66,7 +69,7 @@ Atrium message event in C++ backend
   -> runtime asks ConversationContextStore / AgentStanceHistoryStore
   -> prompt builds PromptPlan
   -> provider ModelGateway streams/completes response
-  -> runtime appends current AI reply to its private stance history
+  -> runtime appends current AI reply and provenance to its private stance history
   -> runtime returns AgentResponse
   -> bridge/backend adapter persists and broadcasts through existing Atrium path
 ```

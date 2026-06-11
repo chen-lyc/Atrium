@@ -1,6 +1,6 @@
 import { entriesByKind, conversationContextEmpty } from "../context/conversationContext.ts";
 import { PromptPlan } from "./promptPlan.ts";
-import { ConversationContextEntryKind, ConversationContextEntryStatus } from "../context/conversationContext.ts";
+import { ConversationContextEntryKind, ConversationContextEntryStatus, SourceAnchorStatus } from "../context/conversationContext.ts";
 import type { ConversationContextEntry, ConversationContextState } from "../context/conversationContext.ts";
 
 export interface ConversationContextPromptOptions {
@@ -19,6 +19,7 @@ const SECTIONS: readonly { kind: ConversationContextEntryKind; title: string }[]
   { kind: ConversationContextEntryKind.Goal, title: "Current goals" },
   { kind: ConversationContextEntryKind.Constraint, title: "Active constraints" },
   { kind: ConversationContextEntryKind.Decision, title: "Active decisions" },
+  { kind: ConversationContextEntryKind.CurrentDirection, title: "Current direction" },
   { kind: ConversationContextEntryKind.RejectedOption, title: "Rejected options" },
   { kind: ConversationContextEntryKind.OpenQuestion, title: "Open questions" },
   { kind: ConversationContextEntryKind.Risk, title: "Risks and conflicts" },
@@ -91,5 +92,10 @@ function formatSources(entry: ConversationContextEntry, includeSourceIds: boolea
     return "";
   }
 
-  return ` [sources:${entry.sources.map((source) => ` #${source.messageId}`).join(",")}]`;
+  return ` [sources:${entry.sources
+    .map((source) => {
+      const status = source.status && source.status !== SourceAnchorStatus.Active ? `:${source.status}` : "";
+      return ` #${source.messageId}${status}`;
+    })
+    .join(",")}]`;
 }
