@@ -86,9 +86,9 @@ Agent 侧已经定义了后端接入的语言和边界：
 ```text
 agent/src/bridge/backendTransition.ts
   BACKEND_AGENT_PROTOCOL_VERSION = "atrium.agent.turn.v1"
-  BackendAgentRunRequestPayload
+  BackendAgentDispatchRequestPayload
   BackendAgentRunResultPayload
-  normalizeBackendRunRequest(...)
+  normalizeBackendDispatchRequest(...)
 ```
 
 它告诉后端：
@@ -110,16 +110,36 @@ AgentRuntime
 
 ### 后端需要给 agent 的东西
 
-后端不是给 agent “业务大脑”，而是给 agent 运行一轮所需的事实和能力：
+后端不是给 agent “业务大脑”。第一版通信只给 agent 一个最小调度信封；agent 进程允许做只读查询，自己 materialize 运行一轮所需的事实。
 
-1. 当前 turn 的基本信息：`room_id`、`conversation_id`、`trigger_message_id`、`context_until_message_id`、`user_id`、`owner_user_id`。
-2. 当前 AI 的身份：`ai_id`、`provider`、`model`、`display_name`、`thinking_adapter`。
-3. 最近消息窗口：触发消息之前到 `context_until_message_id` 的可见消息。
-4. 对话轴共享白板：按 `conversation_id` 读取 `ConversationContextState`。
-5. 主体轴私有履历：按 `(conversation_id, ai_id)` 读取当前 AI 自己的 `AgentStanceHistory`。
-6. provider 调用能力：后续用 `ModelGateway` 包装 DeepSeek / Qwen 等模型。
-7. commit 能力：把 agent 的 `reply` / `no_reply` / `failed` 映射回现有 hidden message、落库、广播、错误帧语义。
-8. provenance / lifecycle 能力：owner 标记某条 source message 有问题时，后端必须能级联排除它直接或间接派生的私有履历与白板锚点。
+最小调度信封：
+
+1. `room_id`
+2. `conversation_id`
+3. `ai_id`
+4. `trigger_message_id`
+5. `context_until_message_id`
+6. 可选 `request_id`
+7. 可选 `phase_at_dispatch`
+8. 可选 `context_updated_at_ms_at_dispatch`
+
+这些字段只回答：哪个 AI、在哪场 conversation、因哪条消息触发、最多看到哪条消息。它们不包含当前 AI 的 `display_name`，也不包含完整 `messages`。
+
+Agent 通过只读 adapter 自己读取：
+
+1. 当前 AI 配置：`provider`、`model`、`thinking_adapter`。当前 AI 的 `display_name` 不是 agent 核心语义，后端落库 / 广播自己已有。
+2. 最近消息窗口：`conversation_id + context_until_message_id`。
+3. 触发消息：`trigger_message_id`。
+4. owner / sender 信息：从 conversation / message 表读取，用于 prompt 署名保真。
+5. 对话轴共享白板：按 `conversation_id` 读取 `ConversationContextState`。
+6. 主体轴私有履历：按 `(conversation_id, ai_id)` 读取当前 AI 自己的 `AgentStanceHistory`。
+
+后端仍然负责写操作和运行能力：
+
+1. commit 能力：把 agent 的 `reply` / `no_reply` / `failed` 映射回现有 hidden message、落库、广播、错误帧语义。
+2. 主体轴 append：只在 `reply` 可见消息落库成功后写，使用 agent 返回的 generation metadata。
+3. provenance / lifecycle 能力：owner 标记某条 source message 有问题时，后端必须能级联排除它直接或间接派生的私有履历与白板锚点。
+4. provider 调用能力：可由 TS `ModelGateway` 直接调 provider，也可后续包装现有 DeepSeek / Qwen 行为；无论哪种，runtime 不认识 C++ Reactor / WebSocket / MySQL 写路径。
 
 ### Agent 返回给后端的东西
 
@@ -160,25 +180,23 @@ Node TypeScript agent process
 POST http://127.0.0.1:<agent_port>/run-turn
 ```
 
-agent 如需调用后端内部函数，可以二选一：
-
-1. 简单模式：C++ 在 `/run-turn` 请求里预先放好 messages、conversation context、stance history。TS agent 本轮不反向调用后端。
-2. Adapter 模式：TS 的 `ConversationContextStore` / `AgentStanceHistoryStore` 通过 loopback internal API 反向请求 C++ 后端。
-
-对第一次接触多语言交互的人，建议先做简单模式。它只有一个方向：
-
-```text
-C++ -> TS -> C++
-```
-
-等你确认 JSON 契约、ID 转换、reply/no_reply 语义都通了，再做 Adapter 模式：
+第一版推荐用最小信封 + agent 只读 materialize：
 
 ```text
 C++ -> TS
-       TS -> C++ load context
-       TS -> C++ append stance
+       TS -> read-only DB/internal read adapter
    <- TS result
 ```
+
+也就是说，C++ 不把 messages、conversation context、stance history 预先塞进 `/run-turn`。C++ 只发送本轮定位字段；TS agent 用只读 adapter 从数据库或后端 internal read API 读取所需事实。
+
+写操作仍只在 C++ commit 阶段发生：
+
+```text
+TS result -> C++ complete hidden message / broadcast / append stance history
+```
+
+这样避免 `MySQL -> C++ -> JSON -> TS` 搬运大消息窗口，也避免 agent 进程拥有写权限。
 
 ## 4. 后端调用 agent 的接入点
 
@@ -207,16 +225,14 @@ ConvAiScheduler::submit()
 
 ## 5. Backend -> Agent 请求契约
 
-当前 TS bridge 已有基础 payload：
+当前 TS bridge 支持最小 dispatch payload：
 
 ```ts
 export const BACKEND_AGENT_PROTOCOL_VERSION = "atrium.agent.turn.v1";
 
-export interface BackendAgentRunRequestPayload {
+export interface BackendAgentDispatchRequestPayload {
   protocol: typeof BACKEND_AGENT_PROTOCOL_VERSION;
-  ref: BackendAgentTurnRefPayload;
-  agent: BackendAgentProfilePayload;
-  turn: BackendTurnContextPayload;
+  ref: BackendAgentDispatchRefPayload;
 }
 ```
 
@@ -226,53 +242,14 @@ export interface BackendAgentRunRequestPayload {
 {
   "protocol": "atrium.agent.turn.v1",
   "ref": {
+    "request_id": "agent-run-1001-12",
     "room_id": "1",
     "conversation_id": "42",
+    "ai_id": "12",
     "trigger_message_id": "1001",
     "context_until_message_id": "1001",
-    "user_id": "7",
-    "owner_user_id": "7",
     "phase_at_dispatch": "divergence",
     "context_updated_at_ms_at_dispatch": 1710000000000
-  },
-  "agent": {
-    "id": "12",
-    "provider": "deepseek",
-    "model": "deepseek-v4-flash",
-    "display_name": "DeepSeek",
-    "thinking_adapter": "counterexample",
-    "custom_thinking_instruction": ""
-  },
-  "turn": {
-    "room_id": "1",
-    "conversation_id": "42",
-    "trigger_message_id": "1001",
-    "context_until_message_id": "1001",
-    "user_id": "7",
-    "owner_user_id": "7",
-    "phase_at_dispatch": "divergence",
-    "context_updated_at_ms_at_dispatch": 1710000000000,
-    "source": "user_message",
-    "messages": [
-      {
-        "id": "998",
-        "sender": {
-          "id": "7",
-          "kind": "user",
-          "display_name": "lyc"
-        },
-        "content": "我们继续讨论 agent 上下文工程。"
-      },
-      {
-        "id": "999",
-        "sender": {
-          "id": "12",
-          "kind": "agent",
-          "display_name": "DeepSeek"
-        },
-        "content": "上一轮我认为 bridge 应该先定协议。"
-      }
-    ]
   }
 }
 ```
@@ -283,21 +260,17 @@ export interface BackendAgentRunRequestPayload {
 |---|---|---|
 | `ref.room_id` | 当前房间 | commit / 日志 / 追踪 |
 | `ref.conversation_id` | 当前 conversation | 读取对话轴和主体轴 |
+| `ref.ai_id` | 当前被调度的 AI | 读取当前 AI 配置与私有履历 |
 | `ref.trigger_message_id` | 触发本轮 AI 的消息 | prompt 中最后的当前消息 |
 | `ref.context_until_message_id` | 本轮允许看到的最后消息 | 防止同轮 AI 互相锚定 |
-| `ref.user_id` | 触发用户 | 权限、审计、owner 操作扩展 |
-| `ref.owner_user_id` | 当前 conversation 的 owner | prompt 历史消息署名保真，区分 owner 与其他人类成员 |
 | `ref.phase_at_dispatch` | 任务派发时的阶段 | phase watermark；写回时识别旧阶段任务 |
 | `ref.context_updated_at_ms_at_dispatch` | 派发时 context 更新时间 | draft/proposal 与履历写回的过期检查 |
-| `turn.owner_user_id` | 同 `ref.owner_user_id` | runtime 渲染最近消息窗口时使用 |
-| `agent.id` | AI 成员 ID | 读取当前 AI 自己的主体轴 |
-| `agent.provider` / `agent.model` | AI 配置 | provider adapter |
-| `agent.thinking_adapter` | AI 思维取向 | prompt 静态层 |
-| `turn.messages` | 后端最近消息窗口 | prompt 原文窗口 |
 
 `context_until_message_id` 很重要。多 AI 同一轮独立思考时，AI B 不应该看到 AI A 在同一触发消息之后刚刚生成的内容。
 
-`owner_user_id` 也很重要。TS runtime 会把历史消息渲染为 `Owner human #id`、`Human member #id`、`AI member #id` 三类署名；其他参与者消息必须保持在 user 侧他者发言位置，不能进入当前 AI 的 assistant 续写位。
+`trigger_message_id` 和 `context_until_message_id` 不是重复字段。前者是因果点；后者是可见上下文水位。
+
+`owner_user_id` 不需要在最小信封里传。Agent 允许只读查询，可以从 `conversation_id` 读取 owner，从 `trigger_message_id` 读取触发者。TS runtime 最终仍会把历史消息渲染为 `Owner human #id`、`Human member #id`、`AI member #id` 三类署名；只是这些信息由 agent 侧 read adapter materialize。
 
 `phase_at_dispatch` / `context_updated_at_ms_at_dispatch` 是 lifecycle guard。阶段切换后仍在途的 AI 任务不能静默把旧阶段产物写成当前阶段履历；draft/proposal 也必须带 `base_phase` / `base_context_updated_at_ms`，owner 确认时若基线过期，需要提示或重新确认。
 
@@ -308,9 +281,11 @@ export interface BackendAgentRunRequestPayload {
 ```ts
 export interface BackendAgentRunResultPayload {
   protocol: typeof BACKEND_AGENT_PROTOCOL_VERSION;
-  ref: AtriumTurnRef;
-  agent: AgentProfile;
+  ref: AtriumAgentTurnRef;
   response: AgentResponse;
+  phase_at_generation?: string;
+  context_until_message_id: string;
+  input_stance_record_ids: string[];
 }
 ```
 
@@ -322,22 +297,18 @@ export interface BackendAgentRunResultPayload {
   "ref": {
     "roomId": "1",
     "conversationId": "42",
+    "agentId": "12",
     "triggerMessageId": "1001",
-    "contextUntilMessageId": "1001",
-    "userId": "7"
-  },
-  "agent": {
-    "id": "12",
-    "provider": "deepseek",
-    "model": "deepseek-v4-flash",
-    "displayName": "DeepSeek",
-    "thinkingAdapter": "counterexample"
+    "contextUntilMessageId": "1001"
   },
   "response": {
     "decision": "reply",
     "content": "我会先把问题拆成两层：进程协议和业务上下文。",
     "error": ""
-  }
+  },
+  "phase_at_generation": "divergence",
+  "context_until_message_id": "1001",
+  "input_stance_record_ids": ["9001", "9007"]
 }
 ```
 
@@ -366,9 +337,9 @@ if (result.response.decision == AgentDecision::Failed) {
 
 注意：主体轴履历 `append_agent_stance_history(...)` 只能写一次。
 
-- 如果 TS runtime 配了 `AgentStanceHistoryStore` 后端 adapter，则 agent 在 `runTurn()` 内部已经调用 append，C++ commit 阶段不要再追加。
-- 如果第一版没有 TS store adapter，后端可以在 reply commit 后追加一次作为过渡方案。
-- 如果要记录准确的 `response_message_id`，接入前需要让 agent 请求里携带 hidden AI message id，或者让后端在 commit 后补齐。
+- 第一版推荐 agent 进程只读，不在 `runTurn()` 内部 append。
+- 后端在 `reply` 可见消息落库成功后追加一次主体轴履历。
+- `response_message_id` 由后端 commit 后补齐。
 - 新协议下主体轴 append 还必须携带 `phase_at_generation`、`context_until_message_id`、`input_stance_record_ids`。只按 `trigger_message_id` 能清第一跳，不能清掉由第(4)段回灌污染出的二代履历。
 
 ## 7. 后端需要实现的本地 C++ 函数
@@ -537,7 +508,7 @@ MysqlPool::QueryResult purge_agent_stance_history_by_source_message(
 
 ## 8. Agent 如何调用后端实现的函数
 
-这里用 Adapter 模式解释。即使第一版先做简单模式，也应该理解这层。
+这里用只读 Adapter 模式解释。第一版推荐走这层，而不是让 C++ 预加载大 payload。
 
 TS runtime 只认识接口：
 
@@ -628,7 +599,7 @@ src/agent_client.cpp
 
 职责：
 
-1. 把 C++ `AgentRunRequest` 转成 `BackendAgentRunRequestPayload` JSON。
+1. 把 C++ `AgentRunRequest` 转成最小 `BackendAgentDispatchRequestPayload` JSON。
 2. 通过 HTTP loopback 或 IPC 发给 TypeScript agent。
 3. 校验 `protocol == "atrium.agent.turn.v1"`。
 4. 把 response JSON 转回 C++ `AgentRunResult`。
@@ -649,6 +620,9 @@ struct AgentRunResult {
     AgentDecision decision = AgentDecision::Failed;
     std::string content;
     std::string error;
+    std::string phase_at_generation;
+    uint64_t context_until_message_id = 0;
+    std::vector<uint64_t> input_stance_record_ids;
 };
 
 class AgentClient {
@@ -775,18 +749,20 @@ room_id = 1
 conversation_id = 42
 trigger_message_id = 1001
 context_until_message_id = 1001
-user_id = 7
-owner_user_id = 7
 ai_id = 12
 hidden_ai_message_id = 1002
 ```
 
-后端做三件事：
+后端只构造最小 dispatch：
 
 ```cpp
-load_recent_messages(conversation_id, context_until_message_id, 30, req.messages);
-load_agent_conversation_context(conversation_id, req.conversation_context);
-load_agent_stance_history(conversation_id, ai_id, 6, req.stance_history);
+req.room_id = room_id;
+req.conversation_id = conversation_id;
+req.ai_id = ai_id;
+req.trigger_message_id = trigger_message_id;
+req.context_until_message_id = context_until_message_id;
+req.phase_at_dispatch = current_phase;
+req.context_updated_at_ms_at_dispatch = current_context_updated_at_ms;
 ```
 
 然后调用：
@@ -800,8 +776,12 @@ auto ret = client.runTurn(req, result);
 ### TS agent 内部发生什么
 
 ```text
-normalizeBackendRunRequest(payload)
-  -> AgentRuntime.runTurn(agent, turn)
+normalizeBackendDispatchRequest(payload)
+  -> AtriumAgentReadBridge.loadTurnMaterial(ref)
+  -> load current AI profile by ai_id
+  -> load recent messages by conversation_id and context_until_message_id
+  -> load owner/sender labels for prompt role fidelity
+  -> AgentRuntime.runTurnDetailed(agent, turn)
   -> buildContextPack(turn)
   -> appendStaticAgentIdentityToPrompt(...)
   -> ConversationContextStore.load(conversation_id)
@@ -811,7 +791,7 @@ normalizeBackendRunRequest(payload)
   -> appendPrivateStanceToPrompt(...)
   -> append current trigger message
   -> ModelGateway.complete(...)
-  -> AgentResponse
+  -> AgentResponse + generation metadata
 ```
 
 ### C++ 后端提交结果
@@ -850,9 +830,9 @@ return;
 1. 进程入口：`agent` 是 HTTP loopback 服务，还是长期子进程 IPC。
 2. `AgentClient` 的传输协议：HTTP path、超时、错误码、日志字段。
 3. `ModelGateway` 第一版怎么接 DeepSeek/Qwen：TS 直接调 provider，还是先回调 C++ provider adapter。
-4. `ConversationContextStore` / `AgentStanceHistoryStore` 是简单模式预加载，还是 Adapter 模式反向调用后端。
-5. 主体轴 append 由谁写：TS runtime store adapter 写，还是 C++ commit 后写。只能选一个，不能重复。
-6. 是否把 `hidden_ai_message_id` / `response_message_id` 加进 bridge payload，方便主体轴记录准确回复消息 ID。
+4. TS 只读 adapter 是直接连只读数据库账号，还是调用 C++ internal read API。
+5. 主体轴 append 第一版由 C++ commit 后写；TS runtime 用 `recordStanceOnReply: false` 返回 generation metadata。
+6. `hidden_ai_message_id` 不进 `/run-turn`；`response_message_id` 由后端 commit 后补齐到主体轴履历。
 
 这些是 agent 侧接入任务，不要求后端开发者凭空补齐业务判断。
 
@@ -863,7 +843,7 @@ return;
 - 不要让 `SubReactor` 直接拼 prompt。
 - 不要让 runtime 直接认识 MySQL、Redis、WebSocket、Reactor。
 - 不要把 AI A 的主体轴历史传给 AI B。
-- 不要匿名化或合并消息署名；后端必须给出 `owner_user_id`，TS prompt 才能区分 owner、其他人类和具体 AI 成员。
+- 不要匿名化或合并消息署名；TS read adapter 必须 materialize owner、其他人类和具体 AI 成员的署名。
 - 不要让 AI 自动写 owner-only 的决策区、当前方向、被否方案或阶段切换。
 - 不要把泛化长期 `MemoryStore` 当成当前 Atrium 双轴 context 主线。
 - 不要让 `<NO_REPLY>` 产生可见空消息。

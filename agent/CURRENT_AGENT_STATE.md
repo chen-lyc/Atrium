@@ -49,7 +49,8 @@ Agent 子系统处于 Phase 0：从 C++ 后端目录迁出，并切换到根目�
 - `AgentStanceHistoryStore` / `InMemoryAgentStanceHistoryStore`：按 `(conversation_id, ai_id)` 保存每个 AI 的私有立场履历；reply 才追加，`<NO_REPLY>` 不追加；记录 `phaseAtGeneration`、`contextUntilMessageId`、`inputStanceRecordIds`，并支持 owner 按 source message 溯源排除。
 - `appendConversationContextToPrompt()`：把对话轴共享白板注入 prompt。
 - `appendPrivateStanceToPrompt()`：把当前 AI 自己的私有履历和阶段化重新实例化指令注入 prompt。
-- `backendTransition.ts`：定义第一版 C++ 后端到 TypeScript agent 的运行请求/结果契约、可选 phase/context watermark 和 ID 归一化。
+- `backendTransition.ts`：定义第一版 C++ 后端到 TypeScript agent 的最小 dispatch 契约、可选 phase/context watermark 和 ID 归一化；兼容旧 full payload，但推荐不再跨进程搬运完整 messages 或当前 AI display name。
+- `AtriumAgentReadBridge`：定义 agent 进程只读 materialize 边界，后端只发送本轮定位字段，agent 侧读取 AI 配置、消息窗口、owner/sender 信息、对话轴和当前 AI 私有履历。
 
 ## 当前设计判断
 
@@ -65,11 +66,12 @@ Agent 不是新的“聊天 API 调用器”。它应该逐步承接 Atrium 的 
 - Agent 的发言顺序必须先判断是否值得参与；如果不值得，合法沉默优先于 adapter 模板；如果值得，adapter 才影响思考角度。
 - 发散期的阶段化重新实例化指令使用第三人称评估框架，并只在发散期加入 owner 倾向只是输入、不是裁决的对冲句。
 - quoted evidence / delimiter 只能当 prompt guardrail；确定性补救依赖 source anchors 与 stance lineage 的溯源排除。
+- 第一版接入边界调整为 agent 允许只读查询、禁止写操作；`AgentRuntime.runTurnDetailed()` 可在 `recordStanceOnReply: false` 下返回 `phaseAtGeneration`、`contextUntilMessageId`、`inputStanceRecordIds`，由后端在 reply 落库成功后 append 私有履历。
 
 ## 当前下一步
 
 推荐下一步：
 
-1. 把 `ConversationContextStore` / `AgentStanceHistoryStore` 的后端持久化 adapter 与 owner-only purge handler 定稿，但仍不改现有后端运行代码。
-2. 落 agent 进程入口，让 C++ 后端能通过 `atrium.agent.turn.v1` loopback 调用 TS runtime。
+1. 定稿 agent 只读 adapter：AI 配置、消息窗口、owner/sender 信息、对话轴和当前 AI 私有履历读取。
+2. 落 agent 进程入口，让 C++ 后端能通过最小 `atrium.agent.turn.v1` dispatch loopback 调用 TS runtime。
 3. 设计 provider adapter，让现有 DeepSeek/Qwen 行为能被 `ModelGateway` 包装。

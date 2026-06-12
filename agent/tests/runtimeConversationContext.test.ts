@@ -226,6 +226,60 @@ test("private stance provenance purge excludes derived records from slot four", 
   assert.match(promptBlock, /none recorded yet/);
 });
 
+test("runtime can return stance metadata without writing from the agent process", async () => {
+  const contextStore = new InMemoryConversationContextStore();
+  const state = createConversationContextState("99");
+  state.phase = ConversationPhase.ConvergenceExecution;
+  contextStore.save(state);
+
+  const stanceStore = new InMemoryAgentStanceHistoryStore();
+  stanceStore.append({
+    conversationId: "99",
+    agentId: "8",
+    triggerMessageId: "12",
+    content: "I previously argued for the read-only agent boundary.",
+    createdAtMs: 2,
+  });
+
+  const runtime = new AgentRuntime({
+    modelGateway: new CapturingModelGateway(),
+    conversationContextStore: contextStore,
+    stanceHistoryStore: stanceStore,
+    recordStanceOnReply: false,
+  });
+
+  const result = await runtime.runTurnDetailed(
+    {
+      id: "8",
+      provider: "fake",
+      model: "fake-model",
+      thinkingAdapter: ThinkingAdapter.Convergent,
+    },
+    {
+      roomId: "1",
+      conversationId: "99",
+      userId: "2",
+      ownerUserId: "2",
+      triggerMessageId: "13",
+      contextUntilMessageId: "13",
+      source: TurnSource.UserMessage,
+      messages: [
+        {
+          id: "13",
+          sender: { id: "2", kind: ParticipantKind.User, displayName: "Owner" },
+          content: "Continue with the optimized bridge.",
+        },
+      ],
+    },
+  );
+
+  assert.equal(result.response.decision, AgentDecision.Reply);
+  assert.equal(result.phaseAtGeneration, ConversationPhase.ConvergenceExecution);
+  assert.equal(result.contextUntilMessageId, "13");
+  assert.deepEqual(result.inputStanceRecordIds, ["stance_99_8_1"]);
+  assert.equal(stanceStore.load("99", "8")?.records.length, 1);
+});
+
 test("divergence re-instantiation uses third-person evaluation and owner hedge only in exploration", () => {
   const divergenceState = createConversationContextState("99");
   divergenceState.phase = ConversationPhase.Divergence;

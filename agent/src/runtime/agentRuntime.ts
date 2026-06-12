@@ -1,4 +1,4 @@
-import type { AgentProfile, AgentResponse, MessageRef, TurnContext } from "../core/agentTypes.ts";
+import type { AgentProfile, AgentResponse, MessageId, MessageRef, TurnContext } from "../core/agentTypes.ts";
 import { AgentDecision, ParticipantKind, failed } from "../core/agentTypes.ts";
 import { buildContextPack, type ContextPack } from "../context/contextPack.ts";
 import type { ConversationContextState, ConversationContextStore, ConversationPhase } from "../context/conversationContext.ts";
@@ -17,7 +17,15 @@ export interface AgentRuntimeDeps {
   stanceHistoryStore?: AgentStanceHistoryStore;
   memoryStore?: MemoryStore;
   toolRegistry?: ToolRegistry;
+  recordStanceOnReply?: boolean;
   nowMs?: () => number;
+}
+
+export interface AgentRunTurnResult {
+  response: AgentResponse;
+  phaseAtGeneration?: ConversationPhase;
+  contextUntilMessageId: MessageId;
+  inputStanceRecordIds: string[];
 }
 
 export class AgentRuntime {
@@ -28,8 +36,16 @@ export class AgentRuntime {
   }
 
   async runTurn(agent: AgentProfile, turn: TurnContext): Promise<AgentResponse> {
+    return (await this.runTurnDetailed(agent, turn)).response;
+  }
+
+  async runTurnDetailed(agent: AgentProfile, turn: TurnContext): Promise<AgentRunTurnResult> {
     if (!this.#deps.modelGateway) {
-      return failed("agent runtime missing model gateway");
+      return {
+        response: failed("agent runtime missing model gateway"),
+        contextUntilMessageId: turn.contextUntilMessageId,
+        inputStanceRecordIds: [],
+      };
     }
 
     const contextPack = buildContextPack(turn);
@@ -39,9 +55,10 @@ export class AgentRuntime {
     try {
       const response = await this.#deps.modelGateway.complete(request);
       await this.recordReplyStance(agent, turn, response, promptBuild.phaseAtGeneration, promptBuild.inputStanceRecordIds);
-      return response;
+      return buildRunTurnResult(response, turn.contextUntilMessageId, promptBuild);
     } catch (error) {
-      return failed(error instanceof Error ? error.message : String(error));
+      const response = failed(error instanceof Error ? error.message : String(error));
+      return buildRunTurnResult(response, turn.contextUntilMessageId, promptBuild);
     }
   }
 
@@ -102,7 +119,12 @@ export class AgentRuntime {
     phaseAtGeneration: ConversationPhase | undefined,
     inputStanceRecordIds: string[],
   ): Promise<void> {
-    if (!this.#deps.stanceHistoryStore || response.decision !== AgentDecision.Reply || response.content.length === 0) {
+    if (
+      this.#deps.recordStanceOnReply === false ||
+      !this.#deps.stanceHistoryStore ||
+      response.decision !== AgentDecision.Reply ||
+      response.content.length === 0
+    ) {
       return;
     }
 
@@ -123,6 +145,19 @@ interface BuiltPrompt {
   plan: PromptPlan;
   phaseAtGeneration?: ConversationContextState["phase"];
   inputStanceRecordIds: string[];
+}
+
+function buildRunTurnResult(
+  response: AgentResponse,
+  contextUntilMessageId: MessageId,
+  promptBuild: BuiltPrompt,
+): AgentRunTurnResult {
+  return {
+    response,
+    ...(promptBuild.phaseAtGeneration ? { phaseAtGeneration: promptBuild.phaseAtGeneration } : {}),
+    contextUntilMessageId,
+    inputStanceRecordIds: promptBuild.inputStanceRecordIds,
+  };
 }
 
 function isCurrentAgentMessage(message: MessageRef, agent: AgentProfile): boolean {

@@ -62,7 +62,7 @@ export interface AgentProfile {
   id: AgentId;
   provider: string;
   model: string;
-  displayName: string;
+  displayName?: string;
   thinkingAdapter?: ThinkingAdapter;
   customThinkingInstruction?: string;
 }
@@ -96,6 +96,16 @@ export function reply(content: string): AgentResponse {
 
 export function failed(error: string): AgentResponse {
   return { decision: AgentDecision.Failed, content: "", error };
+}
+
+export function agentDisplayLabel(agent: Pick<AgentProfile, "id" | "displayName">): string {
+  const displayName = agent.displayName?.trim();
+  return displayName && displayName.length > 0 ? displayName : `AI member #${agent.id}`;
+}
+
+export function agentMemberLabel(agent: Pick<AgentProfile, "id" | "displayName">): string {
+  const displayName = agent.displayName?.trim();
+  return displayName && displayName.length > 0 ? `AI member #${agent.id} (${displayName})` : `AI member #${agent.id}`;
 }
 
 export function normalizeId(value: unknown): EntityId {

@@ -1,5 +1,5 @@
 import type { AgentProfile, ThinkingAdapter } from "../core/agentTypes.ts";
-import { ThinkingAdapter as ThinkingAdapterValue } from "../core/agentTypes.ts";
+import { ThinkingAdapter as ThinkingAdapterValue, agentDisplayLabel } from "../core/agentTypes.ts";
 import { PromptPlan } from "./promptPlan.ts";
 
 const THINKING_ADAPTER_DESCRIPTIONS: Record<ThinkingAdapter, string> = {
@@ -26,7 +26,7 @@ export function appendStaticAgentIdentityToPrompt(plan: PromptPlan, agent: Agent
 
   plan.addSystem(
     "agent-model",
-    [`AI member: ${agent.displayName}.`, `Provider/model: ${agent.provider}/${agent.model}.`].join("\n"),
+    [`AI member: ${agentDisplayLabel(agent)}.`, `Provider/model: ${agent.provider}/${agent.model}.`].join("\n"),
   );
 
   const adapter = agent.thinkingAdapter ?? ThinkingAdapterValue.Default;

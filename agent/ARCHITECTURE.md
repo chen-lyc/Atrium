@@ -51,7 +51,7 @@ Context 层可以做长度限制、消息选择、阶段标记和 owner/system p
 
 Bridge 负责：
 
-- 把后端房间/对话/消息/AI 阵容转换为 `TurnContext`，包括 `owner_user_id` 以支持 prompt 署名保真。
+- 接收后端最小 dispatch ref，并通过只读 adapter materialize `AgentProfile` 与 `TurnContext`，包括 owner / sender 信息以支持 prompt 署名保真。
 - 传递可选 phase/context watermark，供过期写回和草稿确认检查使用。
 - 把 `AgentResponse` 转成现有落库、广播或静默行为。
 - 归一化 snake_case/camelCase 字段。

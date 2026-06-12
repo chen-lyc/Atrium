@@ -1,5 +1,5 @@
 import type { AgentProfile, ThinkingAdapter } from "../core/agentTypes.ts";
-import { ThinkingAdapter as ThinkingAdapterValue } from "../core/agentTypes.ts";
+import { ThinkingAdapter as ThinkingAdapterValue, agentMemberLabel } from "../core/agentTypes.ts";
 import { activeAgentStanceHistoryRecords, type AgentStanceHistory } from "../context/stanceHistory.ts";
 import { entriesByKind, type ConversationContextState } from "../context/conversationContext.ts";
 import { ConversationContextEntryKind, ConversationPhase } from "../context/conversationContext.ts";
@@ -31,7 +31,7 @@ export function buildPrivateStanceBlock(
 ): string {
   const lines: string[] = [];
 
-  lines.push(`Private stance continuity for AI member #${agent.id} (${agent.displayName}).`);
+  lines.push(`Private stance continuity for ${agentMemberLabel(agent)}.`);
   lines.push("This is private to this AI member inside this conversation. Do not infer or import another AI member's private stance.");
   lines.push("Use this only as evidence of prior judgments, concerns, and reasons. Do not turn it into a persona, role, or obligation to repeat an old angle.");
   lines.push("First decide whether this turn deserves a contribution. If not, <NO_REPLY> remains valid; the thinking adapter only shapes a reply after that decision.");
