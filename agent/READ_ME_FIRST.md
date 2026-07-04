@@ -11,10 +11,11 @@ Agent 开发默认阅读顺序：
 3. `docs/BACKEND_ARCHITECTURE.md`：确认 Reactor、AI 调度、广播、落库、provider 调用在现有系统里的位置。
 4. `docs/REALTIME_PROTOCOL.md`：确认 WebSocket 消息、AI 流事件、`<NO_REPLY>` 当前协议。
 5. `docs/API_REFERENCE.md`：只有涉及 HTTP API、AI 阵容、用量、房间/对话接口时再读。
-6. `agent/Atrium.md`：涉及上下文工程、AI 独立思考、阶段状态或 prompt 拼装时必须读；它优先于早期通用 conversation context 设计。
+6. `agent/Atrium_v1_protocol_audit.md`：上下文工程、AI 独立思考、阶段状态、prompt 拼装、provenance、生命周期和治理的唯一有效协议源；它优先于早期设计与历史记录。
 7. `agent/CURRENT_AGENT_STATE.md`：确认 agent 子系统当前状态。
-8. `agent/PROJECT_NOTEBOOK.md`：需要理解长期方向或历史决定时再读。
-9. 只有在上述文档不足、需要验证当前实现、或准备接入具体边界时，才查后端源码。
+8. `agent/PROTOCOL_IMPLEMENTATION_STATUS.md`：逐条确认 INV-1 至 INV-28 由 agent、后端还是评测层负责。
+9. `agent/PROJECT_NOTEBOOK.md`：需要理解长期方向或历史决定时再读。
+10. 只有在上述文档不足、需要验证当前实现、或准备接入具体边界时，才查后端源码。
 
 代码是验证源，不是第一阅读入口。若文档和代码冲突，先记录冲突，再用当前源码确认真实行为，最后更新 agent 文档或提出文档需要修正。
 
@@ -44,9 +45,12 @@ Agent 开发默认阅读顺序：
 - AI 可以合法沉默，`<NO_REPLY>` 不产生用户可见消息、不追加私有履历、不触发链式传导。
 - 多 AI 同一轮应独立思考，不能被本轮其他 AI 输出锚定。
 - 上下文工程是双轴：对话轴是共享白板，主体轴是 `(conversation_id, ai_id)` 私有立场履历。
-- 决策区只能 owner 写；AI 不自动采纳、否决、切阶段或填写否决前提。
+- 决策区只能由后端授权的人类确认者显式确认后写入；AI 不自动采纳、否决、切阶段或填写否决前提。
 - 主对话承载人和人的普通交流，不应默认惊动 AI。
 - Thinking adapter 是思维取向，不是角色扮演身份。
 - Thinking adapter 是高认知倾向，不是强制发言模板：先判断是否值得发言；不值得时合法沉默；值得时 adapter 才影响注意力、判断权重和表达角度。
 - 私有立场履历是此前判断、担忧和依据的证据，不是人格锚点，不能要求 AI 维持某种表演人设。
 - 私有立场履历是私有证据位，不是身份位；隔离理由是模板位置先验。履历必须携带 provenance，并支持 owner 溯源排除污染来源。
+- sender 的 display label 与主体类型 kind 由 agent read adapter 从只读数据源解析/构造；权限角色不进入 agent。agent 不比较 owner/admin id，也不把裸内部 id 渲染给模型。
+- 新成员可读取全部仍保留的共享历史和 confirmed whiteboard；新 AI 私有履历从空开始，不继承其他 AI。
+- Proposal 正文只在消息流中出现一次；治理 UI 的 pending 索引不进入 prompt。

@@ -5,161 +5,249 @@ import {
   BACKEND_AGENT_PROTOCOL_VERSION,
   buildBackendRunResultPayload,
   normalizeBackendDispatchRequest,
-  normalizeBackendRunRequest,
 } from "../src/bridge/backendTransition.ts";
-import { reply } from "../src/core/agentTypes.ts";
-import { ThinkingAdapter } from "../src/core/agentTypes.ts";
+import { InMemoryActorProcessedWaterlineCache, runReadOnlyAgentTurn } from "../src/bridge/atriumAgentBridge.ts";
+import { AgentDecision, ConversationPhase, ProposalKind, noReply, propose, reply } from "../src/core/agentTypes.ts";
 
-test("backend transition normalizes snake_case payloads and numeric ids", () => {
-  const normalized = normalizeBackendRunRequest({
-    protocol: BACKEND_AGENT_PROTOCOL_VERSION,
-    ref: {
-      room_id: 1,
-      conversation_id: "2",
-      trigger_message_id: 3n,
-      context_until_message_id: "4",
-      user_id: 5,
-      owner_user_id: "6",
-      phase_at_dispatch: "divergence",
-      context_updated_at_ms_at_dispatch: "1000",
-    },
-    agent: {
-      id: "8",
-      provider: "fake",
-      model: "fake-model",
-      display_name: "Architect",
-      thinking_adapter: "counterexample",
-    },
-    turn: {
-      room_id: 1,
-      conversation_id: "2",
-      trigger_message_id: 3n,
-      context_until_message_id: "4",
-      user_id: 5,
-      owner_user_id: "6",
-      phase_at_dispatch: "divergence",
-      context_updated_at_ms_at_dispatch: 1000,
-      source: "user_message",
-      messages: [
-        {
-          id: "3",
-          sender: {
-            id: "5",
-            kind: "user",
-            display_name: "User",
-          },
-          content: "Move the agent out of backend src/include.",
-        },
-      ],
-    },
-  });
+function refPayload() {
+  return {
+    task_id: "task-1",
+    attempt_no: 1,
+    room_id: "1",
+    conversation_id: "2",
+    ai_id: "8",
+  };
+}
 
-  assert.equal(normalized.ref.triggerMessageId, "3");
-  assert.equal(normalized.ref.ownerUserId, "6");
-  assert.equal(normalized.ref.phaseAtDispatch, "divergence");
-  assert.equal(normalized.ref.contextUpdatedAtMsAtDispatch, 1000);
-  assert.equal(normalized.agent.displayName, "Architect");
-  assert.equal(normalized.agent.thinkingAdapter, ThinkingAdapter.Counterexample);
-  assert.equal(normalized.turn.ownerUserId, "6");
-  assert.equal(normalized.turn.phaseAtDispatch, "divergence");
-  assert.equal(normalized.turn.contextUpdatedAtMsAtDispatch, 1000);
-  assert.equal(normalized.turn.messages[0]?.sender.displayName, "User");
-});
-
-test("backend transition accepts minimal dispatch payload for read-only agent materialization", () => {
-  const normalized = normalizeBackendDispatchRequest({
-    protocol: BACKEND_AGENT_PROTOCOL_VERSION,
-    ref: {
-      request_id: "run-123",
-      room_id: "1",
-      conversation_id: "2",
-      ai_id: "8",
-      trigger_message_id: "3",
-      context_until_message_id: "3",
-      phase_at_dispatch: "divergence",
-      context_updated_at_ms_at_dispatch: "1000",
-    },
-  });
-
-  assert.equal(normalized.ref.requestId, "run-123");
-  assert.equal(normalized.ref.roomId, "1");
+test("minimal dispatch normalizes wakeup coordinates without a trigger message", () => {
+  const normalized = normalizeBackendDispatchRequest({ protocol: BACKEND_AGENT_PROTOCOL_VERSION, ref: refPayload() });
+  assert.equal(normalized.ref.taskId, "task-1");
+  assert.equal(normalized.ref.attemptNo, 1);
   assert.equal(normalized.ref.conversationId, "2");
   assert.equal(normalized.ref.agentId, "8");
-  assert.equal(normalized.ref.triggerMessageId, "3");
-  assert.equal(normalized.ref.contextUntilMessageId, "3");
-  assert.equal(normalized.ref.phaseAtDispatch, "divergence");
-  assert.equal(normalized.ref.contextUpdatedAtMsAtDispatch, 1000);
-  assert.equal(normalized.ref.userId, undefined);
-  assert.equal(normalized.ref.ownerUserId, undefined);
+  assert.equal("debugTriggerMessageId" in normalized.ref, false);
 });
 
-test("backend transition does not require current agent display name", () => {
-  const normalized = normalizeBackendRunRequest({
-    protocol: BACKEND_AGENT_PROTOCOL_VERSION,
-    ref: {
-      room_id: "1",
-      conversation_id: "2",
-      trigger_message_id: "3",
-      context_until_message_id: "3",
-      user_id: "5",
-      owner_user_id: "6",
+test("dispatch rejects old prompt-boundary and permission fields", () => {
+  for (const field of ["trigger_message_id", "context_until_message_id", "visible_until", "focus_message_ids", "owner_user_id", "admin_id"]) {
+    const ref = { ...refPayload() } as Record<string, unknown>;
+    ref[field] = "legacy";
+    assert.throws(
+      () => normalizeBackendDispatchRequest({ protocol: BACKEND_AGENT_PROTOCOL_VERSION, ref: ref as any }),
+      new RegExp(`wakeup ref must not include ${field}`),
+    );
+  }
+});
+
+test("backend result contains replay materialization and optional commit intent", () => {
+  const payload = buildBackendRunResultPayload({
+    response: reply("ok"),
+    freshness: { stale: false, reasons: [] },
+    materialization: {
+      taskId: "task-1",
+      attemptNo: 1,
+      processedUntilBefore: "8",
+      handledUntilMessageId: "12",
+      inputMessageIds: ["9", "12"],
+      triggerMessageIds: ["12"],
+      retrievedAnchorMessageIds: ["9"],
+      inputStanceRecordIds: ["s-1"],
+      phaseAtGeneration: ConversationPhase.Divergence,
+      contextVersionAtGeneration: "ctx-v3",
+      contextUpdatedAtMsAtGeneration: 123,
+      promptTemplateVersion: "test-template",
     },
-    agent: {
-      id: "8",
-      provider: "fake",
-      model: "fake-model",
-      thinking_adapter: "counterexample",
-    },
-    turn: {
-      room_id: "1",
-      conversation_id: "2",
-      trigger_message_id: "3",
-      context_until_message_id: "3",
-      user_id: "5",
-      owner_user_id: "6",
-      source: "user_message",
-      messages: [
-        {
-          id: "3",
-          sender: {
-            id: "5",
-            kind: "user",
-            display_name: "User",
-          },
-          content: "Use the DB-backed read path.",
-        },
-      ],
+    stanceCommit: {
+      taskId: "task-1",
+      responseKind: AgentDecision.Reply,
+      phaseAtGeneration: ConversationPhase.Divergence,
+      processedUntilBefore: "8",
+      handledUntilMessageId: "12",
+      inputMessageIds: ["9", "12"],
+      retrievedAnchorMessageIds: ["9"],
+      inputStanceRecordIds: ["s-1"],
+      content: "ok",
     },
   });
-
-  assert.equal(normalized.agent.id, "8");
-  assert.equal(normalized.agent.displayName, undefined);
-  assert.equal(normalized.agent.thinkingAdapter, ThinkingAdapter.Counterexample);
+  assert.equal(payload.task_id, "task-1");
+  assert.deepEqual(payload.materialization.input_message_ids, ["9", "12"]);
+  assert.deepEqual(payload.materialization.trigger_message_ids, ["12"]);
+  assert.deepEqual(payload.materialization.retrieved_anchor_message_ids, ["9"]);
+  assert.equal(payload.materialization.context_updated_at_ms_at_generation, 123);
+  assert.equal(payload.stance_commit?.response_kind, AgentDecision.Reply);
+  assert.equal("trigger_message_id" in payload.materialization, false);
 });
 
-test("backend result payload omits agent profile and carries generation metadata", () => {
-  const payload = buildBackendRunResultPayload(
+test("backend result normalizes proposal and synthesis fields to snake_case", () => {
+  const proposalDraft = {
+    kind: ProposalKind.SynthesisDraft,
+    reason: "summarize",
+    sourceMessageIds: ["12"],
+    synthesis: {
+      recommendation: "Proceed.",
+      rationale: "Evidence.",
+      strongestCounterargument: "Counterpoint.",
+      valuableMinorityViews: ["Wait."],
+      residualUncertainties: ["Unknown."],
+      falsifiablePremises: ["Reversible."],
+    },
+  } as const;
+  const proposal = propose("draft", proposalDraft);
+  const payload = buildBackendRunResultPayload({
+    response: proposal,
+    freshness: { stale: false, reasons: [] },
+    materialization: {
+      taskId: "task-proposal",
+      attemptNo: 1,
+      processedUntilBefore: "11",
+      handledUntilMessageId: "12",
+      inputMessageIds: ["12"],
+      triggerMessageIds: ["12"],
+      retrievedAnchorMessageIds: [],
+      inputStanceRecordIds: [],
+      phaseAtGeneration: ConversationPhase.Divergence,
+      contextVersionAtGeneration: "ctx-v1",
+      contextUpdatedAtMsAtGeneration: 9,
+      promptTemplateVersion: "test",
+    },
+    stanceCommit: {
+      taskId: "task-proposal",
+      responseKind: AgentDecision.Proposal,
+      phaseAtGeneration: ConversationPhase.Divergence,
+      processedUntilBefore: "11",
+      handledUntilMessageId: "12",
+      inputMessageIds: ["12"],
+      retrievedAnchorMessageIds: [],
+      inputStanceRecordIds: [],
+      content: "draft",
+      proposal: proposalDraft,
+    },
+  });
+  assert.equal(payload.response.decision, AgentDecision.Proposal);
+  if (payload.response.decision === AgentDecision.Proposal) {
+    assert.deepEqual(payload.response.proposal.source_message_ids, ["12"]);
+    assert.equal(payload.response.proposal.synthesis?.strongest_counterargument, "Counterpoint.");
+    assert.equal("sourceMessageIds" in payload.response.proposal, false);
+  }
+  assert.deepEqual(payload.stance_commit?.proposal?.source_message_ids, ["12"]);
+});
+
+test("read materializer cannot change any wakeup coordinate field", async () => {
+  const ref = normalizeBackendDispatchRequest({ protocol: BACKEND_AGENT_PROTOCOL_VERSION, ref: refPayload() }).ref;
+  await assert.rejects(
+    runReadOnlyAgentTurn(
+      { runTurnDetailed: async () => { throw new Error("executor must not run"); } },
+      {
+        materializeTurn: async () => ({
+          agent: { id: "8", provider: "fake", model: "m" },
+          turn: {
+            task: {
+              ...ref,
+              agentId: "9",
+              processedUntilBefore: "10",
+              handledUntilMessageId: "12",
+              retrievedAnchorMessageIds: [],
+              phaseAtMaterialization: ConversationPhase.Divergence,
+              contextVersionAtMaterialization: "ctx-v1",
+              contextUpdatedAtMsAtMaterialization: 1,
+            },
+            source: "user_message",
+            messages: [],
+          },
+        }),
+      },
+      ref,
+    ),
+    /different immutable task/,
+  );
+});
+
+test("read materializer can apply same-actor local processed waterline without making it persistent truth", async () => {
+  const ref = normalizeBackendDispatchRequest({ protocol: BACKEND_AGENT_PROTOCOL_VERSION, ref: refPayload() }).ref;
+  const cache = new InMemoryActorProcessedWaterlineCache();
+  cache.rememberProcessedUntil(ref.conversationId, ref.agentId, "11");
+  let observedProcessedUntil = "";
+
+  const result = await runReadOnlyAgentTurn(
     {
-      requestId: "run-123",
-      roomId: "1",
-      conversationId: "2",
-      agentId: "8",
-      triggerMessageId: "3",
-      contextUntilMessageId: "3",
+      runTurnDetailed: async (_agent, turn) => {
+        observedProcessedUntil = turn.task.processedUntilBefore;
+        return {
+          response: noReply(),
+          freshness: { stale: false, reasons: [] },
+          materialization: {
+            taskId: turn.task.taskId,
+            attemptNo: turn.task.attemptNo,
+            processedUntilBefore: turn.task.processedUntilBefore,
+            handledUntilMessageId: turn.task.handledUntilMessageId,
+            inputMessageIds: [],
+            triggerMessageIds: [],
+            retrievedAnchorMessageIds: [],
+            inputStanceRecordIds: [],
+            phaseAtGeneration: ConversationPhase.Divergence,
+            contextVersionAtGeneration: "ctx-v1",
+            contextUpdatedAtMsAtGeneration: 1,
+            promptTemplateVersion: "test",
+          },
+        };
+      },
     },
     {
-      response: reply("ok"),
-      phaseAtGeneration: "divergence",
-      contextUntilMessageId: "3",
-      inputStanceRecordIds: ["stance_2_8_1"],
+      materializeTurn: async () => ({
+        agent: { id: "8", provider: "fake", model: "m" },
+        turn: {
+          task: {
+            ...ref,
+            processedUntilBefore: "10",
+            handledUntilMessageId: "12",
+            retrievedAnchorMessageIds: [],
+            phaseAtMaterialization: ConversationPhase.Divergence,
+            contextVersionAtMaterialization: "ctx-v1",
+            contextUpdatedAtMsAtMaterialization: 1,
+          },
+          source: "user_message",
+          messages: [],
+        },
+      }),
     },
+    ref,
+    { waterlineCache: cache },
   );
 
-  assert.equal(payload.protocol, BACKEND_AGENT_PROTOCOL_VERSION);
-  assert.equal(payload.ref.agentId, "8");
-  assert.equal(payload.response.content, "ok");
-  assert.equal(payload.phase_at_generation, "divergence");
-  assert.equal(payload.context_until_message_id, "3");
-  assert.deepEqual(payload.input_stance_record_ids, ["stance_2_8_1"]);
-  assert.equal("agent" in payload, false);
+  assert.equal(observedProcessedUntil, "11");
+  assert.equal(result.materialization.processedUntilBefore, "11");
+  assert.equal(cache.getProcessedUntil(ref.conversationId, ref.agentId), "12");
+});
+
+test("local processed waterline rejects materialization older than the same actor cache", async () => {
+  const ref = normalizeBackendDispatchRequest({ protocol: BACKEND_AGENT_PROTOCOL_VERSION, ref: refPayload() }).ref;
+  const cache = new InMemoryActorProcessedWaterlineCache();
+  cache.rememberProcessedUntil(ref.conversationId, ref.agentId, "13");
+
+  await assert.rejects(
+    runReadOnlyAgentTurn(
+      { runTurnDetailed: async () => { throw new Error("executor must not run"); } },
+      {
+        materializeTurn: async () => ({
+          agent: { id: "8", provider: "fake", model: "m" },
+          turn: {
+            task: {
+              ...ref,
+              processedUntilBefore: "10",
+              handledUntilMessageId: "12",
+              retrievedAnchorMessageIds: [],
+              phaseAtMaterialization: ConversationPhase.Divergence,
+              contextVersionAtMaterialization: "ctx-v1",
+              contextUpdatedAtMsAtMaterialization: 1,
+            },
+            source: "user_message",
+            messages: [],
+          },
+        }),
+      },
+      ref,
+      { waterlineCache: cache },
+    ),
+    /behind local actor processed waterline/,
+  );
 });

@@ -88,6 +88,46 @@
 
 - `ConversationContextState` 只承载对话轴共享白板，按 `conversation_id` 读取。
 - `AgentStanceHistory` 承载主体轴私有履历，按 `(conversation_id, ai_id)` 读取。
-- `MemoryStore` 保留为未来泛化长期记忆材料，但不作为当前 Atrium 上下文主线。
-- Prompt 必须按五段式拼装：静态层 -> 对话轴共享白板 -> 最近原文消息 -> 当前 AI 私有履历 + 阶段化重新实例化指令 -> 当前触发消息。
+- `MemoryStore` 仅保留为 legacy/experimental 材料，不作为当前 Atrium 上下文主线，也不从 v1 公共入口导出；未来若启用，必须先完成独立记忆投毒与数据生命周期审计。
+- Prompt 必须按五段式拼装：静态层 -> confirmed-only 对话轴共享白板 -> 有界上下文消息 + retrieved anchors -> 当前 AI 私有履历 + 阶段化重新实例化指令 -> trigger messages。
 - Owner-only 字段：已做决策、当前方向、带因果的被否方案、阶段标记不能由 AI 自动写入。狭义决策区仍是已做决策、被否方案、阶段标记；当前方向按“需要采纳判断”单独 owner-confirmed。
+
+## ADR-0011: Agent runtime 采用业务只读边界
+
+状态：Accepted
+
+原因：消息、白板、proposal、履历和 phase 的权限与事务属于后端控制面。让 runtime 持有写接口会绕过 authorized human confirmer，并使重试和 stale 写回难以统一。
+
+影响：runtime 只依赖 `ConversationContextReader` 与 `AgentStanceHistoryReader`，返回 materialization 和 stance commit intent；后端在消息落库后幂等提交。
+
+## ADR-0012: 用处理水位和 retrieved anchors 替代 trigger 因果
+
+状态：Accepted
+
+原因：多人快照中无法观测模型“实际回应哪条消息”。单一 `trigger_message_id` 既不能表达处理区间，也不能支持可靠 lineage。
+
+影响：后端 dispatch 只发 wakeup 坐标；agent 只读物化 `processed_until_before + handled_until_message_id + retrieved_anchor_message_ids + phase/context watermark`。`trigger_message_id` 不进入 backend->agent 信封；旧系统若保留唤醒来源,只作后端内部排障日志。第(5)段来自处理水位区间，第(3)段可包含 retrieved anchors，两段严格去重。
+
+## ADR-0013: Proposal 是流内公开事件且正文只有一个 prompt 表示
+
+状态：Accepted
+
+原因：proposal 需要可讨论、可追踪，但未确认内容不能进入白板。消息流与独立 pending prompt 同时保留正文会重复锚定。
+
+影响：proposal 作为特殊消息进入第(3)或第(5)段；pending 索引只属于治理 UI。滑出消息窗口后，可由同一 AI 的 stance 投影承载历史观点，但必须带当前 proposal status。
+
+## ADR-0014: Sender 主体类型由 agent read adapter 解析，Agent 不接收权限角色
+
+状态：Accepted
+
+原因：agent 需要知道消息来自 `user / agent / system`,以保证模板角色位保真；但不需要也不应该知道 `owner / admin / human_member / ai_member` 这类权限或成员角色。把权限角色放进 agent materialization 会让展示语义与授权语义重新耦合,并把 owner 权威性泄露给模型。
+
+影响：agent read adapter 从只读数据源为每条消息物化 `kind + display label + stable sender id`。`sender.role` 不进入 agent materialization；若旧读取路径仍带该字段,agent 拒绝物化。prompt 可见署名使用 display label,内部 id 只进审计字段。
+
+## ADR-0015: 新成员拥有完整 retained shared history，AI 私有履历不继承
+
+状态：Accepted
+
+原因：共享讨论历史属于房间上下文，按加入时间截断会让新成员系统性缺失共同事实；私有履历则是特定 AI 的证据位，继承会制造身份与判断混淆。
+
+影响：新人类和新 AI 均可读取全部仍保留的共享历史与 confirmed whiteboard；新 AI 从空私有履历开始。

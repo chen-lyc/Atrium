@@ -85,12 +85,12 @@ export function memoryWriteFailure(error: string): MemoryWriteResult {
   return { ok: false, id: "", error };
 }
 
-export function buildMemoryQueryForTurn(agent: AgentProfile, turn: TurnContext): MemoryQuery {
+export function buildMemoryQueryForTurn(agent: AgentProfile, turn: TurnContext, userId: UserId): MemoryQuery {
   return {
     agentId: agent.id,
-    userId: turn.userId,
-    roomId: turn.roomId,
-    conversationId: turn.conversationId,
+    userId,
+    roomId: turn.task.roomId,
+    conversationId: turn.task.conversationId,
     text: turn.messages.at(-1)?.content ?? "",
     tags: [],
     limit: 8,
@@ -98,10 +98,14 @@ export function buildMemoryQueryForTurn(agent: AgentProfile, turn: TurnContext):
   };
 }
 
-export async function loadMemoryForTurn(store: MemoryStore, agent: AgentProfile, turn: TurnContext): Promise<MemoryRecord[]> {
+export async function loadMemoryForTurn(
+  store: MemoryStore,
+  agent: AgentProfile,
+  turn: TurnContext,
+  userId: UserId,
+): Promise<MemoryRecord[]> {
   if (store.loadForTurn) {
     return store.loadForTurn(agent, turn);
   }
-  return store.search(buildMemoryQueryForTurn(agent, turn));
+  return store.search(buildMemoryQueryForTurn(agent, turn, userId));
 }
-

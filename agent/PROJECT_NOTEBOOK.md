@@ -16,8 +16,8 @@
 - `runtime/` 编排单轮 agent 执行。
 - `context/` 管上下文窗口和裁剪。
 - `prompt/` 管 prompt 片段和请求计划。
-- `memory/` 管记忆抽象。
-- `tools/` 管工具注册和调用协议。
+- `memory/` 是 legacy/experimental 记忆材料,当前 v1 不作为公共入口或 prompt 主线。
+- `tools/` 暂无 v1 工具执行注册表;未来接入前需单独做工具期对抗审计。
 - `providers/` 管模型网关。
 - `bridge/` 是唯一认识 Atrium 房间、对话、数据库、WebSocket 的层。
 
@@ -77,8 +77,9 @@
 - 后端持久化、数据库表、HTTP API、WebSocket 同步全部不实现，只写到 `BACKEND_INTERFACE.md`。
 
 后续状态：这条路线已被 Atrium 双轴上下文纠偏取代。`MemoryStore` / `InMemoryMemoryStore`
-作为未来泛化 memory 材料保留，但当前 Atrium 主线不应对外叫“记忆功能”，也不应把
-`MemoryStore` 注入 prompt。当前进入 prompt 的是讨论上下文 / 房间白板 / 当前 AI 私有立场履历。
+仅作为 legacy/experimental 材料保留，不从 v1 公共入口导出。当前 Atrium 主线不应对外叫
+“记忆功能”，也不应把 `MemoryStore` 注入 prompt。当前进入 prompt 的是讨论上下文 / 房间白板 /
+当前 AI 私有立场履历。
 
 ## 2026-05-29 - Backend interface 文档抽象度纠偏
 
@@ -101,7 +102,7 @@
 
 > 实现类似 GPT / Claude 的“单个对话内上下文保持一致”：在同一个对话里，无论聊多久，AI 都能持续记住前文上下文；服务重启后也不影响这个对话上下文的恢复。
 
-这和“用户长期偏好记忆 / 全局记忆 / 跨房间记忆 / 自动沉淀长期知识”不是同一个问题。前面已经写出的 `MemoryStore` / `InMemoryMemoryStore` 可以作为底层材料保留，但不能替代这个需求，也不能默认把需求扩展成长记忆系统。
+这和“用户长期偏好记忆 / 全局记忆 / 跨房间记忆 / 自动沉淀长期知识”不是同一个问题。前面已经写出的 `MemoryStore` / `InMemoryMemoryStore` 只能作为 legacy/experimental 材料保留，不能替代这个需求，也不能默认把需求扩展成长记忆系统。
 
 下一步不应继续写代码，而应先和用户讨论工程路径。候选方向至少包括：
 
@@ -136,7 +137,7 @@
 
 这符合 Atrium 的本质：一个 conversation 是持续讨论空间，可以专门讨论前端布局、设计方向、学习、创作或开放探索。Agent 的核心不是“记住用户喜欢什么”，而是让讨论持续有方向、有历史、有连续性，并且能基于早期观点质疑当前观点。
 
-当前已新增 `CONVERSATION_CONTEXT_DESIGN.md` 作为长期设计源。第一步实现只做 agent 内部：`ConversationContextState`、`ConversationContextStore`、`appendConversationContextToPrompt()` 和 runtime prompt 注入。后端持久化、自动摘要、检索和上下文治理后续逐步做。
+历史上曾新增 `CONVERSATION_CONTEXT_DESIGN.md` 作为设计源，并以可写 `ConversationContextStore` 为第一步。该方案现已 superseded：唯一协议源是 `Atrium_v1_protocol_audit.md`，runtime 只保留只读 context/stance reader，业务写入归后端。
 
 ## 2026-05-29 - Agent 迁出后端目录并转 TypeScript
 
@@ -153,17 +154,17 @@
 
 ## 2026-05-29 - Atrium 双轴上下文工程落地
 
-用户纠正：通用 `conversation_state + recall + governance` 只解决“这场对话发生了什么”，不能表达 Atrium 多 AI 思维碰撞的核心。新的约束写入 `agent/Atrium.md`，并已落到 TypeScript agent 内部。
+用户纠正：通用 `conversation_state + recall + governance` 只解决“这场对话发生了什么”，不能表达 Atrium 多 AI 思维碰撞的核心。该历史约束后来统一并修订进 `agent/Atrium_v1_protocol_audit.md`；已删除的 `agent/Atrium.md` 不再是有效协议源。
 
 当前实现判断：
 
 - 对话轴仍由 `ConversationContextState` 承担，但新增 `phase`，取值为发散期、收敛执行期、撞墙期。
 - 被否方案从单点字符串升级为 `RejectedOptionRecord`，记录方案本身、否决理由和否决时依赖前提。
 - Owner-only 字段：决策、当前方向、被否方案、阶段标记只能通过 `ConversationContextPatchAuthor.Owner` 写；system patch 不能写这些。当前方向不归入狭义决策区，但按“需要采纳判断”处理。
-- 主体轴新增 `AgentStanceHistoryStore`，主键语义为 `(conversation_id, ai_id)`，第一版只 append 当前 AI 的发言原文或简单摘要。
-- Runtime prompt 改为 Atrium 五段式：静态层 -> 对话轴共享白板 -> 最近原文消息 -> 当前 AI 私有履历 + 阶段化重新实例化指令 -> 当前触发消息。
+- 主体轴最初设计为 `AgentStanceHistoryStore`；当前契约已收紧为 runtime 只读 `AgentStanceHistoryReader`，后端在可见消息落库后按 task 幂等 append。
+- Runtime prompt 当前五段式为：静态层 -> confirmed-only 共享白板 -> 有界上下文消息 + retrieved anchors -> 当前 AI 私有履历 + 阶段化重新实例化指令 -> trigger messages。
 - Runtime 在 AI 回复后把该回复 append 到该 AI 自己的私有履历；A 的履历不会进入 B 的 prompt。
-- `MemoryStore` 保留为未来泛化长期记忆材料，但本期 runtime 不主动注入，避免重新走回单 agent 长记忆方案。
+- `MemoryStore` 仅作为 legacy/experimental 材料保留，本期 runtime 不主动注入，也不从 v1 公共入口导出，避免重新走回单 agent 长记忆方案。
 
 这次改造的目的不是最轻松地补字段，而是把 Atrium 的产品特色落实为结构边界：共享白板保证大家面对同一场讨论，私有履历保证多 AI 不互相锚定成同一个声音，阶段化重新实例化指令让 thinking adapter 在当轮成为具体思维动作，而不是静态角色标签。
 

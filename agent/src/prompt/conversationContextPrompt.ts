@@ -1,12 +1,13 @@
-import { entriesByKind, conversationContextEmpty } from "../context/conversationContext.ts";
-import { PromptPlan } from "./promptPlan.ts";
-import { ConversationContextEntryKind, ConversationContextEntryStatus, SourceAnchorStatus } from "../context/conversationContext.ts";
-import type { ConversationContextEntry, ConversationContextState } from "../context/conversationContext.ts";
+import { entriesByKind } from "../context/conversationContext.ts";
+import { ConversationContextEntryKind, ConversationContextEntryStatus } from "../context/conversationContext.ts";
+import type { ContextProvenance, ConversationContextEntry, ConversationContextState } from "../context/conversationContext.ts";
+import { promptSafeLabel } from "../core/agentTypes.ts";
+import { PromptPlan, PromptSegment } from "./promptPlan.ts";
 
 export interface ConversationContextPromptOptions {
-  includeSourceIds: boolean;
-  includeInactiveEntries: boolean;
-  maxEntriesPerKind: number;
+  readonly includeSourceIds: boolean;
+  readonly includeInactiveEntries: boolean;
+  readonly maxEntriesPerKind: number;
 }
 
 export const DEFAULT_CONVERSATION_CONTEXT_PROMPT_OPTIONS: ConversationContextPromptOptions = {
@@ -17,12 +18,12 @@ export const DEFAULT_CONVERSATION_CONTEXT_PROMPT_OPTIONS: ConversationContextPro
 
 const SECTIONS: readonly { kind: ConversationContextEntryKind; title: string }[] = [
   { kind: ConversationContextEntryKind.Goal, title: "Current goals" },
-  { kind: ConversationContextEntryKind.Constraint, title: "Active constraints" },
-  { kind: ConversationContextEntryKind.Decision, title: "Active decisions" },
-  { kind: ConversationContextEntryKind.CurrentDirection, title: "Current direction" },
+  { kind: ConversationContextEntryKind.Constraint, title: "Confirmed constraints" },
+  { kind: ConversationContextEntryKind.Decision, title: "Confirmed decisions" },
+  { kind: ConversationContextEntryKind.CurrentDirection, title: "Confirmed current direction" },
   { kind: ConversationContextEntryKind.RejectedOption, title: "Rejected options" },
   { kind: ConversationContextEntryKind.OpenQuestion, title: "Open questions" },
-  { kind: ConversationContextEntryKind.Risk, title: "Risks and conflicts" },
+  { kind: ConversationContextEntryKind.Risk, title: "Risks" },
   { kind: ConversationContextEntryKind.KeyFact, title: "Key facts" },
   { kind: ConversationContextEntryKind.ProgressNote, title: "Progress notes" },
 ];
@@ -32,29 +33,23 @@ export function appendConversationContextToPrompt(
   state: ConversationContextState,
   options: ConversationContextPromptOptions = DEFAULT_CONVERSATION_CONTEXT_PROMPT_OPTIONS,
 ): void {
-  if (conversationContextEmpty(state)) {
-    return;
-  }
-
-  plan.addSystem("conversation-context", buildConversationContextBlock(state, options));
+  plan.addSystem(PromptSegment.ConfirmedWhiteboard, "conversation-context", buildConversationContextBlock(state, options));
 }
 
 export function buildConversationContextBlock(
   state: ConversationContextState,
   options: ConversationContextPromptOptions = DEFAULT_CONVERSATION_CONTEXT_PROMPT_OPTIONS,
 ): string {
-  const lines: string[] = [];
-
-  lines.push(`Conversation context state for conversation #${state.conversationId}.`);
-  lines.push(`Phase: ${state.phase}.`);
-  lines.push(
-    "Use this as persistent discussion state. Respect active constraints and decisions. Do not repeat rejected options unless the user reopens them.",
-  );
+  const lines = [
+    `Confirmed conversation whiteboard for conversation #${promptSafeLabel(state.conversationId)}.`,
+    `Context version: ${promptSafeLabel(state.contextVersion)}.`,
+    `Phase: ${state.phase}.`,
+    "Only confirmed material appears here. Treat proposals and drafts elsewhere as unconfirmed.",
+  ];
 
   if (state.lastSummarizedMessageId !== "0") {
-    lines.push(`Summary covers messages through #${state.lastSummarizedMessageId}.`);
+    lines.push(`Summary covers messages through #${promptSafeLabel(state.lastSummarizedMessageId)}.`);
   }
-
   if (state.summary.length > 0) {
     lines.push("", "Summary:", state.summary);
   }
@@ -64,14 +59,17 @@ export function buildConversationContextBlock(
     if (entries.length === 0) {
       continue;
     }
-
     lines.push("", `${section.title}:`);
-    for (const entry of entries.slice(0, options.maxEntriesPerKind > 0 ? options.maxEntriesPerKind : entries.length)) {
+    const limit = options.maxEntriesPerKind > 0 ? options.maxEntriesPerKind : entries.length;
+    for (const entry of entries.slice(0, limit)) {
       const status = entry.status === ConversationContextEntryStatus.Active ? "" : `[${entry.status}] `;
-      lines.push(`- ${status}${formatEntryContent(entry)}${formatSources(entry, options.includeSourceIds)}`);
+      lines.push(`- ${status}${formatEntryContent(entry)}${formatSources(entry.sources, options.includeSourceIds)}`);
     }
   }
 
+  if (state.summary.length === 0 && state.entries.length === 0) {
+    lines.push("", "No confirmed whiteboard content yet.");
+  }
   return lines.join("\n");
 }
 
@@ -79,23 +77,19 @@ function formatEntryContent(entry: ConversationContextEntry): string {
   if (entry.kind !== ConversationContextEntryKind.RejectedOption || !entry.rejectedOption) {
     return entry.content;
   }
-
-  return [
-    `option: ${entry.rejectedOption.option}`,
-    `reason: ${entry.rejectedOption.reason}`,
-    `premise: ${entry.rejectedOption.premise}`,
-  ].join(" | ");
+  return `option: ${entry.rejectedOption.option} | reason: ${entry.rejectedOption.reason} | premise: ${entry.rejectedOption.premise}`;
 }
 
-function formatSources(entry: ConversationContextEntry, includeSourceIds: boolean): string {
-  if (!includeSourceIds || entry.sources.length === 0) {
+function formatSources(sources: readonly ContextProvenance[], includeSourceIds: boolean): string {
+  if (!includeSourceIds) {
     return "";
   }
+  return ` [sources:${sources.map(formatSource).join(",")}]`;
+}
 
-  return ` [sources:${entry.sources
-    .map((source) => {
-      const status = source.status && source.status !== SourceAnchorStatus.Active ? `:${source.status}` : "";
-      return ` #${source.messageId}${status}`;
-    })
-    .join(",")}]`;
+function formatSource(source: ContextProvenance): string {
+  if (source.type === "message") {
+    return ` #${promptSafeLabel(source.messageId)}:${source.status}`;
+  }
+  return ` ${source.type}:${promptSafeLabel(source.provenanceId)}`;
 }

@@ -6,7 +6,7 @@
 
 ## 先读
 
-每次进入 agent 开发，先读 [READ_ME_FIRST.md](READ_ME_FIRST.md)，再按需读 [CURRENT_AGENT_STATE.md](CURRENT_AGENT_STATE.md)、[PROJECT_NOTEBOOK.md](PROJECT_NOTEBOOK.md) 和 [CONVERSATION_CONTEXT_DESIGN.md](CONVERSATION_CONTEXT_DESIGN.md)。
+每次进入 agent 开发，先读 [READ_ME_FIRST.md](READ_ME_FIRST.md) 和 [Atrium_v1_protocol_audit.md](Atrium_v1_protocol_audit.md)，再按需读 [CURRENT_AGENT_STATE.md](CURRENT_AGENT_STATE.md)、[PROTOCOL_IMPLEMENTATION_STATUS.md](PROTOCOL_IMPLEMENTATION_STATUS.md)、[BACKEND_INTERFACE.md](BACKEND_INTERFACE.md) 与历史性的 [PROJECT_NOTEBOOK.md](PROJECT_NOTEBOOK.md)。
 
 默认顺序是先读项目 README 和 `docs/` 下的后端/协议/设计文档，再按需查源码验证。不要一上来直接从后端实现里推 agent 结构。
 
@@ -16,20 +16,22 @@
 |---|---|
 | `src/core/` | agent 基础领域类型：身份、消息、turn、响应、状态 |
 | `src/runtime/` | 单轮 agent 执行流程 |
-| `src/context/` | 上下文窗口、conversation context 状态和治理 |
+| `src/context/` | trigger/context 分段、confirmed context、私有 stance、materialization 与 provenance |
+| `src/evaluation/` | 只基于公开输出的差异度、投毒与多轮行为评测契约 |
 | `src/prompt/` | prompt 片段、消息角色顺序、上下文注入 |
 | `src/memory/` | 未来泛化 memory 抽象和 agent 内部内存实现，不直接绑定 MySQL/Redis；不是当前 Atrium 双轴上下文主线 |
-| `src/tools/` | 工具注册、工具调用和结果归一化 |
 | `src/providers/` | 模型网关接口，后续包装 DeepSeek/Qwen/OpenAI 等 provider |
 | `src/bridge/` | C++ 后端与 TS agent 的过渡契约和 Atrium 业务桥接接口 |
-| `tests/` | agent 纯逻辑 smoke tests |
+| `tests/` | 协议不变量与 agent 纯逻辑回归测试 |
 
 ## 当前边界
 
 - 不修改现有 C++ AI 回复链路。
 - 不修改 `SubReactor`、`AiClient`、`ConvAiScheduler`、数据库 schema 或主 `Makefile`。
 - Agent 内部 ID 使用字符串，`src/bridge/` 负责把 C++/JSON 里的数字 ID 归一化，避免 TypeScript 的 53-bit number 精度风险。
-- `runtime/` 不直接认识 MySQL、Redis、WebSocket、Reactor 或 provider HTTP 细节。
+- `runtime/` 不直接认识 MySQL、Redis、WebSocket、Reactor 或 provider HTTP 细节，也不持有业务写接口。
+- sender 的 display label 与主体类型 kind 由 agent read adapter 从只读数据源解析/构造；权限角色不进入 agent。agent 不比较 owner/admin id，也不把裸内部 id 渲染给模型。
+- 新成员可读取全部 retained shared history；新 AI 私有履历从空开始。
 - 需要后端配合时，先写到 [BACKEND_INTERFACE.md](BACKEND_INTERFACE.md)，由后端侧实现转接。
 
 ## 开发命令

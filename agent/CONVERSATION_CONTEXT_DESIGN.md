@@ -1,178 +1,50 @@
 # Conversation Context Design
 
-状态：Superseded into Atrium double-axis context / implemented in agent core
+状态：Superseded
 
-本文件记录早期 conversation context 设计。当前约束以 `agent/Atrium.md` 为准：Atrium 上下文不是单轴长对话摘要，而是**对话轴共享白板 + 每个 AI 私有主体轴**。
+本文件只保留设计演进说明。当前可执行协议以 `agent/Atrium_v1_protocol_audit.md` 为准，当前代码状态看 `agent/CURRENT_AGENT_STATE.md`，后端接入看 `agent/BACKEND_INTERFACE.md`。
 
-## 目标
+## 设计演进
 
-Atrium 的 agent 上下文系统不是普通聊天记忆，也不是全局用户偏好记忆。它服务的是一个持续讨论空间：
-
-> 一个 conversation 可以围绕前端布局、产品设计、技术方案等长期推进；讨论中会形成目标、约束、决策、当前方向、否定方案、开放问题和前提变化。Agent 必须能基于这些历史状态继续判断，而不是只看最近几条消息。
-
-这类能力最初接近 GPT / Claude 的长对话体验；后续 Atrium 校正后，目标升级为：同一个 conversation 内既保持公共事实连续性，又保持每个 AI 各自的判断、担忧和依据连续性。这里的连续性不是人格连续性，也不是要求某个 AI 每轮表演固定标签。
-
-## 选型
-
-早期方案是：
+早期方案把 Atrium 当作“结构化 conversation summary + 最近消息 + 检索钩子”。复审后确认这不足以表达多人、多 AI 的独立判断，因此 v1 改为双轴：
 
 ```text
-结构化对话状态 + 来源锚点 + 最近原文窗口 + 检索钩子 + 上下文治理层
+ConversationContextState(conversation_id, confirmed shared whiteboard)
++ AgentStanceHistory(conversation_id, ai_id, private evidence)
++ bounded shared messages
++ phase-specific re-instantiation
 ```
 
-对应行业方案：
+随后对抗与生命周期审计又补上：
 
-- 4：分层结构化上下文是主骨架。
-- 5：检索式记忆作为证据召回，不替代常驻上下文。
-- 6：上下文治理层负责更新、冲突检测、过期标记和重建。
+- 私有履历是长期 prompt 源，必须有 task materialization 与 lineage。
+- 删除/撤回默认使用排除注入 + 审计墓碑。
+- proposal 是消息流内唯一正文表示，不进入独立 pending prompt 段。
+- `trigger_message_id` 不是可观测因果,也不进入 backend->agent 信封；当前边界使用 `task_id + processed_until_before + handled_until_message_id + retrieved_anchor_message_ids`。
+- agent 只读业务数据，后端负责确认、提交、purge 和权限。
+- sender 的 display label 与主体类型 kind 由 agent read adapter 从只读数据源显式解析/构造；权限角色不进入 agent。agent 不比较人员 id,也不把裸内部 id 渲染给模型。
+- 新成员可读取全部 retained shared history；新 AI 私有履历从空开始。
 
-当前 Atrium 方案保留其中的对话轴部分，但新增主体轴：
+## 当前五段式
 
 ```text
-ConversationContextState(共享) + AgentStanceHistory(conversation_id, ai_id 私有) + 最近原文窗口 + 阶段化重新实例化指令
+1. static prefix
+2. confirmed shared whiteboard
+3. bounded context messages
+4. current AI private evidence + phase re-instantiation
+5. trigger messages
 ```
 
-因此旧方案不再单独作为 prompt 组织依据。
+第(5)段来自 `(processed_until_before, handled_until_message_id]`;retrieved anchors 是被触发消息额外拉回的旧证据,进入第(3)段。第(3)/(5)段严格去重。第(4)段只读取当前 AI 的未排除履历；原公开消息仍在第(3)/(5)段时，对应 stance 不重复注入。
 
-## 为什么不是普通 Memory
+## 已废弃概念
 
-通用长期 memory 关注“用户偏好、跨会话事实、全局记忆”。Atrium 当前要解决的是：
+- 单轴 conversation memory。
+- 可写 `ConversationContextStore` / `AgentStanceHistoryStore` runtime 接口。
+- “当前触发消息”作为固定第(5)段和精确因果。
+- `visible_until / focus_message_ids` 作为后端预切 prompt 边界。
+- agent 侧 context manager 自动冲突检测、自动仲裁或自动决策写入。
+- RAG/向量召回作为 v1 记忆通道。
+- proposal 的白板 pending 指针或独立 `pending_proposals` prompt 区。
 
-- 当前 conversation 的目标是否还一致。
-- 已确认的设计 / 技术决策是否仍有效。
-- 哪些方案已经被否定，不该反复提出。
-- 当前新观点是否和旧约束冲突。
-- 做到一半发现早期前提错了时，能回到来源消息重新判断。
-
-因此对话轴核心对象仍叫 `ConversationContextState`，不是普通 `MemoryRecord`。但它只回答“这场讨论公认发生了什么”。每个 AI 在本场的发言履历由 `AgentStanceHistory` 承担。
-
-## 核心结构
-
-每个 conversation 拥有一份持久化状态：
-
-- `conversation_id`
-- `phase`：内部阶段，当前值为发散期 / 收敛执行期 / 撞墙期，只能 owner 切换；prompt 解释上应尽量理解为探索 / 形成共同方向 / 复查前提，避免把所有讨论窄化成项目执行流。
-- `summary`：对话长期摘要，只描述当前仍有用的背景。
-- `entries`：结构化条目。
-- `last_summarized_message_id`：摘要覆盖到哪条消息。
-- `updated_at_ms`
-
-条目类型：
-
-- `Goal`：当前目标。
-- `Constraint`：硬约束或用户明确要求。
-- `Decision`：已经确认的决策。
-- `CurrentDirection`：owner 确认后的当前推进方向，供收敛执行期实例化使用；不要混进 `Decision` 或 `ProgressNote`。
-- `RejectedOption`：已否定方案，必须记录方案本身、否决理由、否决时依赖的前提，供撞墙期人工回滚参照。
-- `OpenQuestion`：待裁决问题。
-- `Risk`：风险、冲突、可能失效的前提。
-- `KeyFact`：关键事实。
-- `ProgressNote`：阶段推进记录。
-
-条目状态：
-
-- `Active`：当前有效。
-- `Superseded`：被后续决策替代。
-- `Resolved`：问题已解决。
-- `Rejected`：明确废弃。
-
-每个条目可以带 source anchors：
-
-- `message_id`
-- `note`
-- `status`: `active / stale / purged`
-
-来源锚点是关键：摘要和结构化状态不能成为无来源的“二手真相”。以后发现摘要错了，必须能回到原始 messages 重建；如果原始消息被删除、撤回或 owner 标记为污染，锚点必须进入 stale/purged，而不是继续伪装成 active source。
-
-另有一张物理分开的主体轴：
-
-- 主键：`(conversation_id, ai_id)`。
-- 内容：该 AI 在这场 conversation 内自己的发言原文或简单摘要，用作此前判断、担忧和依据的证据。
-- 访问边界：A 的履历绝不进入 B 的上下文。
-- 语义边界：履历不定义这个 AI 的人格或角色，不要求它为了维持旧角度而发言。
-- 生命周期边界：只有可见回复落库成功才追加；`<NO_REPLY>` 不追加。履历必须记录 trigger/response/context watermark/input stance lineage，owner 可按 source message 溯源排除污染履历。
-
-## Prompt 组装
-
-每次 agent 回复时，当前 prompt 顺序为：
-
-1. 静态层：runtime common + 模型/provider 身份 + thinking adapter 静态定义。
-2. 对话轴共享白板：目标、约束、决策、当前方向、带因果的被否方案、开放问题等。
-3. 最近原文消息窗口。
-4. 当前 AI 的私有立场履历 + 阶段化重新实例化指令。
-5. 当前触发消息。
-
-最近原文消息窗口必须保留他者角色位：
-
-- 当前 AI 自己的历史发言可以放在 assistant 侧。
-- owner 的人类发言必须署名为 owner。
-- 其他人类成员必须与 owner 区分。
-- AI 成员必须标识到具体成员。
-- 其他参与者的消息不允许放入当前 AI 的 assistant 续写位。
-
-Conversation context state 应优先注入：
-
-- summary
-- active goals
-- active constraints
-- active decisions
-- rejected options
-- open questions
-- risks
-- key facts
-
-默认不把 resolved / superseded / rejected 全部塞进 prompt；只有需要审计、冲突检测或用户追问时再检索。`MemoryStore` 本期不主动注入 runtime，避免把泛化长期记忆混入 Atrium 双轴主线。
-
-Thinking adapter 的优先级低于发言判断。AI 先判断这一轮是否值得作为房间成员发言；如果不值得，合法沉默成立；如果值得，adapter 才影响它注意什么、怎样评估、怎样表达。
-
-发散期的机制一模板必须采用第三人称评估框架：评估观点或方案本身，而不是回答“是否同意某人”。仅发散期允许加入 owner 倾向对冲句：owner 的探索期倾向是输入、不是裁决；收敛执行期不允许出现这类对冲。
-
-## 检索钩子
-
-第一版可以不做向量检索，但数据结构必须保留 source anchors 和 `last_summarized_message_id`。
-
-后续触发检索的时机：
-
-- 用户说“之前不是说过……”
-- agent 准备提出新决策前。
-- 当前观点可能和旧约束冲突。
-- 更新 summary 前需要校验原文。
-- 用户提醒 agent 忘记了某个早期观点。
-
-## 上下文治理层
-
-后续需要一个 context manager，而不是让 provider 随手改状态。
-
-它负责：
-
-- 何时更新 summary。
-- 从新消息中提取目标、约束、风险、开放问题等现状区信息。
-- 只在 owner patch 中写入决策、当前方向、带因果的被否方案、阶段标记。
-- 标记旧条目为 superseded / resolved / rejected。
-- 检测当前输出是否和 active constraints / decisions 冲突。
-- 提醒用户需要重新裁决方向。
-
-第一版不允许 AI 自动写决策区、自动否决、自动切阶段或自动检测前提变化。
-
-## 当前实现边界
-
-第一步只做 agent 内部：
-
-- `ConversationContextState` 数据结构。
-- `ConversationContextStore` 抽象。
-- `AgentStanceHistoryStore` 抽象和内存实现。
-- `appendConversationContextToPrompt()`。
-- `appendPrivateStanceToPrompt()`。
-- runtime 五段式 prompt 拼装。
-- smoke 测试。
-
-不做：
-
-- 后端数据库表修改。
-- HTTP API。
-- WebSocket 协议。
-- 自动摘要生成。
-- 自动冲突检测。
-- 向量检索。
-
-需要后端持久化时，只在 `BACKEND_INTERFACE.md` 记录表结构和函数需求。
+这些概念若在历史 notebook、commit 或讨论中出现，只表示当时的探索，不得覆盖当前协议。

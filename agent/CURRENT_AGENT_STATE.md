@@ -1,77 +1,81 @@
-# Current Agent State
+# Agent 当前状态
 
-最后更新：2026-05-31
+更新时间：2026-06-16
 
-## 当前阶段
+## 权威边界
 
-Agent 子系统处于 Phase 0：从 C++ 后端目录迁出，并切换到根目录 TypeScript 子项目。
+- `Atrium_v1_protocol_audit.md` 是 v1 上下文、治理、生命周期和安全语义的唯一协议源。
+- `BACKEND_INTERFACE.md` 只描述后端必须持久化/暴露给 agent 只读查询的数据、wakeup 信封和提交语义。
+- `Atrium.md` 已删除，不再作为设计源。
+- agent 工作区只修改 `agent/`；现有 C++ 后端与前端保持只读。
 
-已经建立：
+## 已实现
 
-- `agent/package.json`
-- `agent/tsconfig.json`
-- `agent/src/core/`
-- `agent/src/context/`
-- `agent/src/prompt/`
-- `agent/src/memory/`
-- `agent/src/tools/`
-- `agent/src/providers/`
-- `agent/src/runtime/`
-- `agent/src/bridge/`
-- `agent/tests/`
+### Wakeup 与物化任务
 
-当前代码定义 TypeScript 骨架类型、接口、conversation context、未来泛化 memory 抽象、runtime、bridge 过渡契约和 smoke tests，不接入主服务。
+- 后端 dispatch 只给 `taskId / attemptNo / roomId / conversationId / agentId` 这类 wakeup 坐标。
+- agent 只读物化阶段生成 `processedUntilBefore / handledUntilMessageId / retrievedAnchorMessageIds / phaseAtMaterialization / contextVersionAtMaterialization`。
+- 同一 `task_id` 的逻辑字段不可改；同一 attempt 重入直接复用结果，retry 使用新 `attempt_no`。
+- bridge 验证只读物化结果没有改写 wakeup 坐标。
 
-## 当前边界
+### 五段 prompt
 
-- 不修改现有 AI 回复链路。
-- 不修改 `SubReactor`、`AiClient`、`ConvAiScheduler`。
-- 不修改数据库 schema。
-- 不把 agent 加入后端 `Makefile`。
-- 不改变 DeepSeek/Qwen 现有 provider 行为。
-- Agent 开发者只处理 `agent/`，后端接入只能先写方案，不能直接动运行代码。
-- 后端接口需求统一记录在 `agent/BACKEND_INTERFACE.md`。
-- C++/JSON 到 TypeScript 的字段和 ID 转换统一放在 `agent/src/bridge/`。
+1. 静态前缀。
+2. confirmed-only 共享白板。
+3. 有界上下文消息。
+4. 当前 AI 私有证据 + 阶段化实例化指令。
+5. trigger messages。
 
-## 已有 agent 能力
+第(5)段来自 `(processedUntilBefore, handledUntilMessageId]`。显式旧证据通过 `retrievedAnchorMessageIds` 进入第(3)段,可越过近期窗口,但不能落在 trigger range 内或超过 `handledUntilMessageId`。第(3)/(5)段严格去重。
 
-- `AgentRuntime`：单轮执行入口，能组装 prompt 并调用 `ModelGateway`。
-- `PromptPlan`：保存 system/user/assistant/tool 片段。
-- 最近消息窗口渲染：runtime 会把 owner、其他人类和具体 AI 成员渲染成不同署名；其他参与者消息保持在 user 侧他者发言位置。
-- `ContextPack`：按消息数量和内容字节裁剪 turn 消息。
-- `MemoryStore` / `InMemoryMemoryStore`：支持 search / upsert / forget / loadForTurn，作为未来泛化 memory 材料保留；本期不进入 Atrium 双轴上下文 prompt 主线。
-- `ConversationContextState`：单个 conversation 的结构化上下文状态。
-- `ConversationContextStore` / `InMemoryConversationContextStore`：上下文状态读取/保存抽象与内存实现。
-- `ConversationContextManager`：显式 patch 应用器，支持 upsert entry、标记状态、移除 entry、更新 summary、更新 last summarized message、owner-only 当前方向和阶段切换。
-- `ConversationContextState.phase`：三态阶段标记，当前为 `divergence / convergence_execution / blocked`。
-- `RejectedOptionRecord`：被否方案现在记录方案本身、否决理由、否决前提和 source anchors，供撞墙期人工回滚参照。
-- `ConversationContextEntryKind.CurrentDirection`：owner 确认后的当前推进方向，收敛执行期 prompt 会和最新决策一起读取。
-- `AgentStanceHistoryStore` / `InMemoryAgentStanceHistoryStore`：按 `(conversation_id, ai_id)` 保存每个 AI 的私有立场履历；reply 才追加，`<NO_REPLY>` 不追加；记录 `phaseAtGeneration`、`contextUntilMessageId`、`inputStanceRecordIds`，并支持 owner 按 source message 溯源排除。
-- `appendConversationContextToPrompt()`：把对话轴共享白板注入 prompt。
-- `appendPrivateStanceToPrompt()`：把当前 AI 自己的私有履历和阶段化重新实例化指令注入 prompt。
-- `backendTransition.ts`：定义第一版 C++ 后端到 TypeScript agent 的最小 dispatch 契约、可选 phase/context watermark 和 ID 归一化；兼容旧 full payload，但推荐不再跨进程搬运完整 messages 或当前 AI display name。
-- `AtriumAgentReadBridge`：定义 agent 进程只读 materialize 边界，后端只发送本轮定位字段，agent 侧读取 AI 配置、消息窗口、owner/sender 信息、对话轴和当前 AI 私有履历。
+### 角色与私有边界
 
-## 当前设计判断
+- sender 的 kind 与 display label 由 agent read adapter 从只读数据源解析/构造；权限角色不进入 agent。agent 不比较 owner/admin id,也不把裸内部 id 渲染给模型。
+- 其他参与者消息始终进入他者发言位；只有当前 AI 自己的历史公开发言可进入 assistant 位。
+- 私有履历只按 `(conversation_id, current ai_id)` 读取；跨 AI 或跨 conversation 读取会失败。
+- 新 AI 的私有履历按 `(conversation_id, ai_id)` 查询不到记录即为空；全部 retained shared history 仍可作为消息候选，不按加入时间截断。
 
-Agent 不是新的“聊天 API 调用器”。它应该逐步承接 Atrium 的 AI 成员语义：
+### 履历、proposal 与沉默
 
-- 根据房间/对话上下文决定是否发言。
-- 支持合法沉默。
-- 支持 thinking adapter 作为思维取向：它偏置注意力、判断权重和表达角度，不是人格、角色或强制发言义务。
-- 支持多 AI 在同一轮基于相同历史独立思考。
-- Prompt 拼装按 Atrium 五段式：静态层 -> 对话轴共享白板 -> 最近原文消息 -> 当前 AI 私有履历 + 阶段化重新实例化指令 -> 当前触发消息。
-- 未来支持工具和显式启用的泛化 memory 材料，但不能把讨论空间变成工具控制台，也不能把当前讨论上下文误叫成普通“记忆功能”。
-- 当前主线是 Atrium 双轴 context，不是泛化长期 memory；`MemoryStore` 保留但本期 runtime 不主动注入。
-- Agent 的发言顺序必须先判断是否值得参与；如果不值得，合法沉默优先于 adapter 模板；如果值得，adapter 才影响思考角度。
-- 发散期的阶段化重新实例化指令使用第三人称评估框架，并只在发散期加入 owner 倾向只是输入、不是裁决的对冲句。
-- quoted evidence / delimiter 只能当 prompt guardrail；确定性补救依赖 source anchors 与 stance lineage 的溯源排除。
-- 第一版接入边界调整为 agent 允许只读查询、禁止写操作；`AgentRuntime.runTurnDetailed()` 可在 `recordStanceOnReply: false` 下返回 `phaseAtGeneration`、`contextUntilMessageId`、`inputStanceRecordIds`，由后端在 reply 落库成功后 append 私有履历。
+- `reply` 和 `proposal` fresh 时只返回 stance commit intent，agent 不写业务数据。
+- 后端必须在可见消息落库后 append stance，并补齐 `response_message_id`；proposal 还要补齐 `proposal_id`。
+- proposal 是消息流内唯一正文表示，不存在 `pending_proposals` prompt 段或白板指针。
+- proposal stance 滑出消息窗口后可进入私有证据位，但必须由读 adapter 联接当前 proposal status。
+- `no_reply`、失败、取消、supersede 和 stale/late 结果不产生 stance commit。
 
-## 当前下一步
+### Provenance 与生命周期
 
-推荐下一步：
+- task materialization 记录实际 `input_message_ids / trigger_message_ids / retrieved_anchor_message_ids / input_stance_record_ids`、phase、context version/update time 和 prompt template version。
+- provenance 模块可沿公开消息曝光边与 stance 注入边构建 owner 审查或保守 security/privacy purge 计划。
+- 删除、撤回或 prompt quarantine 的消息不进入 prompt；excluded stance 不进入私有证据位。
+- 白板 source anchors 支持 `active / stale / purged`，无消息来源时必须有明确 non-message provenance。
 
-1. 定稿 agent 只读 adapter：AI 配置、消息窗口、owner/sender 信息、对话轴和当前 AI 私有履历读取。
-2. 落 agent 进程入口，让 C++ 后端能通过最小 `atrium.agent.turn.v1` dispatch loopback 调用 TS runtime。
-3. 设计 provider adapter，让现有 DeepSeek/Qwen 行为能被 `ModelGateway` 包装。
+### Phase 竞态
+
+- 生成前快照已过期：任务直接 superseded，不调用 provider。
+- 生成后过期的普通 reply 可作为 stale/late 消息返回，但无 stance commit。
+- 生成后过期的 proposal 被 superseded，不允许提交边界动作。
+- 后端提交点仍必须再次校验 watermark。
+
+### 文献干预边界
+
+- 第三人称发散框架和人类倾向对冲句默认关闭，只能由 Atrium 场景评测决定是否启用；prompt 文案不得把 owner 权限词写成模型语义权威。
+- 对冲句即使启用也只允许在 divergence 阶段。
+- 投毒与差异度评测只看公开输出、公开 summary、stance digest、选择/排序或预定义立场评分，不依赖隐藏 CoT。
+- `src/evaluation/observableEvaluation.ts` 要求 clean/poisoned/purged 在同快照、模型和探针下成组比较，拒绝 embedding-only 结论，并可检查多轮持续性覆盖。
+
+## 仍由后端/产品承担
+
+- 消息、proposal、白板、履历和 task 终态的持久化与幂等提交。
+- authorized human confirmer 权限、proposal 生命周期、phase 单一写入口。
+- owner-only `purgeBySourceMessage` 的实际事务、墓碑和审计日志。
+- 新成员完整共享历史读取、退出/移除后的停止派发与私有履历封存。
+- owner 门禁退化仪表、proposal 校准指标、差异度展示和行为评测运行器。
+- 未来工具/外呼能力的独立对抗审计。
+
+## 验证命令
+
+```bash
+npm --prefix agent run check
+npm --prefix agent test
+```

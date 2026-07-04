@@ -1,100 +1,98 @@
-# Agent 架构草图
+# Agent 架构
 
-本目录的设计原则是：agent 核心只关心“在某个对话时刻，一个 AI 成员应该如何理解上下文并做出下一步决策”。房间、数据库、WebSocket、provider HTTP 细节都在核心外侧。
-
-Agent 已迁出后端 `src/` / `include/`，当前主实现语言是 TypeScript。
+Agent 核心只回答一个问题：在不可变对话快照上，某个 AI 成员是否应发言，以及应返回普通发言、proposal 还是合法沉默。权限、数据库、WebSocket、广播、确认和删除全部留在后端控制面。
 
 ## 分层
 
-### 1. Core
+### Core
 
-`src/core/` 保存稳定领域类型，例如 `AgentProfile`、`TurnContext`、`AgentResponse`。这些类型应该小、直接、可测试，不依赖任何外部服务。
+`src/core/` 保存任务、消息、主体类型、成员展示标签、proposal、响应终态等稳定领域类型。内部 ID 使用字符串；bridge 负责边界归一化。权限角色(owner/admin/human_member 等)不属于 agent core。
 
-内部 ID 统一用字符串。C++ 后端或 JSON 边界传来的数字 ID 必须先经过 bridge 归一化，避免 TypeScript number 精度问题扩散到 core。
+### Context
 
-### 2. Context
+`src/context/` 负责：
 
-`src/context/` 负责从原始消息历史里整理上下文包，也保存 Atrium 双轴上下文：
+- 按 `processedUntilBefore / handledUntilMessageId` 切出 trigger messages,并将 retrieved anchors 放入 context 段。
+- 读取 confirmed-only `ConversationContextState`。
+- 读取 `(conversation_id, current ai_id)` 私有履历并去重、截断。
+- 记录 prompt materialization。
+- 计算可观测 message exposure + stance lineage purge 计划。
 
-- `ConversationContextState` 是对话轴共享白板，按 `conversation_id` 保存目标、约束、决策、当前方向、被否方案、阶段标记等。
-- `AgentStanceHistory` 是主体轴私有履历，按 `(conversation_id, ai_id)` 保存某个 AI 在本场说过/主张过什么。
+Context 只有 read boundary。测试 ledger 可模拟 append/exclude，但 runtime 不依赖写接口。
 
-Context 层可以做长度限制、消息选择、阶段标记和 owner/system patch 边界，但不访问数据库。
+### Prompt
 
-### 3. Prompt
-
-`src/prompt/` 把系统提示、群聊上下文、对话轴、主体轴、工具说明组合成一个请求计划。prompt 组织规则在这里，不散落到 provider 或 reactor 里。
-
-当前 Atrium 五段式顺序是：静态层 -> 对话轴共享白板 -> 最近原文消息 -> 当前 AI 私有履历 + 阶段化重新实例化指令 -> 当前触发消息。
-
-最近原文消息必须保留他者角色位：owner、其他人类和具体 AI 成员都要带结构化署名；除当前 AI 自己的历史发言外，其他参与者消息不能进入 assistant 续写位。
-
-### 4. Memory
-
-`src/memory/` 只提供抽象接口和 agent 内部内存实现。它是未来泛化长期记忆材料，不是当前 Atrium 双轴上下文主线；runtime 本期不主动把 `MemoryStore` 注入 prompt。
-
-### 5. Tools
-
-`src/tools/` 负责工具声明、注册、调用和结果归一化。工具实现可以在更外层，但 runtime 只通过 registry 看到统一接口。
-
-### 6. Providers
-
-`src/providers/` 定义模型网关。DeepSeek/Qwen/OpenAI/本地模型都应该被包装成同一种 `ModelGateway`，不要让 runtime 认识 SSE、API key 或不同 provider 的响应格式。
-
-### 7. Runtime
-
-`src/runtime/` 是单轮执行编排层。它可以调用 context、prompt、tools、provider，并在 AI 可见回复后把该 AI 的内容连同 provenance append 到主体轴履历；`<NO_REPLY>`、失败、空回复不产生履历。runtime 不能直接访问 MySQL、Redis、WebSocket 或 Reactor。
-
-### 8. Bridge
-
-`src/bridge/` 是唯一允许定义 Atrium 业务桥接和 C++ 后端过渡契约的层。
-
-Bridge 负责：
-
-- 接收后端最小 dispatch ref，并通过只读 adapter materialize `AgentProfile` 与 `TurnContext`，包括 owner / sender 信息以支持 prompt 署名保真。
-- 传递可选 phase/context watermark，供过期写回和草稿确认检查使用。
-- 把 `AgentResponse` 转成现有落库、广播或静默行为。
-- 归一化 snake_case/camelCase 字段。
-- 归一化 C++/JSON 传来的数字 ID。
-
-真正接入现有后端前，先写方案，不直接修改后端运行代码。
-
-## 目标数据流
+`src/prompt/` 严格按五段组织：
 
 ```text
-Atrium message event in C++ backend
-  -> backend transition payload
-  -> bridge normalizes ids and fields
-  -> runtime builds ContextPack
-  -> runtime asks ConversationContextStore / AgentStanceHistoryStore
-  -> prompt builds PromptPlan
-  -> provider ModelGateway streams/completes response
-  -> runtime appends current AI reply and provenance to its private stance history
-  -> runtime returns AgentResponse
-  -> bridge/backend adapter persists and broadcasts through existing Atrium path
+1 static prefix
+2 confirmed shared whiteboard
+3 bounded context messages
+4 current AI private evidence + phase re-instantiation
+5 trigger messages
 ```
 
-## 明确不做
+sender 的 `kind=user/agent/system` 和 display label 由 agent read adapter 从只读数据源解析/构造。`sender.role` 与 owner/admin/human_member 等权限角色不得进入 agent。agent 不通过 id 推导 owner 或权限；prompt 可见署名只使用 display label,不暴露裸内部 id。其他成员消息不能进入当前 AI 的 assistant 续写位。
 
-- agent core 不直接管理 socket、epoll、eventfd。
-- agent core 不直接执行 SQL。
-- runtime 不拼 provider 专属 JSON。
-- provider 不决定 Atrium 产品语义，例如 `<NO_REPLY>` 是否落库。
-- bridge 不塞 prompt 规则和工具策略。
-- 旧 C++ 骨架不再作为设计依据；当前源码以 TypeScript 分层为准。
+proposal 正文只作为第(3)或第(5)段中的特殊消息出现一次。独立 pending 索引只属于治理 UI，不进入 prompt。
 
-## 现有代码迁移目标
+### Runtime
 
-当前线上 AI 能力主要还在这些后端位置：
+`src/runtime/AgentRuntime`：
 
-- `include/ai_client.h` / `src/ai_client.cpp`：provider 请求、prompt 拼装、历史消息查询、quota、NO_REPLY 缓冲。
-- `include/sub_reactor.h` / `src/sub_reactor.cpp`：AI 任务、广播、落库、接力。
-- `include/connection_route.h` / `src/connection_route.cpp`：conversation + AI 维度的串行调度。
+1. 验证任务不可变字段。
+2. 读取并验证 confirmed whiteboard 与当前 AI 私有履历。
+3. 构造五段 prompt 和 materialization。
+4. 生成前检查 phase/context freshness。
+5. 调用统一 `ModelGateway`。
+6. 规范化 response，并在生成后再次检查 freshness。
+7. 返回 response、freshness、materialization 和可选 stance commit intent。
 
-后续迁移时不要一次性搬后端运行链路。优先按以下顺序收敛：
+Runtime 不落消息、不 append 履历、不确认 proposal、不写白板。
 
-1. 在 `src/bridge/` 固定 C++ 后端和 TS agent 的进程/消息契约。
-2. 把 provider HTTP/SSE 适配到 `src/providers/ModelGateway`。
-3. 把 prompt 组装从 `AiClient` 分离到 `src/prompt/`。
-4. 把消息历史选择从 SQL 结果处理分离到 `src/context/`。
-5. 把调度语义从 Reactor 周边收敛到 agent runtime 或专门 scheduler。
+### Bridge
+
+`src/bridge/` 是唯一业务进程边界：
+
+- 标准化 `atrium.agent.turn.v1` wakeup/result payload。
+- 逐字段验证 read materializer 未改写 immutable task。
+- 通过 `readMaterialization` 标准化 agent 只读查询得到的 sender kind/display label、proposal source anchors 和 lifecycle tombstone；拒绝 `sender.role`。
+- 把 runtime 结果转换成后端可提交 payload。
+
+### Providers
+
+`src/providers/` 把 DeepSeek、Qwen、OpenAI 或本地模型包装为统一 `ModelGateway`。Provider 不决定 Atrium 的 `no_reply`、proposal、phase 或持久化语义。
+
+### Memory 与 Tools
+
+`src/memory/` 是未来泛化 memory 实验区，不属于当前双轴 prompt 主线；P-2 禁止把 RAG/向量召回当作 v1 记忆通道。
+
+当前没有 `src/tools/` 执行注册表或业务动作路径。任何 web/file/外呼/共享状态能力在接入前必须单独完成对抗审计和确定性授权设计；v1 只保留 `ProposalKind.ToolOrResource` 作为申请语义。
+
+## 数据流
+
+```text
+backend sends minimal wakeup coordinates
+  -> agent read adapter queries read-only data and materializes retained shared messages + confirmed whiteboard
+     + current AI private stance projection + display labels
+  -> runtime builds context/trigger split and five-segment PromptPlan
+  -> ModelGateway returns terminal AgentResponse
+  -> runtime returns freshness + exact materialization + optional stance intent
+  -> backend rechecks watermark and commits idempotently
+  -> visible reply/proposal persists first, stance append second
+```
+
+## 信任边界
+
+- 共享消息是不可信输入。
+- confirmed whiteboard 是人类确认后的共享状态，但 source anchors 仍可能 stale/purged。
+- 私有履历是长期 prompt 源，必须视为可信计算基的一部分并保留 lineage。
+- prompt delimiter/quoted evidence 只是概率性 guardrail。
+- 权限、确认、purge 与动作授权必须由后端确定性执行。
+
+## 不做
+
+- agent core 不执行 SQL、WebSocket、Reactor 或 provider HTTP。
+- agent 不根据 owner/admin id 做权限判断。
+- agent 不自动写决策、否决方案、切 phase 或调用工具。
+- agent 不读取隐藏 CoT，也不以隐藏 CoT 作为评测信号。
